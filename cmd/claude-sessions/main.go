@@ -7,6 +7,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 )
@@ -44,6 +45,12 @@ func main() {
 	}
 
 	if err != nil {
+		// `<command> --help` is a successful request, not a failure. flag has already
+		// printed the usage text, so exit quietly and with 0 - otherwise asking for
+		// help prints "error: flag: help requested" and returns 1.
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
 		// doctor has already printed its report; exit non-zero without adding noise
 		// so the command is usable from a monitoring script.
 		if errors.Is(err, errChecksFailed) {

@@ -47,28 +47,65 @@ jobs:
         run: |
           set -euo pipefail
           go build -o cs ./cmd/claude-sessions
-          ./cs version | grep -q claude-sessions
+
+          # Never pipe this binary into `grep -q`. grep exits at its first match and
+          # closes the pipe; on Unix the resulting EPIPE on stdout becomes SIGPIPE and
+          # kills the writer with 141, which pipefail then reports as a failure. It
+          # looks like a flake and is not one - it depends only on whether the match
+          # is in the final write. Capture the output, then match against the string.
+          run() {
+            local expect_fail="$1"; shift
+            local out code
+            set +e
+            out=$("$@" 2>&1)
+            code=$?
+            set -e
+            echo "$out"
+            if [ "$expect_fail" = "fail" ] && [ $code -eq 0 ]; then
+              echo "FAIL: expected '$*' to exit non-zero"; exit 1
+            fi
+            if [ "$expect_fail" = "ok" ] && [ $code -ne 0 ]; then
+              echo "FAIL: expected '$*' to exit zero, got $code"; exit 1
+            fi
+            SMOKE_OUT="$out"
+          }
+
+          expect() {
+            case "$SMOKE_OUT" in
+              *"$1"*) ;;
+              *) echo "FAIL: expected output to contain: $1"; exit 1 ;;
+            esac
+          }
+
+          run ok ./cs version
+          expect "claude-sessions"
 
           # A fresh machine is a normal starting state: doctor must produce a readable
           # report and exit non-zero, rather than crashing or falsely passing.
           empty="$RUNNER_TEMP/empty-profile"
           mkdir -p "$empty/projects"
-          set +e
-          out=$(./cs doctor --claude-dir "$empty" --archive "$RUNNER_TEMP/not-mounted" 2>&1)
-          code=$?
-          set -e
-          echo "$out"
-          [ $code -ne 0 ] || { echo "FAIL: doctor should exit non-zero when the archive is unreachable"; exit 1; }
-          echo "$out" | grep -q "not reachable" || { echo "FAIL: expected an unreachable-archive report"; exit 1; }
+          run fail ./cs doctor --claude-dir "$empty" --archive "$RUNNER_TEMP/not-mounted"
+          expect "not reachable"
+          expect "claude root"
 
-          # And it must pass cleanly once the archive is real and writable.
+          # And it must pass once the archive is real and writable - warnings about a
+          # missing hook are expected here, but nothing may FAIL.
           good="$RUNNER_TEMP/good-archive"
           mkdir -p "$good"
-          ./cs doctor --claude-dir "$empty" --archive "$good" | grep -q "archive" \
-            || { echo "FAIL: expected an archive check"; exit 1; }
+          run ok ./cs doctor --claude-dir "$empty" --archive "$good"
+          expect "archive"
+          expect "0 failure(s)"
 
-          ./cs ls --claude-dir "$empty" | grep -q "No sessions found"
-          ./cs completion bash | grep -q complete
+          run ok ./cs ls --claude-dir "$empty"
+          expect "No sessions found"
+
+          run ok ./cs stats --claude-dir "$empty"
+          expect "No sessions found"
+
+          run ok ./cs completion bash
+          expect "complete -F"
+
+          run fail ./cs completion
 
   minimum-go:
     # go.mod declares the oldest supported toolchain. Verify it is honest, so users on

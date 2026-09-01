@@ -115,11 +115,22 @@ func cmdSearch(args []string) error {
 		}
 	}
 
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].When.After(hits[j].When) })
+	// Sort by session first, then by time within it. Sorting by time alone interleaves
+	// sessions, and the grouped output below would then reprint the same session
+	// header every time the listing switched back to it.
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].SessionID != hits[j].SessionID {
+			return hits[i].When.After(hits[j].When)
+		}
+		return hits[i].Line < hits[j].Line
+	})
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
+		if hits == nil {
+			hits = []hit{} // an empty result is [], never null
+		}
 		return enc.Encode(hits)
 	}
 

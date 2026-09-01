@@ -21,14 +21,13 @@ type projectStat struct {
 }
 
 type statsReport struct {
-	Sessions    int           `json:"sessions"`
-	Projects    int           `json:"projects"`
-	Bytes       int64         `json:"bytes"`
-	Oldest      time.Time     `json:"oldest"`
-	Newest      time.Time     `json:"newest"`
-	MemoryOnly  int           `json:"memoryOnlyBuckets"`
-	AtRiskUnder int           `json:"-"`
-	ByProject   []projectStat `json:"byProject"`
+	Sessions   int           `json:"sessions"`
+	Projects   int           `json:"projects"`
+	Bytes      int64         `json:"bytes"`
+	Oldest     time.Time     `json:"oldest"`
+	Newest     time.Time     `json:"newest"`
+	MemoryOnly int           `json:"memoryOnlyBuckets"`
+	ByProject  []projectStat `json:"byProject"`
 }
 
 func cmdStats(args []string) error {

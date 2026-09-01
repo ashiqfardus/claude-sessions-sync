@@ -75,13 +75,13 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpName)
 		return err
 	}
-	// Windows will not rename onto an existing file.
+
+	// os.Rename replaces an existing file on every supported platform - on Windows Go
+	// uses MoveFileEx with MOVEFILE_REPLACE_EXISTING. An earlier version of this
+	// function "worked around" a non-existent Windows limitation by deleting the
+	// destination first and retrying; that turned a failed write into the loss of the
+	// file that was already there. Never delete the destination to make room.
 	if err := os.Rename(tmpName, path); err != nil {
-		if os.Remove(path) == nil {
-			if err2 := os.Rename(tmpName, path); err2 == nil {
-				return nil
-			}
-		}
 		os.Remove(tmpName)
 		return err
 	}
