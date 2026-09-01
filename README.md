@@ -39,12 +39,11 @@ by `-`. Three consequences, and the third is the one that bites:
 
 > ### Status: the round trip works
 >
-> `push`, `import`, `pull`, `restore`, `machines`, `ls`, `search`, `stats`, `doctor`,
-> `config` and `completion` work and are tested — you can archive from one machine and
-> file it onto another whose projects live at different paths. **`render`, `install`
-> and `backup` are designed but not yet built**, so you run `push` yourself rather
-> than it running at the end of every session. See [DESIGN.md](DESIGN.md) for the
-> architecture and build order.
+> `install`, `push`, `import`, `pull`, `restore`, `machines`, `ls`, `search`, `stats`,
+> `doctor`, `config` and `completion` work and are tested - archiving is automatic
+> once installed, and an archive can be filed onto another machine whose projects live
+> at different paths. **`render` and `backup` are designed but not yet built.** See
+> [DESIGN.md](DESIGN.md) for the architecture.
 >
 > Developed and used on **Windows**. The macOS and Linux paths pass CI but have had
 > little real-world exercise. Reports welcome — see
@@ -82,8 +81,8 @@ claude-sessions ls                                        # what history exists 
 claude-sessions search "that thing about retries"         # find it again
 ```
 
-Until `install` lands, run `push` yourself — from a shell alias, a cron job, or Task
-Scheduler. It is safe to run as often as you like: it copies only what changed.
+`install` sets up a SessionEnd hook and a periodic sweep so this happens on its own.
+Until then `push` is safe to run as often as you like: it copies only what changed.
 
 On your **second machine**, point at the same folder and let it work out where each
 project lives here:
@@ -148,6 +147,41 @@ session-end run cannot interleave writes. Every run appends one line to
 Change detection compares size and modification time **with two seconds of
 tolerance**, because synced filesystems round timestamps — an exact comparison
 re-uploads the whole archive on every run.
+
+### `install` — archive automatically
+
+Sets up a `SessionEnd` hook so every finished session is archived, plus a periodic
+sweep to catch sessions that ended abruptly.
+
+```sh
+claude-sessions install                    # uses the configured destination
+claude-sessions install --every 15         # sweep every 15 minutes
+claude-sessions install --no-sweep         # hook only
+claude-sessions uninstall
+```
+
+| Flag | Meaning |
+|---|---|
+| `--archive <path>` | Set and save the destination while installing |
+| `--every <n>` | Sweep interval in minutes (default 30) |
+| `--no-sweep` | Install the hook only |
+| `--keep-powershell-hook` | Leave an existing `sync-claude-sessions.ps1` hook in place |
+| `--replace-powershell-sweep` | Also remove the scheduled task the PowerShell predecessor registered |
+
+What it does:
+
+- Copies the binary to `<claude-dir>/bin/` so the hook never depends on where you ran
+  it from, or on the sync client being mounted.
+- Merges the hook into `settings.json`, **preserving every other setting and every
+  other tool's hooks**, after writing a timestamped backup. Re-running replaces our
+  own entry rather than adding a second.
+- Registers a sweep: Task Scheduler on Windows, a launchd agent on macOS, a systemd
+  user timer (or cron) on Linux.
+
+**It will not remove automation it did not install.** If the PowerShell predecessor's
+scheduled task is present it is reported, not deleted — pass
+`--replace-powershell-sweep` if you want it gone. `uninstall` checks that the task
+actually runs this binary before removing it.
 
 ### `import` — file an archive onto this machine
 

@@ -52,6 +52,10 @@ func CopyFile(src, dst string) error {
 		os.Remove(tmpName)
 		return err
 	}
+	if err := os.Chmod(tmpName, info.Mode().Perm()); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
 	if err := os.Chtimes(tmpName, info.ModTime(), info.ModTime()); err != nil {
 		os.Remove(tmpName)
 		return err

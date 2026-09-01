@@ -6,6 +6,10 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`install`** / **`uninstall`** - a SessionEnd hook plus a periodic sweep (Task
+  Scheduler, launchd, or a systemd timer). The hook merge round-trips settings.json as
+  a generic document, so every other setting and every other tool's hooks survive, and
+  a timestamped backup is written first.
 - **`import`** - the round trip is complete. Resolves each archived project to a
   local folder by identity (recorded path, then git remote, then a unique folder
   name), files its transcripts into the right bucket and rewrites the paths recorded
@@ -52,6 +56,14 @@ All notable changes to this project are documented here. This project follows
   a recursive copy would never have placed the file.
 
 ### Fixed
+- **`uninstall` deleted a scheduled task it did not create.** The Windows sweep reused
+  the PowerShell predecessor's task name, so removing "ours" removed theirs - which
+  happened on a live machine during testing. The task is now named `claude-sessions-sync`,
+  and uninstall inspects what a task actually runs before deleting it.
+- `import` restored transcripts but silently dropped every memory file, and reset
+  every timestamp to the moment of import - which also made the next push re-upload
+  the whole archive. Timestamps and permissions are now preserved through both the
+  plain copy and the rewriting path, and memory travels with the sessions.
 - `INDEX.md` was regenerated from the local machine only, so pushing from a second
   machine erased the first machine's listing - the same defect the sharded manifest
   exists to prevent. Index rows now live in `index/<machine>.json` and INDEX.md is

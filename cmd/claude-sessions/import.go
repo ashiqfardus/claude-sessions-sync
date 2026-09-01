@@ -62,7 +62,17 @@ func cmdImport(args []string) error {
 		return fmt.Errorf("no manifest in %s - run `claude-sessions push` on a machine that has the sessions first", dest)
 	}
 
+	// Writing into ~/.claude/projects while a scheduled push reads it is what the lock
+	// exists to prevent.
+	lock, err := archive.AcquireLock(root)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
 	searchRoots := defaultSearchRoots(manifest, *roots)
+	// One walk of the search roots answers every project, instead of one walk each.
+	scanner := identity.NewScanner(searchRoots, *depth)
 
 	if !*asJSON {
 		fmt.Printf("archive      %s (%s)\n", dest, src)
@@ -88,7 +98,7 @@ func cmdImport(args []string) error {
 			continue
 		}
 
-		match := identity.Resolve(p.Path, p.Leaf, p.Remote, searchRoots, *depth)
+		match := identity.Resolve(p.Path, p.Leaf, p.Remote, scanner)
 		row := importRow{Bucket: bucket, Recorded: p.Path, How: string(match.How)}
 
 		switch match.How {
@@ -269,7 +279,7 @@ func cmdPull(args []string) error {
 	}
 
 	projectsDir := claude.ProjectsDir(root)
-	var pulled, already int
+	var pulled, already, memory int
 
 	for _, name := range archivedBuckets {
 		srcDir := filepath.Join(archive.ProjectsDir(dest), name)
@@ -300,6 +310,10 @@ func cmdPull(args []string) error {
 			}
 			pulled++
 		}
+
+		// Memory travels with the sessions, here as in restore.
+		memory += restoreMemory(filepath.Join(srcDir, "memory"),
+			filepath.Join(projectsDir, targetName, "memory"), *dryRun)
 	}
 
 	fmt.Printf("\n%s %d transcript(s), %d already present.\n", verbFor(*dryRun), pulled, already)

@@ -30,6 +30,10 @@ func main() {
 		err = cmdImport(os.Args[2:])
 	case "restore":
 		err = cmdRestore(os.Args[2:])
+	case "install":
+		err = cmdInstall(os.Args[2:])
+	case "uninstall":
+		err = cmdUninstall(os.Args[2:])
 	case "machines":
 		err = cmdMachines(os.Args[2:])
 	case "ls":
@@ -83,6 +87,8 @@ commands:
   pull        copy archived sessions into buckets of the same name
   restore     file one folder of transcripts, rewriting an old project path
   machines    list machines that have pushed here, or forget one
+  install     archive automatically: SessionEnd hook plus a periodic sweep
+  uninstall   remove the hook and the sweep (your archive is kept)
   ls          list sessions on this machine
   search      search the text of every session
   stats       session counts and sizes per project
@@ -92,7 +98,7 @@ commands:
   version     print the version
 
 not yet implemented (see DESIGN.md for the build order):
-  render install uninstall backup
+  render backup
 
 common flags:
   --claude-dir <path>   override $CLAUDE_CONFIG_DIR / ~/.claude

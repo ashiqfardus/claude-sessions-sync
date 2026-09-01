@@ -289,7 +289,10 @@ func writeManifest(dest string, shard archive.Shard) error {
 	return archive.WriteFileAtomic(archive.LegacyManifestPath(dest), append(legacy, '\n'), 0o644)
 }
 
-// writeIndex regenerates INDEX.md from EVERY machine's shard.
+// maxIndexRowsPerProject caps how many sessions each project lists in INDEX.md.
+const maxIndexRowsPerProject = 200
+
+// writeIndex regenerates INDEX.md from EVERY machine.
 //
 // INDEX.md is one file at the archive root. Building it from only the local machine's
 // sessions - which is what the first version did - means each push erases every other
@@ -336,12 +339,23 @@ func writeIndex(dest string) error {
 		sort.Slice(group, func(i, j int) bool { return group[i].Updated.After(group[j].Updated) })
 
 		fmt.Fprintf(&b, "## %s\n\n", name)
+
+		// INDEX.md is meant to be browsable on a phone. Listing every session a
+		// long-lived project ever had turns it into a file nothing wants to open, and
+		// the full record is in the .jsonl files and the per-machine index anyway.
+		shown := group
+		omitted := 0
+		if len(shown) > maxIndexRowsPerProject {
+			omitted = len(shown) - maxIndexRowsPerProject
+			shown = shown[:maxIndexRowsPerProject]
+		}
+
 		if multiMachine {
 			b.WriteString("| Updated | Size | Machine | Session | First prompt |\n|---|---|---|---|---|\n")
 		} else {
 			b.WriteString("| Updated | Size | Session | First prompt |\n|---|---|---|---|\n")
 		}
-		for _, r := range group {
+		for _, r := range shown {
 			// A pipe in a prompt would break the table.
 			prompt := strings.ReplaceAll(r.Prompt, "|", "\\|")
 			if multiMachine {
@@ -351,6 +365,9 @@ func writeIndex(dest string) error {
 				fmt.Fprintf(&b, "| %s | %s | `%s` | %s |\n",
 					r.Updated.Format("2006-01-02 15:04"), humanSize(r.Size), r.ID, prompt)
 			}
+		}
+		if omitted > 0 {
+			fmt.Fprintf(&b, "\n_%d older session(s) not listed here; every one is still in `projects/`, and the full listing is in `index/`._\n", omitted)
 		}
 		b.WriteString("\n")
 	}

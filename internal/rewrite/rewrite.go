@@ -175,6 +175,24 @@ func File(src, dst string, rules []Rule, bareLeaf string) (Result, error) {
 		os.Remove(tmpName)
 		return res, err
 	}
+
+	// Carry the source's timestamp and permissions across.
+	//
+	// This is not cosmetic. A restored transcript stamped "now" makes every session
+	// look like it happened today - destroying the chronology the archive exists to
+	// preserve - and makes the next push see every local file as newer than its
+	// archived copy, re-uploading the entire archive.
+	if info, err := os.Stat(src); err == nil {
+		if err := os.Chmod(tmpName, info.Mode().Perm()); err != nil {
+			os.Remove(tmpName)
+			return res, err
+		}
+		if err := os.Chtimes(tmpName, info.ModTime(), info.ModTime()); err != nil {
+			os.Remove(tmpName)
+			return res, err
+		}
+	}
+
 	if err := os.Rename(tmpName, dst); err != nil {
 		os.Remove(tmpName)
 		return res, err

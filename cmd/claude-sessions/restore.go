@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 )
@@ -16,6 +17,7 @@ type restoreResult struct {
 	Bucket        string
 	Copied        int
 	Skipped       int
+	Memory        int
 	Hits          map[string]int
 	BareLeftovers int
 }
@@ -40,13 +42,19 @@ func cmdRestore(args []string) error {
 		return err
 	}
 
+	lock, err := archive.AcquireLock(root)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
 	res, err := restoreInto(root, *source, *projectPath, *rewriteFrom, *bareName, *dryRun)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("\n%s %d transcript(s), skipped %d already present -> %s\n",
-		verbFor(*dryRun), res.Copied, res.Skipped, res.Bucket)
+	fmt.Printf("\n%s %d transcript(s) and %d memory file(s), skipped %d already present -> %s\n",
+		verbFor(*dryRun), res.Copied, res.Memory, res.Skipped, res.Bucket)
 
 	if len(res.Hits) > 0 {
 		fmt.Println("\nLines rewritten, by form:")
@@ -139,18 +147,53 @@ func restoreInto(root, source, projectPath, rewriteFrom string, bareName, dryRun
 		res.Copied++
 	}
 
+	// Memory travels with the sessions. push archives it, so a restore that left it
+	// behind would put the transcripts on the new machine and strand everything the
+	// project had remembered - which is exactly what happened before this was added.
+	//
+	// Memory is markdown, not JSONL, and is never path-rewritten: it is prose, and
+	// substituting paths inside it would corrupt meaning rather than fix references.
+	res.Memory = restoreMemory(filepath.Join(source, "memory"), filepath.Join(res.Bucket, "memory"), dryRun)
+
 	return res, nil
 }
 
-func copyPlain(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	data, err := os.ReadFile(src)
+func restoreMemory(srcDir, dstDir string, dryRun bool) int {
+	entries, err := os.ReadDir(srcDir)
 	if err != nil {
-		return err
+		return 0
 	}
-	return os.WriteFile(dst, data, 0o600)
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
+			continue
+		}
+		dst := filepath.Join(dstDir, e.Name())
+		src := filepath.Join(srcDir, e.Name())
+
+		// Only overwrite when the archived copy is genuinely different, so a memory
+		// file edited on this machine is not silently replaced by an older one.
+		srcInfo, statErr := os.Stat(src)
+		if statErr != nil {
+			continue
+		}
+		if !archive.NeedsCopy(srcInfo, archive.StatOrNil(dst)) {
+			continue
+		}
+		if !dryRun {
+			if err := archive.CopyFile(src, dst); err != nil {
+				continue
+			}
+		}
+		n++
+	}
+	return n
+}
+
+func copyPlain(src, dst string) error {
+	// Delegates so that timestamps, permissions and the atomic rename are handled in
+	// exactly one place.
+	return archive.CopyFile(src, dst)
 }
 
 func verbFor(dryRun bool) string {

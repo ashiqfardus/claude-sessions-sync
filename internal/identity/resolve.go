@@ -46,7 +46,7 @@ type Match struct {
 // Guessing is the one thing this must not do: filing a transcript under the wrong
 // project is worse than leaving it unfiled, because it is silent and the user has no
 // reason to go looking for it.
-func Resolve(recordedPath, leaf, remote string, searchRoots []string, maxDepth int) Match {
+func Resolve(recordedPath, leaf, remote string, scanner *Scanner) Match {
 	if recordedPath != "" {
 		if st, err := os.Stat(recordedPath); err == nil && st.IsDir() {
 			return Match{How: ByRecordedPath, Path: recordedPath}
@@ -57,7 +57,7 @@ func Resolve(recordedPath, leaf, remote string, searchRoots []string, maxDepth i
 		return Match{How: NotFound}
 	}
 
-	candidates := findByLeaf(leaf, searchRoots, maxDepth)
+	candidates := scanner.Find(leaf)
 	switch len(candidates) {
 	case 0:
 		return Match{How: NotFound}
@@ -93,15 +93,32 @@ func Resolve(recordedPath, leaf, remote string, searchRoots []string, maxDepth i
 	return Match{How: Ambiguous, Candidates: candidates}
 }
 
-// findByLeaf walks the search roots breadth-first looking for directories with the
-// given name, comparing case-insensitively.
-func findByLeaf(leaf string, roots []string, maxDepth int) []string {
+// Scanner is a one-pass index of the search roots, keyed by folder name.
+//
+// Resolving each project independently means walking every search root once per
+// project: with twenty archived projects and a large dev folder, that is twenty full
+// directory walks to answer twenty single-name questions. Scan once, answer from
+// memory.
+type Scanner struct {
+	byName map[string][]string
+}
+
+// Find returns every scanned directory with this name, compared case-insensitively.
+func (s *Scanner) Find(leaf string) []string {
+	if s == nil {
+		return nil
+	}
+	return s.byName[strings.ToLower(leaf)]
+}
+
+// NewScanner walks the roots once, indexing every directory name it sees.
+func NewScanner(roots []string, maxDepth int) *Scanner {
+	s := &Scanner{byName: map[string][]string{}}
 	if maxDepth <= 0 {
 		maxDepth = 3
 	}
 
 	seen := map[string]bool{}
-	var found []string
 
 	type node struct {
 		path  string
@@ -134,9 +151,10 @@ func findByLeaf(leaf string, roots []string, maxDepth int) []string {
 					continue
 				}
 				child := filepath.Join(cur.path, e.Name())
-				if strings.EqualFold(e.Name(), leaf) && !seen[strings.ToLower(child)] {
-					seen[strings.ToLower(child)] = true
-					found = append(found, child)
+				if key := strings.ToLower(child); !seen[key] {
+					seen[key] = true
+					name := strings.ToLower(e.Name())
+					s.byName[name] = append(s.byName[name], child)
 				}
 				if cur.depth+1 < maxDepth {
 					queue = append(queue, node{path: child, depth: cur.depth + 1})
@@ -144,5 +162,5 @@ func findByLeaf(leaf string, roots []string, maxDepth int) []string {
 			}
 		}
 	}
-	return found
+	return s
 }
