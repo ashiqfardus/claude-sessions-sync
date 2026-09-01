@@ -138,6 +138,34 @@ func detect() string {
 // TrimSep removes trailing path separators so that comparisons and joins behave.
 func TrimSep(p string) string { return strings.TrimRight(p, `\/`) }
 
+// ValidateDestination rejects an archive folder that would make the tool copy into
+// its own source.
+//
+// Pointing the destination at ~/.claude (or inside it) means every push writes new
+// files under the directory it is reading, which the next push then reads and copies
+// again - the archive grows without bound and the live store fills with duplicates.
+// It is an easy mistake to make and an unpleasant one to undo.
+func ValidateDestination(claudeRoot, dest string) error {
+	root, err := filepath.Abs(claudeRoot)
+	if err != nil {
+		return err
+	}
+	target, err := filepath.Abs(dest)
+	if err != nil {
+		return err
+	}
+
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		// Different volumes: cannot be nested, which is the answer we wanted.
+		return nil
+	}
+	if rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)) {
+		return fmt.Errorf("%s is inside the Claude directory (%s): the archive would copy into its own source", target, root)
+	}
+	return nil
+}
+
 // ProjectsDir is where transcripts live inside the archive.
 func ProjectsDir(dest string) string { return filepath.Join(dest, "projects") }
 

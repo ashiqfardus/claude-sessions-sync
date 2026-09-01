@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // SchemaVersion is stamped into every shard this tool writes.
@@ -54,6 +55,43 @@ type Shard struct {
 	SchemaVersion int                `json:"schemaVersion"`
 	Machine       string             `json:"machine"`
 	Projects      map[string]Project `json:"projects"`
+
+	// Sessions is what this machine contributed to the browsable index.
+	//
+	// It lives in the shard for the same reason the projects do: INDEX.md is a single
+	// file at the archive root, so a machine that regenerated it from only its own
+	// sessions would erase every other machine's listing on each push. Cached here,
+	// the index can be rebuilt from every shard without re-reading transcripts across
+	// a cloud filesystem.
+	Sessions []Session `json:"sessions,omitempty"`
+}
+
+// Session is one row of the browsable index.
+type Session struct {
+	Bucket  string    `json:"bucket"`
+	Project string    `json:"project"`
+	ID      string    `json:"id"`
+	Updated time.Time `json:"updated"`
+	Size    int64     `json:"size"`
+	Prompt  string    `json:"prompt"`
+	Machine string    `json:"-"`
+}
+
+// AllSessions returns the index rows every machine has recorded.
+func AllSessions(dest string) ([]Session, error) {
+	shards, _, err := ReadShards(dest)
+	if err != nil {
+		return nil, err
+	}
+	var out []Session
+	for _, s := range shards {
+		for _, sess := range s.Sessions {
+			sess.Machine = s.Machine
+			out = append(out, sess)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
+	return out, nil
 }
 
 // ReadShards loads every manifest shard in the archive.

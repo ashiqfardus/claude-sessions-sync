@@ -12,7 +12,7 @@ import (
 	"os"
 )
 
-var version = "0.1.0-dev"
+var version = "dev" // overwritten at release time by -X main.version
 
 func main() {
 	if len(os.Args) < 2 {

@@ -69,6 +69,11 @@ func cmdConfig(args []string) error {
 		if st, err := os.Stat(parent); err != nil || !st.IsDir() {
 			return fmt.Errorf("%s does not exist - is the sync client mounted?", parent)
 		}
+		// Validate before creating anything: refusing after having made the directory
+		// leaves litter behind for a request that was rejected.
+		if err := archive.ValidateDestination(root, abs); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(abs, 0o755); err != nil {
 			return err
 		}

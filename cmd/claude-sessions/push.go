@@ -83,6 +83,11 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err erro
 		return fmt.Errorf("%s is not available - is the sync client mounted?", filepath.Dir(dest))
 	}
 
+	if err := archive.ValidateDestination(root, dest); err != nil {
+		logf("SKIP: %v", err)
+		return err
+	}
+
 	lock, err := archive.AcquireLock(root)
 	if err != nil {
 		// The sweep and the hook firing together is routine, not a problem.
@@ -115,10 +120,14 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err erro
 		Machine:       machineName(),
 		Projects:      map[string]archive.Project{},
 	}
-	var rows []indexRow
 
 	for _, b := range buckets {
 		destBucket := filepath.Join(archive.ProjectsDir(dest), b.Name)
+
+		// Each transcript is read once. The identity below reuses what the newest
+		// one yields rather than opening it a second time.
+		var newestCwd string
+		var newestAt time.Time
 
 		for _, t := range b.Transcripts {
 			target := filepath.Join(destBucket, filepath.Base(t.Path))
@@ -143,10 +152,14 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err erro
 			res.Sessions++
 
 			summary, _ := claude.ScanHead(t.Path, headScanLines)
-			rows = append(rows, indexRow{
+			shard.Sessions = append(shard.Sessions, archive.Session{
 				Bucket: b.Name, Project: summary.Cwd, ID: t.ID,
 				Updated: t.ModTime, Size: t.Size, Prompt: summary.FirstPrompt,
 			})
+			if summary.Cwd != "" && t.ModTime.After(newestAt) {
+				newestAt = t.ModTime
+				newestCwd = summary.Cwd
+			}
 		}
 
 		// Memory travels with the sessions; it is small and equally unrecoverable.
@@ -170,7 +183,7 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err erro
 			}
 		}
 
-		if entry, ok := projectIdentity(b, statePaths); ok {
+		if entry, ok := projectIdentity(b, newestCwd, statePaths); ok {
 			shard.Projects[b.Name] = entry
 			res.Projects++
 		}
@@ -181,7 +194,8 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err erro
 			logf("ERROR: manifest: %v", err)
 			return err
 		}
-		if err := writeIndex(dest, rows, shard.Machine); err != nil {
+		// Built from every machine's shard, not just this one - see writeIndex.
+		if err := writeIndex(dest); err != nil {
 			logf("ERROR: index: %v", err)
 			return err
 		}
@@ -211,18 +225,19 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err erro
 }
 
 // projectIdentity recovers what is needed to place this bucket on another machine.
-func projectIdentity(b claude.Bucket, statePaths []string) (archive.Project, bool) {
+//
+// cwdFromNewest is what the caller already read while copying, so this does not open
+// the same transcript again.
+func projectIdentity(b claude.Bucket, cwdFromNewest string, statePaths []string) (archive.Project, bool) {
 	entry := archive.Project{
 		OS:       runtime.GOOS,
 		Seen:     time.Now().Format("2006-01-02"),
 		Sessions: len(b.Transcripts),
 	}
 
-	if newest, ok := b.Newest(); ok {
-		if s, err := claude.ScanHead(newest.Path, headScanLines); err == nil && s.Cwd != "" {
-			entry.Path = s.Cwd
-			entry.Source = archive.FromTranscript
-		}
+	if cwdFromNewest != "" {
+		entry.Path = cwdFromNewest
+		entry.Source = archive.FromTranscript
 	}
 
 	// A bucket with memory but no transcript has no cwd to read. Without this
@@ -268,18 +283,22 @@ func writeManifest(dest string, shard archive.Shard) error {
 	return archive.WriteFileAtomic(archive.LegacyManifestPath(dest), append(legacy, '\n'), 0o644)
 }
 
-type indexRow struct {
-	Bucket  string
-	Project string
-	ID      string
-	Updated time.Time
-	Size    int64
-	Prompt  string
-}
+// writeIndex regenerates INDEX.md from EVERY machine's shard.
+//
+// INDEX.md is one file at the archive root. Building it from only the local machine's
+// sessions - which is what the first version did - means each push erases every other
+// machine's listing, the same defect the sharded manifest exists to avoid. Rows are
+// cached in the shards, so this costs no reads across the cloud filesystem.
+func writeIndex(dest string) error {
+	rows, err := archive.AllSessions(dest)
+	if err != nil {
+		return err
+	}
 
-func writeIndex(dest string, rows []indexRow, machine string) error {
-	byProject := map[string][]indexRow{}
+	machines := map[string]bool{}
+	byProject := map[string][]archive.Session{}
 	for _, r := range rows {
+		machines[r.Machine] = true
 		key := r.Project
 		if key == "" {
 			key = r.Bucket
@@ -292,23 +311,40 @@ func writeIndex(dest string, rows []indexRow, machine string) error {
 	}
 	sort.Strings(names)
 
+	contributors := make([]string, 0, len(machines))
+	for m := range machines {
+		contributors = append(contributors, m)
+	}
+	sort.Strings(contributors)
+
 	var b strings.Builder
 	b.WriteString("# Claude sessions\n\n")
-	fmt.Fprintf(&b, "Updated %s from %s. %d session(s).\n\n",
-		time.Now().Format("2006-01-02 15:04"), machine, len(rows))
+	fmt.Fprintf(&b, "Updated %s. %d session(s) from %s.\n\n",
+		time.Now().Format("2006-01-02 15:04"), len(rows), strings.Join(contributors, ", "))
 	b.WriteString("Bring these to another machine with `claude-sessions import`.\n\n")
+
+	multiMachine := len(contributors) > 1
 
 	for _, name := range names {
 		group := byProject[name]
 		sort.Slice(group, func(i, j int) bool { return group[i].Updated.After(group[j].Updated) })
 
 		fmt.Fprintf(&b, "## %s\n\n", name)
-		b.WriteString("| Updated | Size | Session | First prompt |\n|---|---|---|---|\n")
+		if multiMachine {
+			b.WriteString("| Updated | Size | Machine | Session | First prompt |\n|---|---|---|---|---|\n")
+		} else {
+			b.WriteString("| Updated | Size | Session | First prompt |\n|---|---|---|---|\n")
+		}
 		for _, r := range group {
 			// A pipe in a prompt would break the table.
 			prompt := strings.ReplaceAll(r.Prompt, "|", "\\|")
-			fmt.Fprintf(&b, "| %s | %s | `%s` | %s |\n",
-				r.Updated.Format("2006-01-02 15:04"), humanSize(r.Size), r.ID, prompt)
+			if multiMachine {
+				fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s |\n",
+					r.Updated.Format("2006-01-02 15:04"), humanSize(r.Size), r.Machine, r.ID, prompt)
+			} else {
+				fmt.Fprintf(&b, "| %s | %s | `%s` | %s |\n",
+					r.Updated.Format("2006-01-02 15:04"), humanSize(r.Size), r.ID, prompt)
+			}
 		}
 		b.WriteString("\n")
 	}

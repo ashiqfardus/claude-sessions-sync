@@ -189,8 +189,17 @@ func cmdDoctor(args []string) error {
 	}
 
 	// --- automation -----------------------------------------------------------
-	goHooks := settings.SessionEndHooks("claude-sessions")
-	psHooks := settings.SessionEndHooks("sync-claude-sessions.ps1")
+	// Classify carefully. "sync-claude-sessions.ps1" CONTAINS "claude-sessions", so
+	// matching that substring counts the PowerShell script as this binary too and
+	// reports two archivers when only one is installed. Identify the script first,
+	// and treat anything else mentioning the name as this binary.
+	psHooks := settings.SessionEndHooks("sync-claude-sessions")
+	var goHooks []claude.Hook
+	for _, h := range settings.SessionEndHooks("claude-sessions") {
+		if !h.Mentions("sync-claude-sessions") {
+			goHooks = append(goHooks, h)
+		}
+	}
 	switch {
 	case len(goHooks) > 0 && len(psHooks) > 0:
 		add(check{"session hook", levelWarn,
