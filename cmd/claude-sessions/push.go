@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -120,6 +121,7 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err erro
 		Machine:       machineName(),
 		Projects:      map[string]archive.Project{},
 	}
+	var sessions []archive.Session
 
 	for _, b := range buckets {
 		destBucket := filepath.Join(archive.ProjectsDir(dest), b.Name)
@@ -152,7 +154,7 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err erro
 			res.Sessions++
 
 			summary, _ := claude.ScanHead(t.Path, headScanLines)
-			shard.Sessions = append(shard.Sessions, archive.Session{
+			sessions = append(sessions, archive.Session{
 				Bucket: b.Name, Project: summary.Cwd, ID: t.ID,
 				Updated: t.ModTime, Size: t.Size, Prompt: summary.FirstPrompt,
 			})
@@ -194,7 +196,11 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err erro
 			logf("ERROR: manifest: %v", err)
 			return err
 		}
-		// Built from every machine's shard, not just this one - see writeIndex.
+		if err := archive.WriteSessionIndex(dest, shard.Machine, sessions); err != nil {
+			logf("ERROR: index cache: %v", err)
+			return err
+		}
+		// Built from every machine, not just this one - see writeIndex.
 		if err := writeIndex(dest); err != nil {
 			logf("ERROR: index: %v", err)
 			return err
@@ -352,12 +358,33 @@ func writeIndex(dest string) error {
 	return archive.WriteFileAtomic(filepath.Join(dest, "INDEX.md"), []byte(b.String()), 0o644)
 }
 
+// machineName identifies the writer of a manifest shard.
+//
+// It includes the username, not just the hostname. Two accounts on one machine each
+// have their own ~/.claude and their own sessions, but share a hostname - so keying
+// on the hostname alone means they overwrite each other's shard, and each push
+// silently discards the other user's project identities.
 func machineName() string {
+	host := "unknown-machine"
 	if h, err := os.Hostname(); err == nil && strings.TrimSpace(h) != "" {
-		// A hostname can contain characters that are awkward in a filename.
-		return strings.NewReplacer("/", "-", `\`, "-", ":", "-", " ", "-").Replace(h)
+		host = h
 	}
-	return "unknown-machine"
+
+	username := ""
+	if u, err := user.Current(); err == nil {
+		username = u.Username
+		// Windows reports DOMAIN\user; only the account name is wanted.
+		if i := strings.LastIndexAny(username, `\/`); i >= 0 {
+			username = username[i+1:]
+		}
+	}
+
+	name := host
+	if username != "" && !strings.EqualFold(host, username) {
+		name = host + "-" + username
+	}
+	// A hostname or username can contain characters that are awkward in a filename.
+	return strings.NewReplacer("/", "-", `\`, "-", ":", "-", " ", "-", "*", "-", "?", "-").Replace(name)
 }
 
 // newLogger returns a printf-style logger that appends to session-sync.log.

@@ -2,6 +2,7 @@ package archive
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -56,14 +57,22 @@ type Shard struct {
 	Machine       string             `json:"machine"`
 	Projects      map[string]Project `json:"projects"`
 
-	// Sessions is what this machine contributed to the browsable index.
-	//
-	// It lives in the shard for the same reason the projects do: INDEX.md is a single
-	// file at the archive root, so a machine that regenerated it from only its own
-	// sessions would erase every other machine's listing on each push. Cached here,
-	// the index can be rebuilt from every shard without re-reading transcripts across
-	// a cloud filesystem.
+	// Sessions is only read from shards written before the index was split out into
+	// its own file. New pushes write index/<machine>.json instead: session rows grow
+	// without bound, and the manifest is read by every import and every doctor run,
+	// which should not mean parsing megabytes of index data to find a handful of
+	// project paths.
 	Sessions []Session `json:"sessions,omitempty"`
+}
+
+// IndexDir holds the per-machine session listings that INDEX.md is rendered from.
+func IndexDir(dest string) string { return filepath.Join(dest, "index") }
+
+// SessionIndex is one machine's contribution to the browsable index.
+type SessionIndex struct {
+	SchemaVersion int       `json:"schemaVersion"`
+	Machine       string    `json:"machine"`
+	Sessions      []Session `json:"sessions"`
 }
 
 // Session is one row of the browsable index.
@@ -78,20 +87,121 @@ type Session struct {
 }
 
 // AllSessions returns the index rows every machine has recorded.
+//
+// Reads index/<machine>.json, falling back to sessions embedded in a shard written by
+// an older version so an existing archive keeps its listing.
 func AllSessions(dest string) ([]Session, error) {
+	byMachine := map[string][]Session{}
+
+	if entries, err := os.ReadDir(IndexDir(dest)); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".json") {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(IndexDir(dest), e.Name()))
+			if err != nil {
+				continue // one unreadable listing must not hide the others
+			}
+			var idx SessionIndex
+			if json.Unmarshal(raw, &idx) != nil {
+				continue
+			}
+			if idx.Machine == "" {
+				idx.Machine = strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+			}
+			byMachine[idx.Machine] = idx.Sessions
+		}
+	}
+
 	shards, _, err := ReadShards(dest)
 	if err != nil {
 		return nil, err
 	}
-	var out []Session
 	for _, s := range shards {
-		for _, sess := range s.Sessions {
-			sess.Machine = s.Machine
+		if _, ok := byMachine[s.Machine]; !ok && len(s.Sessions) > 0 {
+			byMachine[s.Machine] = s.Sessions
+		}
+	}
+
+	var out []Session
+	for machine, sessions := range byMachine {
+		for _, sess := range sessions {
+			sess.Machine = machine
 			out = append(out, sess)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
 	return out, nil
+}
+
+// WriteSessionIndex stores this machine's index rows.
+func WriteSessionIndex(dest, machine string, sessions []Session) error {
+	data, err := json.MarshalIndent(SessionIndex{
+		SchemaVersion: SchemaVersion,
+		Machine:       machine,
+		Sessions:      sessions,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(filepath.Join(IndexDir(dest), machine+".json"), append(data, '\n'), 0o644)
+}
+
+// Machines summarises who has contributed to this archive.
+type MachineInfo struct {
+	Name     string
+	Projects int
+	Sessions int
+	LastSeen string
+}
+
+// Machines lists every machine recorded in the archive.
+//
+// A machine that is renamed, retired or reinstalled leaves its shard behind, and
+// nothing can infer that it is gone - so the tool reports what it sees and lets a
+// human decide, rather than deleting another machine's data on a guess.
+func Machines(dest string) ([]MachineInfo, error) {
+	shards, _, err := ReadShards(dest)
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := AllSessions(dest)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	for _, s := range sessions {
+		counts[s.Machine]++
+	}
+
+	var out []MachineInfo
+	for name, s := range shards {
+		info := MachineInfo{Name: name, Projects: len(s.Projects), Sessions: counts[name]}
+		for _, p := range s.Projects {
+			if p.Seen > info.LastSeen {
+				info.LastSeen = p.Seen
+			}
+		}
+		out = append(out, info)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// ForgetMachine removes one machine's shard and index.
+//
+// Its transcripts are left untouched under projects/ - they are the irreplaceable
+// part, and dropping them because a machine name changed would be catastrophic.
+func ForgetMachine(dest, machine string) error {
+	shard := filepath.Join(ManifestDir(dest), machine+".json")
+	if _, err := os.Stat(shard); err != nil {
+		return fmt.Errorf("no machine named %q in this archive", machine)
+	}
+	if err := os.Remove(shard); err != nil {
+		return err
+	}
+	os.Remove(filepath.Join(IndexDir(dest), machine+".json"))
+	return nil
 }
 
 // ReadShards loads every manifest shard in the archive.

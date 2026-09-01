@@ -6,6 +6,17 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`import`** - the round trip is complete. Resolves each archived project to a
+  local folder by identity (recorded path, then git remote, then a unique folder
+  name), files its transcripts into the right bucket and rewrites the paths recorded
+  inside them. Ambiguity is reported and skipped, never guessed, and the output names
+  which rung matched.
+- **`restore`** - the primitive import calls, for filing a folder by hand. Rewrites
+  four path forms and re-validates every line as JSON before keeping the result.
+- **`pull`** - blunt same-bucket-name copy for identical layouts.
+- **`machines`** - list who has pushed to the archive, and `--forget` a retired
+  machine. Shards are now keyed by hostname AND username, so two accounts on one
+  machine no longer overwrite each other.
 - **`push`** - the tool now actually archives. Copies new and changed transcripts and
   memory to the destination, writes this machine's manifest shard, regenerates
   `INDEX.md`, and takes a lock so a scheduled run and a session-end run cannot
@@ -41,6 +52,17 @@ All notable changes to this project are documented here. This project follows
   a recursive copy would never have placed the file.
 
 ### Fixed
+- `INDEX.md` was regenerated from the local machine only, so pushing from a second
+  machine erased the first machine's listing - the same defect the sharded manifest
+  exists to prevent. Index rows now live in `index/<machine>.json` and INDEX.md is
+  built from all of them; keeping them out of the manifest also stops every import
+  and doctor run parsing session rows it does not need.
+- `doctor` reported two archivers installed when only the PowerShell one was, because
+  "sync-claude-sessions.ps1" contains "claude-sessions".
+- Nothing stopped the archive being set inside `~/.claude`, where each push would
+  copy its own output without bound.
+- `import` recorded a "different repository" note but never printed it, so those
+  projects vanished silently from the text output.
 - `push --json` wrote its progress line to stdout, making the output unparseable.
   Progress now goes to stderr.
 - `WriteFileAtomic` deleted the destination and retried when rename failed, working

@@ -24,6 +24,14 @@ func main() {
 	switch os.Args[1] {
 	case "push":
 		err = cmdPush(os.Args[2:])
+	case "pull":
+		err = cmdPull(os.Args[2:])
+	case "import":
+		err = cmdImport(os.Args[2:])
+	case "restore":
+		err = cmdRestore(os.Args[2:])
+	case "machines":
+		err = cmdMachines(os.Args[2:])
 	case "ls":
 		err = cmdLs(os.Args[2:])
 	case "search", "grep":
@@ -71,6 +79,10 @@ usage:
 
 commands:
   push        copy new and changed sessions to the archive
+  import      file an archive onto THIS machine, matching projects by identity
+  pull        copy archived sessions into buckets of the same name
+  restore     file one folder of transcripts, rewriting an old project path
+  machines    list machines that have pushed here, or forget one
   ls          list sessions on this machine
   search      search the text of every session
   stats       session counts and sizes per project
@@ -80,7 +92,7 @@ commands:
   version     print the version
 
 not yet implemented (see DESIGN.md for the build order):
-  pull import restore render install uninstall backup
+  render install uninstall backup
 
 common flags:
   --claude-dir <path>   override $CLAUDE_CONFIG_DIR / ~/.claude
@@ -93,5 +105,6 @@ examples:
   claude-sessions ls --project airos --since 2026-08-01
   claude-sessions search "connection pool"
   claude-sessions push --dry-run
+  claude-sessions import --search-root ~/dev --dry-run
 `)
 }

@@ -37,13 +37,14 @@ by `-`. Three consequences, and the third is the one that bites:
    `claude --resume` on one machine cannot see the other's conversations — even after
    you copy the files across.
 
-> ### Status: early, but it backs up
+> ### Status: the round trip works
 >
-> `push`, `ls`, `search`, `stats`, `doctor`, `config` and `completion` work and are
-> tested. **`pull`, `import`, `restore`, `render`, `install` and `backup` are designed
-> but not yet built** — so archiving works today, but you run `push` yourself; it does
-> not yet install a hook to run at the end of every session. See
-> [DESIGN.md](DESIGN.md) for the architecture and build order.
+> `push`, `import`, `pull`, `restore`, `machines`, `ls`, `search`, `stats`, `doctor`,
+> `config` and `completion` work and are tested — you can archive from one machine and
+> file it onto another whose projects live at different paths. **`render`, `install`
+> and `backup` are designed but not yet built**, so you run `push` yourself rather
+> than it running at the end of every session. See [DESIGN.md](DESIGN.md) for the
+> architecture and build order.
 >
 > Developed and used on **Windows**. The macOS and Linux paths pass CI but have had
 > little real-world exercise. Reports welcome — see
@@ -84,6 +85,15 @@ claude-sessions search "that thing about retries"         # find it again
 Until `install` lands, run `push` yourself — from a shell alias, a cron job, or Task
 Scheduler. It is safe to run as often as you like: it copies only what changed.
 
+On your **second machine**, point at the same folder and let it work out where each
+project lives here:
+
+```sh
+claude-sessions config set-destination ~/Dropbox/claude-sessions
+claude-sessions import --search-root ~/dev --dry-run   # see what it would do
+claude-sessions import --search-root ~/dev
+```
+
 `doctor` is the one to run first. It tells you in plain terms whether your
 conversations are being backed up, whether Claude Code is quietly deleting them, and
 whether anything in your archive could not be restored onto a new machine:
@@ -94,8 +104,8 @@ whether anything in your archive could not be restored onto a new machine:
   ! retention        cleanupPeriodDays unset, so Claude Code applies its 30-day default
   + archive          G:\My Drive\claude-sessions (session-sync.json)
   ! manifest         3 of 5 archived bucket(s) have no usable identity: e--legacy-app, ...
-  + session hook     claude-sessions push --quiet
-  + sweep            Task Scheduler: ready, last run 9/1/2026 8:51:04 AM, result 0
+  ! session hook     no SessionEnd hook installed
+  ! sweep            Task Scheduler: not registered
 
   retention: Local transcripts are deleted a month after they are written. Raise it in settings.json.
   manifest: Identity is read from a transcript's cwd, so a bucket holding only memory
@@ -138,6 +148,61 @@ session-end run cannot interleave writes. Every run appends one line to
 Change detection compares size and modification time **with two seconds of
 tolerance**, because synced filesystems round timestamps — an exact comparison
 re-uploads the whole archive on every run.
+
+### `import` — file an archive onto this machine
+
+The command the project exists for. For each archived project it works out where that
+project lives *here*, files its transcripts into the right bucket, and rewrites the
+paths recorded inside them so `claude --resume` finds them.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--search-root <dirs>` | parents of known projects, plus `$HOME` | Comma-separated folders to scan |
+| `--depth <n>` | `3` | How deep to scan under each root |
+| `--dry-run` | off | Report what would happen, write nothing |
+| `--include-bare-name` | off | Also replace the bare folder name inside transcripts |
+| `--json` | off | Machine-readable result |
+
+Output names which rung of the ladder matched — `recorded path`, `git remote` or
+`folder name` — so you can see *why* something was placed where it was. Anything
+ambiguous is listed and skipped, never guessed.
+
+Run it with `--dry-run` first.
+
+### `pull` — same-layout copy
+
+Copies archived transcripts into buckets of the same name, with no matching and no
+rewriting. Correct only when both machines use identical paths; `import` is what you
+want otherwise, and the output says so.
+
+### `restore` — file one folder by hand
+
+The primitive `import` calls, for anything it could not place — say a folder of
+transcripts recovered from an old laptop:
+
+```sh
+claude-sessions restore --source '/mnt/old/e--airv2-frontend-web' \
+    --project-path 'E:\airos-frontend' --rewrite-from 'E:\airv2-frontend-web'
+```
+
+It reports how many lines it rewrote in each form, and warns when lines still mention
+the old folder name without a path prefix — those are package names, git remotes and
+prose, which `--include-bare-name` will also replace if you really want.
+
+**Every rewritten line is re-validated as JSON before the result is kept.** If any
+line would be corrupted, the output is discarded and nothing is left behind: a
+transcript that no longer parses is worse than no transcript.
+
+### `machines` — who has pushed here
+
+```sh
+claude-sessions machines                  # list contributors
+claude-sessions machines --forget OLD-PC  # drop a retired machine's manifest
+```
+
+Shards are keyed by hostname **and username**, so two accounts on one machine do not
+overwrite each other. `--forget` removes only a machine's manifest and index entries —
+its transcripts stay in the archive.
 
 ### `ls` — list sessions
 
@@ -320,7 +385,7 @@ files but no transcripts, so there is no recorded path to match on. They are saf
 archived; they just cannot be auto-placed on another machine.
 
 **A session I copied across does not appear in `claude --resume`.** It is in the wrong
-bucket — which `import`/`restore` will fix once built. Note that since Claude Code
+bucket - `claude-sessions import` fixes that. Note that since Claude Code
 v2.1.223, `claude --resume <session-id>` searches every project on the machine, and
 `Ctrl+A` in the picker widens to all projects, so you can often find it without moving
 anything.
