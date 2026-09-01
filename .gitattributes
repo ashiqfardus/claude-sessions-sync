@@ -1,0 +1,8 @@
+# Normalise to LF in the repository regardless of the contributor's platform.
+* text=auto eol=lf
+
+# Transcripts are UTF-8 JSON Lines with LF endings; never let a checkout rewrite them.
+*.jsonl -text
+
+*.png binary
+*.pdf binary

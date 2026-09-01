@@ -1,0 +1,16 @@
+# Build output
+/claude-sessions
+/claude-sessions.exe
+/dist/
+
+# Go
+*.test
+*.out
+
+# Never commit anything resembling real session data or credentials.
+# Fixtures under testdata/ must be hand-scrubbed before they are added.
+*.jsonl
+!testdata/**/*.jsonl
+.credentials.json
+.claude.json
+session-sync.json
