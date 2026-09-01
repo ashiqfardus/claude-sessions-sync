@@ -43,12 +43,49 @@ func Sweep() (Status, error) {
 	if status != "" {
 		parts = append(parts, strings.ToLower(status))
 	}
-	if lastRun != "" {
-		parts = append(parts, "last run "+lastRun)
+
+	// A task that has never run reports the sentinel date 30/11/1999 and result
+	// 267011 (0x41303, "the task has not yet run"). Printing those verbatim reads as
+	// a failure from the last century, which is how it looked the first time this was
+	// run against a fresh install.
+	if neverRun(lastRun, lastResult) {
+		parts = append(parts, "not yet run")
+	} else {
+		if lastRun != "" {
+			parts = append(parts, "last run "+lastRun)
+		}
+		if lastResult != "" {
+			parts = append(parts, "result "+describeResult(lastResult))
+		}
 	}
-	if lastResult != "" {
-		parts = append(parts, "result "+lastResult)
-	}
+
 	s.Detail = strings.Join(parts, ", ")
 	return s, nil
+}
+
+func neverRun(lastRun, lastResult string) bool {
+	return strings.Contains(lastRun, "1999") || strings.TrimSpace(lastResult) == "267011"
+}
+
+// describeResult translates the Task Scheduler codes worth naming. Anything else is
+// passed through: an unexplained number the user can search for beats a wrong guess.
+func describeResult(code string) string {
+	switch strings.TrimSpace(code) {
+	case "0":
+		return "0 (success)"
+	case "267009":
+		return "currently running"
+	case "267010":
+		return "not yet run"
+	case "267011":
+		return "not yet run"
+	case "267014":
+		return "terminated by user"
+	case "2147750687":
+		return "an instance was already running"
+	case "2147943645":
+		return "the service is not available (is the user logged on?)"
+	default:
+		return code
+	}
 }
