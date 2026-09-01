@@ -188,20 +188,62 @@ func Machines(dest string) ([]MachineInfo, error) {
 	return out, nil
 }
 
-// ForgetMachine removes one machine's shard and index.
+// ForgetMachine removes one machine's shard, index and rendered pages.
 //
 // Its transcripts are left untouched under projects/ - they are the irreplaceable
-// part, and dropping them because a machine name changed would be catastrophic.
-func ForgetMachine(dest, machine string) error {
+// part, and dropping them because a machine name changed would be catastrophic. The
+// HTML pages are removed, because leaving them behind means a retired machine's
+// sessions stay browsable while being absent from every listing.
+//
+// Returns how many pages were removed.
+func ForgetMachine(dest, machine string) (int, error) {
 	shard := filepath.Join(ManifestDir(dest), machine+".json")
 	if _, err := os.Stat(shard); err != nil {
-		return fmt.Errorf("no machine named %q in this archive", machine)
+		return 0, fmt.Errorf("no machine named %q in this archive", machine)
 	}
+
+	// Read the sessions before deleting the index that names them.
+	var pages []string
+	if raw, err := os.ReadFile(filepath.Join(IndexDir(dest), machine+".json")); err == nil {
+		var idx SessionIndex
+		if json.Unmarshal(raw, &idx) == nil {
+			for _, s := range idx.Sessions {
+				pages = append(pages, filepath.Join(dest, "html", s.Bucket, s.ID+".html"))
+			}
+		}
+	}
+
 	if err := os.Remove(shard); err != nil {
-		return err
+		return 0, err
 	}
 	os.Remove(filepath.Join(IndexDir(dest), machine+".json"))
-	return nil
+
+	removed := 0
+	for _, p := range pages {
+		// Only pages no other machine also contributed: a shared bucket is normal.
+		if stillClaimed(dest, filepath.Base(p)) {
+			continue
+		}
+		if err := os.Remove(p); err == nil {
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+// stillClaimed reports whether any remaining machine lists this session.
+func stillClaimed(dest, pageName string) bool {
+	id := strings.TrimSuffix(pageName, filepath.Ext(pageName))
+	sessions, err := AllSessions(dest)
+	if err != nil {
+		return true // unsure: keep the page rather than delete something in use
+	}
+	for _, s := range sessions {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // ReadShards loads every manifest shard in the archive.

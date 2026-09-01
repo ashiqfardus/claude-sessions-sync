@@ -6,6 +6,9 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- `render --exclude` and a `renderExclude` config key: archiving a project and
+  publishing it as a readable web page are different decisions.
+- `doctor` reports whether the HTML is current.
 - **`render`** - self-contained mobile HTML for every archived session, plus an index,
   run automatically at the end of each push. Tool calls, results and thinking collapse
   behind disclosure triangles; oversized blocks are truncated with a pointer to the
@@ -61,6 +64,19 @@ All notable changes to this project are documented here. This project follows
   a recursive copy would never have placed the file.
 
 ### Fixed
+- **Rendered pages published every injected `<system-reminder>`** into the archive.
+  `contentText` had always stripped them; `contentBlocks`, added for rendering, did
+  not - so the plumbing Claude Code splices into a message was written out as readable
+  HTML in a cloud folder. Found by a realistic test fixture, not by review.
+- Thinking blocks that Claude Code records with a signature but no text were dropped
+  silently; a page now says how many were not recorded rather than showing nothing.
+- `html/index.html` listed every session ever, the same defect already fixed in
+  `INDEX.md`. Capped, with a note about what is not shown, and pages themselves are
+  capped so one enormous session cannot produce a file no phone will open.
+- A page whose transcript was replaced with OLDER content - which is what `import`
+  does when it preserves archived timestamps - was treated as current forever.
+- `machines --forget` left the retired machine's pages behind, browsable but absent
+  from every listing.
 - **`uninstall` deleted a scheduled task it did not create.** The Windows sweep reused
   the PowerShell predecessor's task name, so removing "ours" removed theirs - which
   happened on a live machine during testing. The task is now named `claude-sessions-sync`,

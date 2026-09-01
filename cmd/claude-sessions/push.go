@@ -216,7 +216,11 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 	// problem must never fail a sync that has already succeeded, so this is wrapped
 	// and only ever logged.
 	if !dryRun && !noHTML {
-		if r, err := render.Archive(dest, false); err != nil {
+		cfg, _ := archive.LoadConfig(root)
+		if r, err := render.Archive(dest, render.Options{
+			Exclude:       cfg.RenderExclude,
+			LocalProjects: claude.ProjectsDir(root),
+		}); err != nil {
 			logf("HTML step failed (transcripts are still archived): %v", err)
 		} else {
 			logf("HTML: %d rendered, %d up to date", r.Rendered, r.UpToDate)

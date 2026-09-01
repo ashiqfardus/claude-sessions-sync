@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
@@ -181,6 +182,21 @@ func cmdDoctor(args []string) error {
 		add(check{"manifest format", levelInfo,
 			"flat projects.json only (written by the PowerShell tools)",
 			"Sharded manifest/<machine>.json arrives with `push`; until then concurrent pushes from two machines can drop entries."})
+	}
+
+	// Rendering is a user-visible feature that can quietly fall behind.
+	if pages, transcripts, newestStale := renderState(dest); transcripts > 0 {
+		switch {
+		case pages == 0:
+			add(check{"html", levelWarn, "no pages rendered yet",
+				"Run `claude-sessions render` to make the archive readable on a phone."})
+		case newestStale:
+			add(check{"html", levelWarn,
+				fmt.Sprintf("%d page(s) for %d transcript(s), and the newest session has no current page", pages, transcripts),
+				"Run `claude-sessions render`."})
+		default:
+			add(check{"html", levelOK, fmt.Sprintf("%d page(s) for %d transcript(s)", pages, transcripts), ""})
+		}
 	}
 
 	if memoryOnly > 0 {
@@ -378,4 +394,75 @@ func resolveRoot(override string) (string, claude.RootSource, error) {
 		return filepath.Clean(override), "--claude-dir", nil
 	}
 	return claude.Root()
+}
+
+// renderState summarises how current the HTML is.
+//
+// It compares counts and the newest transcript against its page, rather than every
+// file: doctor runs against a cloud filesystem and should not stat the whole archive
+// twice to answer a cosmetic question.
+func renderState(dest string) (pages, transcripts int, newestStale bool) {
+	buckets, err := archive.BucketNames(dest)
+	if err != nil {
+		return 0, 0, false
+	}
+
+	var newestPath, newestBucket string
+	var newestMod time.Time
+
+	for _, bucket := range buckets {
+		entries, err := os.ReadDir(filepath.Join(archive.ProjectsDir(dest), bucket))
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".jsonl") {
+				continue
+			}
+			transcripts++
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			if info.ModTime().After(newestMod) {
+				newestMod = info.ModTime()
+				newestBucket = bucket
+				newestPath = strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+			}
+		}
+	}
+
+	htmlDirs, err := os.ReadDir(filepath.Join(dest, "html"))
+	if err != nil {
+		return 0, transcripts, transcripts > 0
+	}
+	for _, d := range htmlDirs {
+		if !d.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(dest, "html", d.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if !f.IsDir() && strings.EqualFold(filepath.Ext(f.Name()), ".html") {
+				pages++
+			}
+		}
+	}
+
+	if newestPath != "" {
+		page := filepath.Join(dest, "html", newestBucket, newestPath+".html")
+		info, err := os.Stat(page)
+		if err != nil {
+			newestStale = true
+		} else {
+			drift := info.ModTime().Sub(newestMod)
+			if drift < 0 {
+				drift = -drift
+			}
+			newestStale = drift > archive.MTimeToleranceSeconds*time.Second
+		}
+	}
+	return pages, transcripts, newestStale
 }

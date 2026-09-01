@@ -24,20 +24,49 @@ import (
 // a phone cannot open, and the full text is one click away in the .jsonl.
 const maxBlockChars = 4000
 
+// maxPageBytes caps a whole page.
+//
+// Per-block truncation is not enough on its own: a long session is thousands of small
+// blocks, and a 40MB transcript would still produce something no phone will open.
+// Turns are rendered oldest-first, so the cap drops the tail and says so.
+const maxPageBytes = 2 << 20 // 2 MiB
+
+// maxIndexRows caps the session list.
+//
+// The same mistake as INDEX.md, which listed every session ever: at roughly a
+// kilobyte per row this is a megabyte at a thousand sessions, opened on a phone from
+// a cloud folder.
+const maxIndexRows = 300
+
+// Options controls a render pass.
+type Options struct {
+	// Force re-renders pages that are already current, for after a template change.
+	Force bool
+
+	// Exclude skips projects whose path or bucket contains any of these substrings,
+	// compared case-insensitively. Rendering makes a conversation readable to anyone
+	// who can open the folder, so there has to be a way to archive a project without
+	// publishing it.
+	Exclude []string
+
+	// LocalProjects, when set, is this machine's ~/.claude/projects. A transcript that
+	// is byte-identical there is read from local disk instead of back across the cloud
+	// filesystem the push just wrote it to.
+	LocalProjects string
+}
+
 // Result reports what a render pass did.
 type Result struct {
 	Rendered  int
 	UpToDate  int
 	Failed    int
+	Excluded  int
 	Skipped   int // transcript lines that did not parse
 	OutputDir string
 }
 
 // Archive renders every transcript in the archive.
-//
-// force re-renders pages that are already current, which is what you want after
-// changing the template.
-func Archive(dest string, force bool) (Result, error) {
+func Archive(dest string, opts Options) (Result, error) {
 	res := Result{OutputDir: filepath.Join(dest, "html")}
 
 	buckets, err := archive.BucketNames(dest)
@@ -75,6 +104,11 @@ func Archive(dest string, force bool) (Result, error) {
 			project = p.Path
 		}
 
+		if excluded(project, bucket, opts.Exclude) {
+			res.Excluded++
+			continue
+		}
+
 		for _, f := range files {
 			if f.IsDir() || !strings.EqualFold(filepath.Ext(f.Name()), ".jsonl") {
 				continue
@@ -89,7 +123,18 @@ func Archive(dest string, force bool) (Result, error) {
 				continue
 			}
 
-			page, err := renderOne(src, project, id, force, out, info)
+			// Prefer this machine's own copy when it is byte-identical: push has just
+			// written it across, and reading it straight back is a needless round trip
+			// through a cloud filesystem.
+			read := src
+			if opts.LocalProjects != "" {
+				local := filepath.Join(opts.LocalProjects, bucket, f.Name())
+				if li, err := os.Stat(local); err == nil && li.Size() == info.Size() {
+					read = local
+				}
+			}
+
+			page, err := renderOne(read, project, id, opts.Force, out, info)
 			switch {
 			case err != nil:
 				// One bad transcript must not stop the rest: the point of the archive
@@ -113,11 +158,23 @@ func Archive(dest string, force bool) (Result, error) {
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Updated.After(entries[j].Updated) })
 
+	total := len(entries)
+	omitted := 0
+	if total > maxIndexRows {
+		omitted = total - maxIndexRows
+		entries = entries[:maxIndexRows]
+	}
+
 	var b strings.Builder
 	b.WriteString(pageHead("Claude sessions"))
 	b.WriteString(`<h1>Claude sessions</h1>`)
-	fmt.Fprintf(&b, `<p class="meta">%d session(s) &middot; updated %s</p>`,
-		len(entries), html.EscapeString(time.Now().Format("2006-01-02 15:04")))
+	fmt.Fprintf(&b, `<p class="meta">%d session(s) &middot; updated %s`,
+		total, html.EscapeString(time.Now().Format("2006-01-02 15:04")))
+	if omitted > 0 {
+		fmt.Fprintf(&b, `<br>showing the %d most recent; %d older are in <code>projects/</code> and <code>index/</code>`,
+			maxIndexRows, omitted)
+	}
+	b.WriteString(`</p>`)
 
 	byProject := map[string][]indexEntry{}
 	for _, e := range entries {
@@ -154,9 +211,10 @@ func Archive(dest string, force bool) (Result, error) {
 }
 
 type pageInfo struct {
-	upToDate bool
-	prompt   string
-	skipped  int
+	upToDate           bool
+	prompt             string
+	skipped            int
+	unrecordedThinking int
 }
 
 func renderOne(src, project, id string, force bool, out string, srcInfo os.FileInfo) (pageInfo, error) {
@@ -165,9 +223,17 @@ func renderOne(src, project, id string, force bool, out string, srcInfo os.FileI
 	// Up to date when the page is at least as new as the transcript. The same
 	// tolerance as everywhere else: a synced filesystem rounds timestamps, and an
 	// exact comparison would re-render the whole archive on every run.
+	// Pages carry their source's timestamp, so "current" means the two match - not
+	// merely that the page is newer. A transcript replaced with OLDER content, which
+	// is exactly what import does when it preserves archived timestamps, would
+	// otherwise leave a stale page that never re-renders.
 	if !force {
 		if outInfo, err := os.Stat(out); err == nil {
-			if !outInfo.ModTime().Before(srcInfo.ModTime().Add(-archive.MTimeToleranceSeconds * time.Second)) {
+			drift := outInfo.ModTime().Sub(srcInfo.ModTime())
+			if drift < 0 {
+				drift = -drift
+			}
+			if drift <= archive.MTimeToleranceSeconds*time.Second {
 				if s, err := claude.ScanHead(src, 200); err == nil {
 					info.prompt = s.FirstPrompt
 				}
@@ -180,6 +246,7 @@ func renderOne(src, project, id string, force bool, out string, srcInfo os.FileI
 	var body strings.Builder
 	var first time.Time
 	var last time.Time
+	var truncatedTurns int
 
 	stats, err := claude.Walk(src, func(r claude.Record) bool {
 		if info.prompt == "" && r.Type == "user" && !r.IsMeta && r.Text != "" {
@@ -194,7 +261,15 @@ func renderOne(src, project, id string, force bool, out string, srcInfo os.FileI
 			}
 			last = r.Timestamp
 		}
-		writeTurn(&body, r)
+
+		// Per-block truncation alone is not enough: a long session is thousands of
+		// small blocks. Keep reading, so the summary counts stay honest, but stop
+		// adding to the page.
+		if body.Len() >= maxPageBytes {
+			truncatedTurns++
+			return true
+		}
+		info.unrecordedThinking += writeTurn(&body, r)
 		return true
 	})
 	if err != nil {
@@ -215,6 +290,16 @@ func renderOne(src, project, id string, force bool, out string, srcInfo os.FileI
 	b.WriteString(`</p>`)
 	b.WriteString(body.String())
 
+	if truncatedTurns > 0 {
+		fmt.Fprintf(&b, `<p class="skipped">This session is too long to show in full. %d later turn(s) are not on this page; the complete record is in the .jsonl.</p>`,
+			truncatedTurns)
+	}
+	if info.unrecordedThinking > 0 {
+		// Claude Code stores a signature but no text for these. Saying so is honest;
+		// rendering nothing at all leaves the reader wondering what is missing.
+		fmt.Fprintf(&b, `<p class="skipped">%d thinking block(s) in this session were not recorded by Claude Code, so there is nothing to show for them.</p>`,
+			info.unrecordedThinking)
+	}
 	if stats.Skipped > 0 {
 		// Say so rather than pretending the page is complete. The transcript format is
 		// internal to Claude Code and changes between releases.
@@ -231,9 +316,11 @@ func renderOne(src, project, id string, force bool, out string, srcInfo os.FileI
 	return info, nil
 }
 
-func writeTurn(b *strings.Builder, r claude.Record) {
+// writeTurn renders one message, returning how many thinking blocks carried no text.
+func writeTurn(b *strings.Builder, r claude.Record) int {
+	unrecorded := 0
 	if len(r.Blocks) == 0 {
-		return
+		return 0
 	}
 
 	role := r.Role
@@ -243,7 +330,7 @@ func writeTurn(b *strings.Builder, r claude.Record) {
 	switch role {
 	case "user", "assistant":
 	default:
-		return // system plumbing: not part of the conversation
+		return 0 // system plumbing: not part of the conversation
 	}
 
 	when := ""
@@ -259,6 +346,10 @@ func writeTurn(b *strings.Builder, r claude.Record) {
 		case "text":
 			b.WriteString(formatBody(blk.Text))
 		case "thinking":
+			if strings.TrimSpace(blk.Text) == "" {
+				unrecorded++
+				continue
+			}
 			// Collapsed: interesting when you want it, noise when you do not.
 			b.WriteString(`<details class="thinking"><summary>thinking</summary>`)
 			b.WriteString(formatBody(blk.Text))
@@ -287,6 +378,21 @@ func writeTurn(b *strings.Builder, r claude.Record) {
 		}
 	}
 	b.WriteString(`</div>`)
+	return unrecorded
+}
+
+// excluded reports whether a project should be left unrendered.
+func excluded(project, bucket string, patterns []string) bool {
+	for _, p := range patterns {
+		p = strings.TrimSpace(strings.ToLower(p))
+		if p == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(project), p) || strings.Contains(strings.ToLower(bucket), p) {
+			return true
+		}
+	}
+	return false
 }
 
 // formatBody escapes everything, then promotes ``` fences to code blocks.

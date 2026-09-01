@@ -16,6 +16,11 @@ import (
 // implementation on purpose: an existing install keeps working after the switch.
 type Config struct {
 	Destination string `json:"destination"`
+
+	// RenderExclude names projects whose pages should not be written. Rendering makes
+	// a conversation readable to anyone who can open the synced folder, which is a
+	// different decision from archiving it.
+	RenderExclude []string `json:"renderExclude,omitempty"`
 }
 
 // ConfigPath is where the destination is persisted.
@@ -85,6 +90,9 @@ func SaveConfig(claudeRoot string, c Config) error {
 		_ = json.Unmarshal(raw, &merged) // a corrupt file is replaced, not honoured
 	}
 	merged["destination"] = c.Destination
+	if c.RenderExclude != nil {
+		merged["renderExclude"] = c.RenderExclude
+	}
 
 	data, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {

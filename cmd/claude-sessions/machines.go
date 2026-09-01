@@ -38,11 +38,13 @@ func cmdMachines(args []string) error {
 	}
 
 	if *forget != "" {
-		if err := archive.ForgetMachine(dest, *forget); err != nil {
+		pages, err := archive.ForgetMachine(dest, *forget)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("Forgot %q. Its transcripts are still in the archive under projects/;\n", *forget)
-		fmt.Println("only its manifest and index entries were removed.")
+		fmt.Printf("Forgot %q: manifest, index and %d rendered page(s) removed.\n", *forget, pages)
+		fmt.Println("Its transcripts are still in the archive under projects/ - they are the")
+		fmt.Println("irreplaceable part and are never deleted here.")
 		fmt.Println("Run `claude-sessions push` to rebuild INDEX.md without it.")
 		return nil
 	}

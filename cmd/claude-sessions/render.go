@@ -4,8 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/render"
 )
 
@@ -14,6 +16,7 @@ func cmdRender(args []string) error {
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	archiveDir := fs.String("archive", "", "override the synced destination folder")
 	force := fs.Bool("force", false, "re-render pages that are already up to date")
+	exclude := fs.String("exclude", "", "comma-separated text; projects matching any of it are not rendered")
 	quiet := fs.Bool("quiet", false, "print nothing on success")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -34,7 +37,17 @@ func cmdRender(args []string) error {
 		return fmt.Errorf("%s is not reachable - is the sync client mounted?", dest)
 	}
 
-	res, err := render.Archive(dest, *force)
+	cfg, _ := archive.LoadConfig(root)
+	patterns := cfg.RenderExclude
+	if strings.TrimSpace(*exclude) != "" {
+		patterns = append(patterns, strings.Split(*exclude, ",")...)
+	}
+
+	res, err := render.Archive(dest, render.Options{
+		Force:         *force,
+		Exclude:       patterns,
+		LocalProjects: claude.ProjectsDir(root),
+	})
 	if err != nil {
 		return err
 	}

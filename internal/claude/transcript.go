@@ -250,8 +250,16 @@ func contentText(raw json.RawMessage) string {
 		text = strings.Join(parts, " ")
 	}
 
-	text = injected.ReplaceAllString(text, " ")
+	text = stripInjected(text)
 	return strings.TrimSpace(strings.Join(strings.Fields(text), " "))
+}
+
+// stripInjected removes the plumbing Claude Code splices into a message.
+func stripInjected(text string) string {
+	if text == "" {
+		return ""
+	}
+	return injected.ReplaceAllString(text, " ")
 }
 
 // rawBlock is the tolerant view of one content block. Every field is optional.
@@ -277,10 +285,11 @@ func contentBlocks(raw json.RawMessage) []Block {
 
 	var asString string
 	if json.Unmarshal(raw, &asString) == nil {
-		if strings.TrimSpace(asString) == "" {
+		text := stripInjected(asString)
+		if strings.TrimSpace(text) == "" {
 			return nil
 		}
-		return []Block{{Kind: "text", Text: asString}}
+		return []Block{{Kind: "text", Text: text}}
 	}
 
 	var raws []rawBlock
@@ -292,11 +301,15 @@ func contentBlocks(raw json.RawMessage) []Block {
 	for _, rb := range raws {
 		switch rb.Type {
 		case "thinking":
-			if rb.Thinking != "" {
-				out = append(out, Block{Kind: "thinking", Text: rb.Thinking})
-			} else if rb.Text != "" {
-				out = append(out, Block{Kind: "thinking", Text: rb.Text})
+			// Kept even when empty. Claude Code stores a signature and no text for
+			// some thinking blocks; dropping them here would leave the renderer with
+			// nothing to report, so a reader could not tell the difference between
+			// "did not think" and "the thinking was not recorded".
+			text := rb.Thinking
+			if text == "" {
+				text = rb.Text
 			}
+			out = append(out, Block{Kind: "thinking", Text: text})
 		case "tool_use":
 			out = append(out, Block{Kind: "tool_use", Name: rb.Name, Text: prettyJSON(rb.Input)})
 		case "tool_result":
@@ -312,7 +325,11 @@ func contentBlocks(raw json.RawMessage) []Block {
 			if kind == "" {
 				kind = "text"
 			}
-			if text != "" {
+			// Strip the blocks Claude Code splices into a user turn. contentText has
+			// always done this; contentBlocks did not, so rendered pages published
+			// every system-reminder into a cloud folder.
+			text = stripInjected(text)
+			if strings.TrimSpace(text) != "" {
 				out = append(out, Block{Kind: kind, Text: text})
 			}
 		}

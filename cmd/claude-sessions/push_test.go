@@ -303,3 +303,38 @@ func TestPushJSON(t *testing.T) {
 		t.Error("the report should name the archive it wrote to")
 	}
 }
+
+// push renders the pages at the end, as the PowerShell implementation did. The
+// wiring was previously verified only by watching a log line.
+func TestPushRendersHTML(t *testing.T) {
+	f := newFixture(t)
+
+	if out, err := f.push(t); err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+
+	index := filepath.Join(f.archive, "html", "index.html")
+	if _, err := os.Stat(index); err != nil {
+		t.Fatalf("push did not render the index: %v", err)
+	}
+	page := filepath.Join(f.archive, "html", "e--work-airos-frontend",
+		"11111111-2222-3333-4444-555555555555.html")
+	raw, err := os.ReadFile(page)
+	if err != nil {
+		t.Fatalf("push did not render the session page: %v", err)
+	}
+	if !strings.Contains(string(raw), "fix the login redirect") {
+		t.Error("the rendered page is missing the conversation")
+	}
+}
+
+func TestPushNoHTMLSkipsRendering(t *testing.T) {
+	f := newFixture(t)
+
+	if out, err := f.push(t, "--no-html"); err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(f.archive, "html")); err == nil {
+		t.Error("--no-html should not write any pages")
+	}
+}

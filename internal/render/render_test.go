@@ -37,7 +37,7 @@ func TestRenderEscapesContent(t *testing.T) {
 	dest := writeArchive(t,
 		`{"type":"user","cwd":"/work/api","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"fix <script>alert('xss')</script> please"}}`)
 
-	if _, err := Archive(dest, false); err != nil {
+	if _, err := Archive(dest, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	got := page(t, dest)
@@ -59,7 +59,7 @@ func TestRenderCollapsesToolsAndResults(t *testing.T) {
 		`{"type":"user","timestamp":"2026-08-30T09:00:02.000Z","message":{"role":"user","content":[`+
 			`{"type":"tool_result","content":"total 4\ndrwxr-xr-x"}]}}`)
 
-	if _, err := Archive(dest, false); err != nil {
+	if _, err := Archive(dest, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	got := page(t, dest)
@@ -85,7 +85,7 @@ func TestRenderTruncatesHugeBlocks(t *testing.T) {
 	dest := writeArchive(t,
 		`{"type":"user","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"`+huge+`"}}`)
 
-	if _, err := Archive(dest, false); err != nil {
+	if _, err := Archive(dest, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	got := page(t, dest)
@@ -105,7 +105,7 @@ func TestRenderSurvivesTruncatedTranscript(t *testing.T) {
 		`{"type":"user","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"a real question"}}`,
 		`{"type":"user","timestamp":"2026-08-30T09:0`)
 
-	res, err := Archive(dest, false)
+	res, err := Archive(dest, Options{})
 	if err != nil {
 		t.Fatalf("a truncated line must not be fatal: %v", err)
 	}
@@ -131,10 +131,10 @@ func TestRenderSkipsUpToDatePages(t *testing.T) {
 	dest := writeArchive(t,
 		`{"type":"user","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"hello"}}`)
 
-	if _, err := Archive(dest, false); err != nil {
+	if _, err := Archive(dest, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := Archive(dest, false)
+	res, err := Archive(dest, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestRenderSkipsUpToDatePages(t *testing.T) {
 	}
 
 	// --force exists for when the template changes.
-	res, err = Archive(dest, true)
+	res, err = Archive(dest, Options{Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestRenderSkipsUpToDatePages(t *testing.T) {
 func TestRenderPicksUpChangedTranscript(t *testing.T) {
 	dest := writeArchive(t,
 		`{"type":"user","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"first"}}`)
-	if _, err := Archive(dest, false); err != nil {
+	if _, err := Archive(dest, Options{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,7 +171,7 @@ func TestRenderPicksUpChangedTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := Archive(dest, false)
+	res, err := Archive(dest, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestRenderWritesIndex(t *testing.T) {
 	dest := writeArchive(t,
 		`{"type":"user","cwd":"/work/api","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"why is the build failing"}}`)
 
-	if _, err := Archive(dest, false); err != nil {
+	if _, err := Archive(dest, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dest, "html", "index.html"))
@@ -221,10 +221,116 @@ func TestRenderCreatesNoEmptyDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Archive(dest, false); err != nil {
+	if _, err := Archive(dest, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dest, "html", "e--memory-only")); err == nil {
 		t.Error("an empty html directory was created for a bucket with no transcripts")
+	}
+}
+
+// A realistic session, generated rather than scrubbed from a real one: transcripts
+// contain file contents and whatever was being discussed, so committing a real
+// fixture would leak. This exercises the shapes a real page has to survive - mixed
+// block kinds, an unknown kind, a code fence, CRLF, a BOM, an oversized result, and a
+// half-written final line.
+func realisticTranscript() string {
+	var lines []string
+	add := func(s string) { lines = append(lines, s) }
+
+	add(`{"type":"user","cwd":"/work/api","sessionId":"real-1","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"the deploy is failing on staging<system-reminder>be concise</system-reminder>"}}`)
+	add(`{"type":"assistant","timestamp":"2026-08-30T09:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":""},{"type":"text","text":"Let me look at the logs."},{"type":"tool_use","name":"Bash","input":{"command":"kubectl logs deploy/api --tail=50"}}]}}`)
+	add(`{"type":"user","timestamp":"2026-08-30T09:00:05.000Z","message":{"role":"user","content":[{"type":"tool_result","content":"` + strings.Repeat("log line here. ", 600) + `"}]}}`)
+	add(`{"type":"assistant","timestamp":"2026-08-30T09:00:09.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Found it. The readiness probe path changed:\n\n` + "```" + `yaml\nreadinessProbe:\n  httpGet:\n    path: /healthz\n` + "```" + `\n\nFix that and redeploy."}]}}`)
+	add(`{"type":"assistant","timestamp":"2026-08-30T09:00:11.000Z","message":{"role":"assistant","content":[{"type":"some_future_block","text":"a shape this version has never seen"}]}}`)
+	add(`{"type":"summary","summary":"deploy fix"}`)
+	add(`{"type":"assistant","timestamp":"2026-08-30T09:0`) // killed mid-write
+
+	// A BOM on the first line and CRLF endings throughout, as a Windows-written file.
+	return string([]byte{0xEF, 0xBB, 0xBF}) + strings.Join(lines, "\r\n") + "\r\n"
+}
+
+func TestRenderRealisticSession(t *testing.T) {
+	dest := t.TempDir()
+	bucket := filepath.Join(dest, "projects", "e--work-api")
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bucket, "session-1.jsonl"), []byte(realisticTranscript()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Archive(dest, Options{})
+	if err != nil {
+		t.Fatalf("a realistic transcript must render: %v", err)
+	}
+	if res.Rendered != 1 {
+		t.Fatalf("rendered = %d, want 1", res.Rendered)
+	}
+	if res.Skipped != 1 {
+		t.Errorf("skipped = %d, want 1 (the half-written final line)", res.Skipped)
+	}
+
+	got := page(t, dest)
+
+	for _, want := range []string{
+		"the deploy is failing on staging", // the real question survives
+		"Found it",
+		"readinessProbe",                 // fenced code became a block
+		"<pre><code>",                    //
+		`&#9881; Bash`,                   // tool call collapsed
+		"kubectl logs",                   //
+		"a shape this version has never", // unknown kind still rendered
+		"truncated",                      // the huge result was cut
+		"could not be parsed",            // the bad line is admitted
+		"not recorded by Claude Code",    // the empty thinking block is accounted for
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q from the rendered page", want)
+		}
+	}
+
+	// The reminder Claude Code injects is not part of what the user typed.
+	if strings.Contains(got, "be concise") {
+		t.Error("an injected system-reminder leaked into the page")
+	}
+}
+
+func TestRenderExcludesProjects(t *testing.T) {
+	dest := writeArchive(t,
+		`{"type":"user","cwd":"/work/api","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"client work"}}`)
+
+	res, err := Archive(dest, Options{Exclude: []string{"work-api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Excluded != 1 || res.Rendered != 0 {
+		t.Errorf("excluded=%d rendered=%d, want 1 and 0", res.Excluded, res.Rendered)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "html", "e--work-api")); err == nil {
+		t.Error("an excluded project must not be rendered at all")
+	}
+}
+
+// A very long session must not produce a page no phone will open.
+func TestRenderCapsPageSize(t *testing.T) {
+	var lines []string
+	for i := 0; i < 4000; i++ {
+		lines = append(lines,
+			`{"type":"user","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"`+
+				strings.Repeat("a", 1000)+`"}}`)
+	}
+	dest := writeArchive(t, lines...)
+
+	if _, err := Archive(dest, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	got := page(t, dest)
+
+	if len(got) > maxPageBytes*2 {
+		t.Errorf("page is %d bytes, well over the %d cap", len(got), maxPageBytes)
+	}
+	if !strings.Contains(got, "too long to show in full") {
+		t.Error("a capped page should say what it left out")
 	}
 }
