@@ -15,6 +15,7 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/render"
 )
 
 type pushResult struct {
@@ -34,11 +35,12 @@ func cmdPush(args []string) error {
 	quiet := fs.Bool("quiet", false, "hook mode: log instead of printing, and never fail")
 	dryRun := fs.Bool("dry-run", false, "report what would be copied without writing")
 	asJSON := fs.Bool("json", false, "machine-readable output")
+	noHTML := fs.Bool("no-html", false, "skip rendering the mobile HTML pages")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	err := runPush(*claudeDir, *archiveDir, *quiet, *dryRun, *asJSON)
+	err := runPush(*claudeDir, *archiveDir, *quiet, *dryRun, *asJSON, *noHTML)
 
 	// A SessionEnd hook that fails breaks the end of the user's session. Missing
 	// drive, offline mount, unexpected error: log it and exit 0. This is the single
@@ -49,7 +51,7 @@ func cmdPush(args []string) error {
 	return err
 }
 
-func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err error) {
+func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (err error) {
 	root, _, err := resolveRoot(claudeDir)
 	if err != nil {
 		return err
@@ -209,6 +211,17 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON bool) (err erro
 
 	logf("PUSH: %d copied, %d unchanged, %d session(s), %d project(s) -> %s",
 		res.Copied, res.Unchanged, res.Sessions, res.Projects, dest)
+
+	// Readable pages for phones and tablets. Best-effort by design: a rendering
+	// problem must never fail a sync that has already succeeded, so this is wrapped
+	// and only ever logged.
+	if !dryRun && !noHTML {
+		if r, err := render.Archive(dest, false); err != nil {
+			logf("HTML step failed (transcripts are still archived): %v", err)
+		} else {
+			logf("HTML: %d rendered, %d up to date", r.Rendered, r.UpToDate)
+		}
+	}
 
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)

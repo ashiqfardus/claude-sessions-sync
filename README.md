@@ -183,6 +183,25 @@ scheduled task is present it is reported, not deleted — pass
 `--replace-powershell-sweep` if you want it gone. `uninstall` checks that the task
 actually runs this binary before removing it.
 
+### `render` — read your history on a phone
+
+Writes a self-contained HTML page per session under `<archive>/html/`, plus an
+index. Runs automatically at the end of every `push` (`--no-html` opts out).
+
+```sh
+claude-sessions render          # only what changed
+claude-sessions render --force  # everything, after a template change
+```
+
+Tool calls, results and thinking are collapsed behind disclosure triangles, code
+fences become scrollable blocks, and any block over 4000 characters is truncated with
+a pointer back to the `.jsonl`. Pages carry no JavaScript and no external stylesheet,
+because they are opened from a cloud folder on a phone where neither reliably works.
+They follow your system light/dark setting.
+
+A transcript that cannot be rendered is counted and skipped, never fatal, and a page
+says how many lines it could not parse rather than pretending to be complete.
+
 ### `import` — file an archive onto this machine
 
 The command the project exists for. For each archived project it works out where that

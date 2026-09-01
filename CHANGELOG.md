@@ -6,6 +6,11 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **`render`** - self-contained mobile HTML for every archived session, plus an index,
+  run automatically at the end of each push. Tool calls, results and thinking collapse
+  behind disclosure triangles; oversized blocks are truncated with a pointer to the
+  `.jsonl`; content is escaped before any formatting. No JavaScript and no external
+  stylesheet, because these are opened from a cloud folder on a phone.
 - **`install`** / **`uninstall`** - a SessionEnd hook plus a periodic sweep (Task
   Scheduler, launchd, or a systemd timer). The hook merge round-trips settings.json as
   a generic document, so every other setting and every other tool's hooks survive, and

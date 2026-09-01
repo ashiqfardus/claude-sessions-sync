@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,11 +18,23 @@ type Record struct {
 	Type      string    // "user", "assistant", or something a later release invented
 	Role      string    // message.role, when present
 	Text      string    // human-readable text, with injected blocks removed
+	Blocks    []Block   // the message's content, structured, for rendering
 	Timestamp time.Time // zero when absent or in an unrecognised layout
 	Cwd       string    // the project's real absolute path, as Claude recorded it
 	SessionID string
 	IsMeta    bool
 	Line      int // 1-based line number, for reporting a match
+}
+
+// Block is one piece of a message's content.
+//
+// Kinds seen in practice are text, thinking, tool_use and tool_result; anything else
+// is carried through with whatever text could be extracted, so a shape introduced by
+// a later Claude Code release still renders as something rather than vanishing.
+type Block struct {
+	Kind string // "text", "thinking", "tool_use", "tool_result", or whatever was found
+	Text string
+	Name string // tool name, for tool_use
 }
 
 // Stats reports what a walk saw.
@@ -103,6 +116,7 @@ func Walk(path string, fn func(Record) bool) (Stats, error) {
 						Type:      e.Type,
 						Role:      e.Message.Role,
 						Text:      contentText(e.Message.Content),
+						Blocks:    contentBlocks(e.Message.Content),
 						Timestamp: parseTime(e.Timestamp),
 						Cwd:       e.Cwd,
 						SessionID: e.SessionID,
@@ -238,6 +252,106 @@ func contentText(raw json.RawMessage) string {
 
 	text = injected.ReplaceAllString(text, " ")
 	return strings.TrimSpace(strings.Join(strings.Fields(text), " "))
+}
+
+// rawBlock is the tolerant view of one content block. Every field is optional.
+type rawBlock struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text"`
+	Thinking string          `json:"thinking"`
+	Name     string          `json:"name"`
+	Input    json.RawMessage `json:"input"`
+	Content  json.RawMessage `json:"content"`
+}
+
+// contentBlocks structures a message's content for rendering.
+//
+// A plain string becomes a single text block, which is how a simple user turn is
+// stored. Anything whose shape is not recognised still yields a block carrying
+// whatever text could be found, so a format change degrades the display rather than
+// emptying it.
+func contentBlocks(raw json.RawMessage) []Block {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var asString string
+	if json.Unmarshal(raw, &asString) == nil {
+		if strings.TrimSpace(asString) == "" {
+			return nil
+		}
+		return []Block{{Kind: "text", Text: asString}}
+	}
+
+	var raws []rawBlock
+	if json.Unmarshal(raw, &raws) != nil {
+		return nil
+	}
+
+	var out []Block
+	for _, rb := range raws {
+		switch rb.Type {
+		case "thinking":
+			if rb.Thinking != "" {
+				out = append(out, Block{Kind: "thinking", Text: rb.Thinking})
+			} else if rb.Text != "" {
+				out = append(out, Block{Kind: "thinking", Text: rb.Text})
+			}
+		case "tool_use":
+			out = append(out, Block{Kind: "tool_use", Name: rb.Name, Text: prettyJSON(rb.Input)})
+		case "tool_result":
+			out = append(out, Block{Kind: "tool_result", Text: flattenResult(rb.Content)})
+		case "image":
+			out = append(out, Block{Kind: "image", Text: "(image)"})
+		default:
+			text := rb.Text
+			if text == "" {
+				text = rb.Thinking
+			}
+			kind := rb.Type
+			if kind == "" {
+				kind = "text"
+			}
+			if text != "" {
+				out = append(out, Block{Kind: kind, Text: text})
+			}
+		}
+	}
+	return out
+}
+
+// flattenResult reduces a tool result, which is a string or a list of blocks.
+func flattenResult(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var asString string
+	if json.Unmarshal(raw, &asString) == nil {
+		return asString
+	}
+	var raws []rawBlock
+	if json.Unmarshal(raw, &raws) != nil {
+		return string(raw)
+	}
+	var parts []string
+	for _, rb := range raws {
+		if rb.Text != "" {
+			parts = append(parts, rb.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// prettyJSON formats a tool's input readably, falling back to the raw bytes.
+func prettyJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+		return string(raw)
+	}
+	return buf.String()
 }
 
 // truncate cuts to max BYTES but never mid-rune: slicing a UTF-8 string at an
