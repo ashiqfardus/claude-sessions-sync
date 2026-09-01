@@ -34,15 +34,56 @@ Three things go wrong with that:
 
 ## Before you start
 
-You need **one folder that syncs to the cloud**. Google Drive, OneDrive, Dropbox,
-iCloud Drive, Syncthing, or a NAS share — any of them. This tool just writes files into
-a folder you choose; whatever you already use does the uploading.
+### Do I need Google Drive, Dropbox or OneDrive installed?
 
-Make a note of that folder's path. For example:
+**Only if you want your history off this computer** — which is usually the whole
+point.
 
-- Windows: `G:\My Drive\claude-sessions`
-- macOS: `~/Library/Mobile Documents/com~apple~CloudDocs/claude-sessions`
-- Linux: `~/Dropbox/claude-sessions`
+This tool does not talk to any cloud service. It copies files into **a folder on your
+own disk**, and nothing more. Getting that folder to the cloud is somebody else's job:
+
+| What you want | What you need installed |
+|---|---|
+| History on your phone, or on another computer | **Yes** — the desktop sync app for whichever service you use, signed in, with a folder synced to this machine |
+| A copy on an external drive or a NAS share | No — just point it at that path |
+| Only a second copy on this same machine | No — point it at any folder you like |
+
+The desktop app is the part that matters. A web browser tab of Drive or Dropbox is not
+enough: the tool needs a **real folder it can write to**.
+
+- **Google Drive** — install [Drive for desktop](https://www.google.com/drive/download/).
+  On Windows it appears as a drive letter, usually `G:\My Drive`. On macOS it is
+  `~/Library/CloudStorage/GoogleDrive-<you>/My Drive`.
+- **OneDrive** — already built into Windows 11; sign in and you get `%USERPROFILE%\OneDrive`.
+  On macOS, install it from the App Store.
+- **Dropbox** — install the desktop app; you get `~/Dropbox`.
+- **iCloud Drive** (macOS) — already there:
+  `~/Library/Mobile Documents/com~apple~CloudDocs`.
+- **Syncthing / NAS / USB drive** — anything that gives you a path works.
+
+> If you skip this entirely, everything still works — your history is just backed up to
+> another folder on the same computer, which protects you from Claude Code's 30-day
+> deletion but not from losing the machine.
+
+### Pick your folder
+
+Decide where the archive should live and note the path. It does not have to exist yet,
+but its **parent must** — the tool refuses to create a folder where an unmounted cloud
+drive should be, because that would give you a "backup" that never leaves the machine.
+
+Examples:
+
+| Service | Typical path |
+|---|---|
+| Google Drive (Windows) | `G:\My Drive\claude-sessions` |
+| Google Drive (macOS) | `~/Library/CloudStorage/GoogleDrive-you@gmail.com/My Drive/claude-sessions` |
+| OneDrive (Windows) | `C:\Users\you\OneDrive\claude-sessions` |
+| Dropbox | `~/Dropbox/claude-sessions` |
+| iCloud Drive (macOS) | `~/Library/Mobile Documents/com~apple~CloudDocs/claude-sessions` |
+| No cloud, external disk | `D:\backups\claude-sessions` |
+
+The tool can often find Drive, OneDrive, Dropbox or iCloud on its own — but setting it
+explicitly in Step 2 means every run agrees on where your history goes.
 
 ---
 
@@ -198,8 +239,28 @@ claude-sessions render
 claude-sessions render --exclude "client-acme,secret-project"
 ```
 
-They are still backed up; they just are not turned into web pages. See
-[Privacy](#privacy) below.
+It reports what it withdrew:
+
+```
+1 project(s) excluded; 6 previously published page(s) removed.
+```
+
+Excluding **deletes pages that were already published**, not just future ones — the
+whole point is to stop something being readable. The transcripts stay in the archive,
+untouched; only the generated HTML goes.
+
+To make it permanent so every `push` respects it, add it to your config file
+`~/.claude/session-sync.json`:
+
+```json
+{
+  "destination": "G:\\My Drive\\claude-sessions",
+  "renderExclude": ["client-acme", "secret-project"]
+}
+```
+
+`claude-sessions doctor` then lists what is being withheld, so a typo that matches
+nothing does not quietly publish it anyway. See [Privacy](#privacy) below.
 
 ---
 
@@ -328,9 +389,10 @@ discuss — which for most people includes commercially sensitive work.
   sharing — and to anyone the folder is shared with.
 - **`render` turns them into readable web pages** in `html/`. This is a real step up in
   exposure compared to raw `.jsonl`: anyone who can open the folder can now *read* your
-  conversations in a browser, including through a cloud provider's own file preview.
-  Use `render --exclude`, or `push --no-html`, for anything that should not be that
-  legible.
+  conversations in a browser, including through a cloud provider’s own file preview.
+  Use `render --exclude` or the `renderExclude` config key for anything that should not
+  be that legible, or `push --no-html` to stop rendering entirely. Excluding a project
+  also **removes pages already published for it**.
 - **`INDEX.md` at the top of the archive lists the opening line of every session**, so
   the gist of your history is visible at a glance.
 - **The tool itself never transmits anything.** No network calls, no telemetry, no

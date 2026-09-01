@@ -57,12 +57,13 @@ type Options struct {
 
 // Result reports what a render pass did.
 type Result struct {
-	Rendered  int
-	UpToDate  int
-	Failed    int
-	Excluded  int
-	Skipped   int // transcript lines that did not parse
-	OutputDir string
+	Rendered    int
+	UpToDate    int
+	Failed      int
+	Excluded    int
+	Unpublished int // pages removed because a project is now excluded
+	Skipped     int // transcript lines that did not parse
+	OutputDir   string
 }
 
 // Archive renders every transcript in the archive.
@@ -106,6 +107,17 @@ func Archive(dest string, opts Options) (Result, error) {
 
 		if excluded(project, bucket, opts.Exclude) {
 			res.Excluded++
+			// Withdraw anything already published for this project.
+			//
+			// Excluding without removing is worse than having no exclude at all: the
+			// user asks for a project to stop being readable, is told it worked, and
+			// the pages stay exactly where they were. Only generated HTML is deleted -
+			// the transcripts it was rendered from are untouched.
+			n, err := removePages(res.OutputDir, bucket)
+			if err != nil {
+				res.Failed++
+			}
+			res.Unpublished += n
 			continue
 		}
 
@@ -129,8 +141,17 @@ func Archive(dest string, opts Options) (Result, error) {
 			read := src
 			if opts.LocalProjects != "" {
 				local := filepath.Join(opts.LocalProjects, bucket, f.Name())
+				// Size AND timestamp: same size with different content is unlikely but
+				// possible, and rendering local bytes while the page claims to be the
+				// archive is not a trade worth making to save one read.
 				if li, err := os.Stat(local); err == nil && li.Size() == info.Size() {
-					read = local
+					drift := li.ModTime().Sub(info.ModTime())
+					if drift < 0 {
+						drift = -drift
+					}
+					if drift <= archive.MTimeToleranceSeconds*time.Second {
+						read = local
+					}
 				}
 			}
 
@@ -267,6 +288,9 @@ func renderOne(src, project, id string, force bool, out string, srcInfo os.FileI
 		// adding to the page.
 		if body.Len() >= maxPageBytes {
 			truncatedTurns++
+			// Still counted, so the figures at the foot of the page describe the whole
+			// session rather than only the part that fitted.
+			info.unrecordedThinking += countUnrecordedThinking(r)
 			return true
 		}
 		info.unrecordedThinking += writeTurn(&body, r)
@@ -379,6 +403,46 @@ func writeTurn(b *strings.Builder, r claude.Record) int {
 	}
 	b.WriteString(`</div>`)
 	return unrecorded
+}
+
+// countUnrecordedThinking reports thinking blocks Claude Code stored without text.
+func countUnrecordedThinking(r claude.Record) int {
+	n := 0
+	for _, blk := range r.Blocks {
+		if blk.Kind == "thinking" && strings.TrimSpace(blk.Text) == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// removePages deletes the generated pages for one bucket, and the directory if it is
+// then empty. Only .html files are touched: this must never reach a transcript.
+func removePages(htmlDir, bucket string) (int, error) {
+	dir := filepath.Join(htmlDir, bucket)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, nil // nothing published for this project
+	}
+
+	removed := 0
+	var firstErr error
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".html") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		removed++
+	}
+
+	// Leaves the directory alone if anything else is in it.
+	os.Remove(dir)
+	return removed, firstErr
 }
 
 // excluded reports whether a project should be left unrendered.

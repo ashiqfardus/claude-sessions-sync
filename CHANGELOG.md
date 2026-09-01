@@ -64,6 +64,16 @@ All notable changes to this project are documented here. This project follows
   a recursive copy would never have placed the file.
 
 ### Fixed
+- **`render --exclude` did not remove pages it had already published.** The flag
+  existed to stop a project being readable, reported success, and left every page
+  exactly where it was - a privacy control that only appeared to work. Excluding now
+  withdraws the pages and the index entry; the transcripts are untouched.
+- `machines --forget` re-read every manifest and index file once per page to decide
+  what to delete. Retiring a machine with 500 sessions meant 500 full manifest reads
+  across a cloud filesystem.
+- `doctor` told you to run `render` when nothing was rendered because everything was
+  deliberately excluded, and never showed which patterns were in force - so one that
+  matched nothing published what you believed was withheld.
 - **Rendered pages published every injected `<system-reminder>`** into the archive.
   `contentText` had always stripped them; `contentBlocks`, added for rendering, did
   not - so the plumbing Claude Code splices into a message was written out as readable

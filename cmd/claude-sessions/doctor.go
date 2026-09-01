@@ -185,8 +185,18 @@ func cmdDoctor(args []string) error {
 	}
 
 	// Rendering is a user-visible feature that can quietly fall behind.
+	cfg, _ := archive.LoadConfig(root)
+	if len(cfg.RenderExclude) > 0 {
+		// A pattern that matches nothing publishes what the user believed was
+		// withheld, so show what is configured and what it actually caught.
+		add(check{"html excluded", levelInfo,
+			fmt.Sprintf("not published as pages: %s", strings.Join(cfg.RenderExclude, ", ")),
+			"Check these match the projects you meant; a pattern that matches nothing silently publishes them."})
+	}
 	if pages, transcripts, newestStale := renderState(dest); transcripts > 0 {
 		switch {
+		case pages == 0 && len(cfg.RenderExclude) > 0:
+			add(check{"html", levelInfo, "no pages, and every project is excluded", ""})
 		case pages == 0:
 			add(check{"html", levelWarn, "no pages rendered yet",
 				"Run `claude-sessions render` to make the archive readable on a phone."})

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -18,6 +19,7 @@ func cmdRender(args []string) error {
 	force := fs.Bool("force", false, "re-render pages that are already up to date")
 	exclude := fs.String("exclude", "", "comma-separated text; projects matching any of it are not rendered")
 	quiet := fs.Bool("quiet", false, "print nothing on success")
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -52,9 +54,22 @@ func cmdRender(args []string) error {
 		return err
 	}
 
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
+	}
+
 	if !*quiet {
 		fmt.Printf("\nRendered %d, %d already up to date -> %s\n",
 			res.Rendered, res.UpToDate, res.OutputDir)
+		if res.Excluded > 0 {
+			fmt.Printf("%d project(s) excluded", res.Excluded)
+			if res.Unpublished > 0 {
+				fmt.Printf("; %d previously published page(s) removed", res.Unpublished)
+			}
+			fmt.Println(".")
+		}
 		if res.Failed > 0 {
 			fmt.Printf("%d transcript(s) could not be rendered; their .jsonl files are untouched.\n", res.Failed)
 		}

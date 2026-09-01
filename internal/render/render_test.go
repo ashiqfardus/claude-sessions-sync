@@ -334,3 +334,73 @@ func TestRenderCapsPageSize(t *testing.T) {
 		t.Error("a capped page should say what it left out")
 	}
 }
+
+// The case that matters, and the one the previous exclusion test missed: a project
+// that has ALREADY been published must be withdrawn when it is excluded. Excluding
+// without removing tells the user their conversations are no longer readable while
+// leaving them exactly where they were.
+func TestExcludeWithdrawsAlreadyPublishedPages(t *testing.T) {
+	dest := writeArchive(t,
+		`{"type":"user","cwd":"/work/api","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"client work"}}`)
+
+	if _, err := Archive(dest, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	published := filepath.Join(dest, "html", "e--work-api", "session-1.html")
+	if _, err := os.Stat(published); err != nil {
+		t.Fatalf("setup: the page should exist first: %v", err)
+	}
+
+	res, err := Archive(dest, Options{Exclude: []string{"work-api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Unpublished != 1 {
+		t.Errorf("unpublished = %d, want 1", res.Unpublished)
+	}
+	if _, err := os.Stat(published); err == nil {
+		t.Error("the page is still published after the project was excluded")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "html", "e--work-api")); err == nil {
+		t.Error("the empty directory should go too")
+	}
+
+	// The transcript it was rendered from must be untouched: only generated HTML is
+	// ever deleted.
+	if _, err := os.Stat(filepath.Join(dest, "projects", "e--work-api", "session-1.jsonl")); err != nil {
+		t.Errorf("exclusion must never touch a transcript: %v", err)
+	}
+
+	// And it must be gone from the index too.
+	raw, err := os.ReadFile(filepath.Join(dest, "html", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "client work") {
+		t.Error("an excluded project is still listed in the index")
+	}
+}
+
+// Re-running with the same exclusion must stay quiet rather than reporting removals
+// that did not happen.
+func TestExcludeIsIdempotent(t *testing.T) {
+	dest := writeArchive(t,
+		`{"type":"user","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"hi"}}`)
+
+	if _, err := Archive(dest, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Archive(dest, Options{Exclude: []string{"work-api"}}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Archive(dest, Options{Exclude: []string{"work-api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Unpublished != 0 {
+		t.Errorf("nothing was left to remove, got unpublished = %d", res.Unpublished)
+	}
+	if res.Excluded != 1 {
+		t.Errorf("excluded = %d, want 1", res.Excluded)
+	}
+}

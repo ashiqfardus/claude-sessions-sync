@@ -218,10 +218,27 @@ func ForgetMachine(dest, machine string) (int, error) {
 	}
 	os.Remove(filepath.Join(IndexDir(dest), machine+".json"))
 
+	// Build the set of sessions the remaining machines still claim, once.
+	//
+	// Asking that question per page meant re-reading and re-parsing every shard and
+	// index file for each one: retiring a machine with 500 sessions was 500 full
+	// manifest reads across a cloud filesystem.
+	claimed := map[string]bool{}
+	remaining, err := AllSessions(dest)
+	if err != nil {
+		// Unsure which sessions survive: keep every page rather than delete one that
+		// is still in use.
+		return 0, nil
+	}
+	for _, s := range remaining {
+		claimed[s.ID] = true
+	}
+
 	removed := 0
 	for _, p := range pages {
-		// Only pages no other machine also contributed: a shared bucket is normal.
-		if stillClaimed(dest, filepath.Base(p)) {
+		// A bucket shared with another machine keeps its pages.
+		id := strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+		if claimed[id] {
 			continue
 		}
 		if err := os.Remove(p); err == nil {
@@ -229,21 +246,6 @@ func ForgetMachine(dest, machine string) (int, error) {
 		}
 	}
 	return removed, nil
-}
-
-// stillClaimed reports whether any remaining machine lists this session.
-func stillClaimed(dest, pageName string) bool {
-	id := strings.TrimSuffix(pageName, filepath.Ext(pageName))
-	sessions, err := AllSessions(dest)
-	if err != nil {
-		return true // unsure: keep the page rather than delete something in use
-	}
-	for _, s := range sessions {
-		if s.ID == id {
-			return true
-		}
-	}
-	return false
 }
 
 // ReadShards loads every manifest shard in the archive.
