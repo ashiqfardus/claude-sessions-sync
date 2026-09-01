@@ -198,9 +198,12 @@ jobs:
 
           grep -q "hook      SessionEnd" install.log || { echo "FAIL: no hook reported"; exit 1; }
 
-          # The sweep is best-effort on a runner; say which happened, do not fail on it.
+          # Record whether the scheduler registered, for the informational step below.
           if grep -q "sweep     FAILED" install.log; then
             echo "NOTE: scheduler unavailable on this runner - hook-only install"
+            echo "sweep=degraded" >> "$GITHUB_ENV"
+          else
+            echo "sweep=registered" >> "$GITHUB_ENV"
           fi
 
           # The hook must be a real, runnable binary at the path that was installed.
@@ -243,3 +246,18 @@ jobs:
           assert "SessionEnd" not in s.get("hooks", {}), "our hook was not removed"
           print("settings.json intact and our hook gone")
           PY
+
+      # The scheduler is allowed to fail on a runner, but whether it did is worth
+      # knowing. A CI runner has no login session, so launchd and systemd may refuse
+      # for reasons that would not apply on a real desktop - and that difference is
+      # exactly the gap real-world reports are asked to close.
+      #
+      # The result is encoded as this step's conclusion so it is visible without
+      # downloading logs: green means the sweep really registered on this OS.
+      - name: scheduler registered (informational, may fail on a runner)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "sweep: ${sweep:-unknown}"
+          [ "${sweep:-}" = "registered" ]
