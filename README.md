@@ -24,21 +24,23 @@ Three things go wrong with that:
    `claude --resume` on one machine cannot see the other's conversations — even if you
    copy the files across by hand.
 
-> **Status:** everything below works and is tested.
+> **Status: verified on Windows, macOS and Linux.**
 >
-> **Every push to this repository runs the full test suite on Windows, macOS and
-> Linux**, and separately installs the tool on each of the three — registering the
-> real session hook, archiving a session through it, rendering the pages, and
-> uninstalling again while checking that nothing else in `settings.json` was touched.
-> The launchd, systemd and Task Scheduler definitions are asserted on every platform,
-> not just the one they run on.
+> Every push runs the full test suite on all three, and separately performs a **real
+> install** on each: it seeds a `settings.json` containing another tool's hook,
+> installs, runs the installed binary exactly as the session hook would, checks the
+> session was archived and rendered, checks the hook still exits 0 when the archive is
+> unreachable, uninstalls, and asserts the other tool's hook and every unrelated
+> setting survived.
 >
-> What CI cannot cover is a real desktop: a GitHub runner has no login session, so
-> `launchctl` on macOS and `systemctl --user` on Linux may decline to start the
-> 30-minute sweep there. The session hook — which archives every normally-ended
-> session — is verified on all three. If the sweep does not register on your machine,
-> [please say so](.github/ISSUE_TEMPLATE/platform_report.yml); that is the one gap
-> real-world reports still close.
+> **The 30-minute sweep registers on all three** — launchd on macOS, a systemd user
+> timer on Linux, Task Scheduler on Windows — and CI reports per-OS whether it did, so
+> a regression there cannot hide.
+>
+> Day-to-day use is still mostly Windows, so
+> [reports from real macOS and Linux desktops](.github/ISSUE_TEMPLATE/platform_report.yml)
+> remain the most useful thing you can contribute — particularly whether the sweep
+> survives a logout, which no CI runner can tell us.
 
 ---
 
@@ -501,10 +503,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md); [DESIGN.md](DESIGN.md) explains the
 architecture and the constraints each command satisfies. Security policy:
 [SECURITY.md](SECURITY.md).
 
-**Especially wanted: real-desktop macOS and Linux reports** - specifically whether the
-30-minute sweep registers. CI installs and uninstalls on all three platforms every
-push, but a CI runner has no login session, so launchd and systemd may decline there
-for reasons that would not apply on your machine.
+**Especially wanted: real-desktop macOS and Linux reports.** CI installs, runs and
+uninstalls on all three platforms every push, and the sweep does register on each -
+but a runner cannot tell us whether it survives a logout, a reboot, or a laptop lid
+closing for three days. That is what a person on a real desktop can.
 
 ## License
 

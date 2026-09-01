@@ -61,12 +61,10 @@ file contents, paths, and whatever you happened to be discussing.
 
 ## Especially wanted
 
-**Real-desktop macOS and Linux reports**, specifically whether the 30-minute sweep
-registers. CI now installs and uninstalls on all three platforms on every push, and
-the launchd/systemd/Task Scheduler definitions are asserted from any platform - but a
-CI runner has no login session, so `launchctl bootstrap` and `systemctl --user` may
-decline there for reasons that do not apply on a real desktop. That is the one gap
-only a person can close.
+**Real-desktop macOS and Linux reports.** CI installs, runs and uninstalls on all
+three platforms every push, and the sweep registers on each of them - verified, not
+assumed. What a runner cannot tell us is whether it survives a logout, a reboot, or a
+machine asleep for days. That is the gap only a person on a real desktop can close.
 
 Also useful: transcripts that break the reader (describe the shape, do not paste
 private content), and any Claude Code release that changes the on-disk format.
