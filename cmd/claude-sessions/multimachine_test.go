@@ -174,3 +174,41 @@ func TestDoctorDetectsGenuineDuplicateArchivers(t *testing.T) {
 		t.Errorf("both archivers really are installed here:\n%s", out)
 	}
 }
+
+// A project deliberately withheld from rendering has no page by design. Reporting it
+// as a missing page produces a warning whose advice - run render - can never help.
+func TestDoctorIgnoresExcludedProjectsWhenCheckingPages(t *testing.T) {
+	f := newFixture(t)
+
+	if out, err := f.push(t); err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+
+	// Baseline: pages exist and doctor is happy.
+	out, err := f.run(t, "doctor")
+	if err != nil {
+		t.Fatalf("doctor failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "+ html") {
+		t.Errorf("expected a healthy html check to begin with:\n%s", out)
+	}
+
+	// Exclude the only project with sessions. doctor must not then claim the pages
+	// are missing or stale.
+	out, err = f.run(t, "doctor", "--exclude", "work-airos-frontend")
+	if err != nil {
+		t.Fatalf("doctor failed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "no current page") {
+		t.Errorf("an excluded project must not be reported as stale:\n%s", out)
+	}
+	if !strings.Contains(out, "html excluded") {
+		t.Errorf("doctor should say what is being withheld:\n%s", out)
+	}
+
+	// And the figures must agree with each other: pages for excluded projects are not
+	// counted against a transcript total that excludes them.
+	if strings.Contains(out, "page(s) for 0 transcript(s)") {
+		t.Errorf("page and transcript counts disagree:\n%s", out)
+	}
+}

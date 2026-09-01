@@ -105,7 +105,7 @@ func Archive(dest string, opts Options) (Result, error) {
 			project = p.Path
 		}
 
-		if excluded(project, bucket, opts.Exclude) {
+		if IsExcluded(project, bucket, opts.Exclude) {
 			res.Excluded++
 			// Withdraw anything already published for this project.
 			//
@@ -445,8 +445,12 @@ func removePages(htmlDir, bucket string) (int, error) {
 	return removed, firstErr
 }
 
-// excluded reports whether a project should be left unrendered.
-func excluded(project, bucket string, patterns []string) bool {
+// IsExcluded reports whether a project should be left unrendered.
+//
+// Exported so doctor asks the same question the renderer does. Two copies of this
+// rule would drift, and the failure mode is doctor reporting a project as missing its
+// page when it was deliberately withheld.
+func IsExcluded(project, bucket string, patterns []string) bool {
 	for _, p := range patterns {
 		p = strings.TrimSpace(strings.ToLower(p))
 		if p == "" {

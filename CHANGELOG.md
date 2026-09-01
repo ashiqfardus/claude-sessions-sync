@@ -64,6 +64,11 @@ All notable changes to this project are documented here. This project follows
   a recursive copy would never have placed the file.
 
 ### Fixed
+- `doctor` reported a project as missing its rendered page when it had been
+  deliberately excluded, and advised running `render`, which could never fix it. It
+  now asks the renderer the same question rather than keeping its own copy of the
+  rule, and its page and transcript counts agree with each other. `doctor --exclude`
+  lets you check the effect of an exclusion without editing your config first.
 - **`render --exclude` did not remove pages it had already published.** The flag
   existed to stop a project being readable, reported success, and left every page
   exactly where it was - a privacy control that only appeared to work. Excluding now

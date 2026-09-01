@@ -14,6 +14,7 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/hostagent"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/render"
 )
 
 type level string
@@ -43,6 +44,7 @@ func cmdDoctor(args []string) error {
 	archiveDir := fs.String("archive", "", "override the synced destination folder")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	noProbe := fs.Bool("no-write-probe", false, "skip the archive write test (which creates and deletes one file)")
+	exclude := fs.String("exclude", "", "additional render exclusions to take into account, on top of the config")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -186,16 +188,20 @@ func cmdDoctor(args []string) error {
 
 	// Rendering is a user-visible feature that can quietly fall behind.
 	cfg, _ := archive.LoadConfig(root)
-	if len(cfg.RenderExclude) > 0 {
+	excludePatterns := cfg.RenderExclude
+	if strings.TrimSpace(*exclude) != "" {
+		excludePatterns = append(excludePatterns, strings.Split(*exclude, ",")...)
+	}
+	if len(excludePatterns) > 0 {
 		// A pattern that matches nothing publishes what the user believed was
 		// withheld, so show what is configured and what it actually caught.
 		add(check{"html excluded", levelInfo,
-			fmt.Sprintf("not published as pages: %s", strings.Join(cfg.RenderExclude, ", ")),
+			fmt.Sprintf("not published as pages: %s", strings.Join(excludePatterns, ", ")),
 			"Check these match the projects you meant; a pattern that matches nothing silently publishes them."})
 	}
-	if pages, transcripts, newestStale := renderState(dest); transcripts > 0 {
+	if pages, transcripts, newestStale := renderState(dest, manifest, excludePatterns); transcripts > 0 {
 		switch {
-		case pages == 0 && len(cfg.RenderExclude) > 0:
+		case pages == 0 && len(excludePatterns) > 0:
 			add(check{"html", levelInfo, "no pages, and every project is excluded", ""})
 		case pages == 0:
 			add(check{"html", levelWarn, "no pages rendered yet",
@@ -411,7 +417,7 @@ func resolveRoot(override string) (string, claude.RootSource, error) {
 // It compares counts and the newest transcript against its page, rather than every
 // file: doctor runs against a cloud filesystem and should not stat the whole archive
 // twice to answer a cosmetic question.
-func renderState(dest string) (pages, transcripts int, newestStale bool) {
+func renderState(dest string, manifest map[string]archive.Project, exclude []string) (pages, transcripts int, newestStale bool) {
 	buckets, err := archive.BucketNames(dest)
 	if err != nil {
 		return 0, 0, false
@@ -421,6 +427,16 @@ func renderState(dest string) (pages, transcripts int, newestStale bool) {
 	var newestMod time.Time
 
 	for _, bucket := range buckets {
+		// A project the user deliberately withheld has no page by design. Counting it
+		// as missing produces a warning whose advice - run render - can never help.
+		project := bucket
+		if p, ok := manifest[bucket]; ok && p.Path != "" {
+			project = p.Path
+		}
+		if render.IsExcluded(project, bucket, exclude) {
+			continue
+		}
+
 		entries, err := os.ReadDir(filepath.Join(archive.ProjectsDir(dest), bucket))
 		if err != nil {
 			continue
@@ -448,6 +464,16 @@ func renderState(dest string) (pages, transcripts int, newestStale bool) {
 	}
 	for _, d := range htmlDirs {
 		if !d.IsDir() {
+			continue
+		}
+		// Count only what is in scope, or the figures disagree with each other:
+		// pages left over from before an exclusion would be counted against a
+		// transcript total that no longer includes them.
+		project := d.Name()
+		if p, ok := manifest[d.Name()]; ok && p.Path != "" {
+			project = p.Path
+		}
+		if render.IsExcluded(project, d.Name(), exclude) {
 			continue
 		}
 		files, err := os.ReadDir(filepath.Join(dest, "html", d.Name()))
