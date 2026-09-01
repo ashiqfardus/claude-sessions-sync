@@ -37,13 +37,13 @@ by `-`. Three consequences, and the third is the one that bites:
    `claude --resume` on one machine cannot see the other's conversations — even after
    you copy the files across.
 
-> ### Status: early
+> ### Status: early, but it backs up
 >
-> `ls`, `search`, `stats`, `doctor`, `config` and `completion` work and are tested.
-> **`push`, `pull`, `import`, `restore`, `render`, `install` and `backup` are designed
-> but not yet built** — so this tool can currently *inspect and search* your history,
-> but cannot yet copy it anywhere by itself. See [DESIGN.md](DESIGN.md) for the
-> architecture and build order.
+> `push`, `ls`, `search`, `stats`, `doctor`, `config` and `completion` work and are
+> tested. **`pull`, `import`, `restore`, `render`, `install` and `backup` are designed
+> but not yet built** — so archiving works today, but you run `push` yourself; it does
+> not yet install a hook to run at the end of every session. See
+> [DESIGN.md](DESIGN.md) for the architecture and build order.
 >
 > Developed and used on **Windows**. The macOS and Linux paths pass CI but have had
 > little real-world exercise. Reports welcome — see
@@ -76,9 +76,13 @@ Prebuilt binaries arrive with the first tagged release.
 ```sh
 claude-sessions doctor                                    # is anything actually protected?
 claude-sessions config set-destination ~/Dropbox/claude-sessions
+claude-sessions push                                      # copy sessions to the archive
 claude-sessions ls                                        # what history exists here
 claude-sessions search "that thing about retries"         # find it again
 ```
+
+Until `install` lands, run `push` yourself — from a shell alias, a cron job, or Task
+Scheduler. It is safe to run as often as you like: it copies only what changed.
 
 `doctor` is the one to run first. It tells you in plain terms whether your
 conversations are being backed up, whether Claude Code is quietly deleting them, and
@@ -107,6 +111,34 @@ non-zero** when a check fails, so you can run it from a monitor or a cron job.
 
 ## Commands
 
+### `push` — copy sessions to the archive
+
+Copies new and changed transcripts and memory files, writes this machine's manifest
+shard, and regenerates `INDEX.md`.
+
+| Flag | Meaning |
+|---|---|
+| `--archive <path>` | Write somewhere other than the configured destination |
+| `--dry-run` | Report what would be copied, write nothing |
+| `--quiet` | Hook mode: log instead of printing, and **never fail** |
+| `--json` | Machine-readable result on stdout (progress goes to stderr) |
+
+What it does *not* do, deliberately:
+
+- **It never deletes from the archive.** A session that ages out locally survives.
+- **It never modifies your local transcripts.** They are only ever read.
+- **It never creates the destination's parent.** If your cloud drive is not mounted,
+  it refuses rather than quietly making a local folder and reporting success.
+- **It never copies `.credentials.json` or `.claude.json`.**
+
+Only one push runs at a time, guarded by a lock file, so a scheduled sweep and a
+session-end run cannot interleave writes. Every run appends one line to
+`<claude-dir>/session-sync.log`.
+
+Change detection compares size and modification time **with two seconds of
+tolerance**, because synced filesystems round timestamps — an exact comparison
+re-uploads the whole archive on every run.
+
 ### `ls` — list sessions
 
 The **PROJECT** column is the project's real path, read from inside the transcript —
@@ -129,7 +161,7 @@ Searches the text of every message. This is what makes an archive worth keeping.
 | `--project <text>` | — | Restrict to matching projects |
 | `--role <role>` | — | `user` or `assistant` only |
 | `--regexp` | off | Treat the query as a regular expression |
-| `--i` | on | Case-insensitive |
+| `--case-sensitive` | off | Match case exactly |
 | `--limit <n>` | `50` | Stop after this many matches |
 | `--json` | off | Machine-readable output |
 
@@ -158,6 +190,11 @@ Sessions, sizes and date ranges per project.
 | `session hook` | No hook, or **two archivers installed at once** |
 | `sweep` | The scheduled job is missing, or installed but **not running** |
 | `secrets` | **A credentials file is sitting in your synced cloud folder.** Fix immediately |
+
+`--json` returns the checks plus a `warnings`/`failures`/`ok` summary and the version
+that produced the report, so a monitor does not have to aggregate levels itself.
+`--no-write-probe` skips the writability test — the one part of this otherwise
+read-only command that writes, creating and deleting a single file in the archive.
 
 ### `config` — where the archive lives
 
@@ -203,9 +240,13 @@ What this tool does and does not do:
   never copied, and `doctor` fails loudly if it finds either anywhere in your archive.
 - **Nothing is ever deleted from the archive** by this tool.
 
-If some projects should never leave the machine, do not archive them. A per-project
-exclude list is planned but **not yet implemented** — until it lands, the destination
-is all-or-nothing.
+If some projects should never leave the machine, do not run `push` at all. A
+per-project exclude list is planned but **not yet implemented** — until it lands,
+`push` archives everything under your Claude projects directory. Encryption at rest is
+also planned and not yet available; today the archive is plain files.
+
+`doctor` writes exactly one file, a write probe it deletes immediately, to prove the
+archive is usable. `--no-write-probe` turns that off.
 
 ---
 

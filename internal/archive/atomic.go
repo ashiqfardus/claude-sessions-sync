@@ -88,19 +88,29 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// probeName is fixed and dot-prefixed rather than randomised.
+//
+// The probe lands in a folder a sync client is watching, and a random name means a
+// new file to upload on every check. One predictable name is uploaded at most once,
+// is obvious to anyone who spots it, and is overwritten rather than accumulating.
+const probeName = ".claude-sessions-write-probe"
+
 // Writable reports whether dir can actually be written to.
 //
 // A read-only mount, an exhausted quota or a permissions problem passes every other
 // check while backing up precisely nothing, so probe rather than assume.
+//
+// NOTE: this writes. It is the one part of an otherwise read-only diagnostic that
+// touches the archive, which is why doctor exposes --no-write-probe to skip it.
 func Writable(dir string) error {
-	f, err := os.CreateTemp(dir, ".write-probe-*")
+	path := filepath.Join(dir, probeName)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	name := f.Name()
-	_, werr := f.Write([]byte("probe"))
+	_, werr := f.Write([]byte("claude-sessions write probe"))
 	cerr := f.Close()
-	os.Remove(name)
+	os.Remove(path)
 	if werr != nil {
 		return werr
 	}

@@ -189,17 +189,34 @@ func TestDoctorJSONShape(t *testing.T) {
 		t.Fatalf("doctor --json failed: %v\n%s", err, out)
 	}
 
-	var checks []struct {
-		Name   string `json:"name"`
-		Level  string `json:"level"`
-		Detail string `json:"detail"`
+	// An object, not a bare array: a monitor should not have to aggregate levels
+	// itself, and the build that produced a report must be identifiable.
+	var rep struct {
+		Version string `json:"version"`
+		Checks  []struct {
+			Name   string `json:"name"`
+			Level  string `json:"level"`
+			Detail string `json:"detail"`
+		} `json:"checks"`
+		Warnings int  `json:"warnings"`
+		Failures int  `json:"failures"`
+		OK       bool `json:"ok"`
 	}
-	if err := json.Unmarshal([]byte(out), &checks); err != nil {
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if rep.Version == "" {
+		t.Error("report should name the version that produced it")
+	}
+	if rep.Failures != 0 || !rep.OK {
+		t.Errorf("expected no failures, got failures=%d ok=%v", rep.Failures, rep.OK)
+	}
+	if rep.Warnings == 0 {
+		t.Error("expected the unroutable-bucket warning to be counted")
 	}
 
 	byName := map[string]string{}
-	for _, c := range checks {
+	for _, c := range rep.Checks {
 		byName[c.Name] = c.Level
 	}
 	for _, required := range []string{"claude root", "projects", "retention", "archive", "manifest"} {

@@ -44,9 +44,27 @@ func ProjectsDir(root string) string { return filepath.Join(root, "projects") }
 // SettingsPath is the user-level settings.json.
 func SettingsPath(root string) string { return filepath.Join(root, "settings.json") }
 
-// StatePath is ~/.claude.json, which keys per-project state by absolute path.
+// StatePath locates .claude.json, which keys per-project state by absolute path.
 //
-// It is read to recover the real path of a bucket that holds no transcript to read
-// a cwd from. It is never copied to the archive: a live session rewrites it on
-// exit, so restoring it over a working profile causes more harm than it fixes.
-func StatePath(root string) string { return filepath.Join(root, ".claude.json") }
+// It is read to recover the real path of a bucket that holds no transcript to read a
+// cwd from. It is never copied to the archive: a live session rewrites it on exit, so
+// restoring it over a working profile causes more harm than it fixes.
+//
+// WHERE IT ACTUALLY LIVES: by default it is ~/.claude.json - a SIBLING of ~/.claude/,
+// not a file inside it. Joining it onto the config root looks obviously right and
+// silently finds nothing, which is exactly how it was wrong until it was tried
+// against a real profile. Under CLAUDE_CONFIG_DIR it does sit inside the configured
+// directory, so both are checked, in that order.
+func StatePath(root string) string {
+	inRoot := filepath.Join(root, ".claude.json")
+	if _, err := os.Stat(inRoot); err == nil {
+		return inRoot
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		beside := filepath.Join(home, ".claude.json")
+		if _, err := os.Stat(beside); err == nil {
+			return beside
+		}
+	}
+	return inRoot
+}

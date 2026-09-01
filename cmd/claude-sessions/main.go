@@ -22,6 +22,8 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "push":
+		err = cmdPush(os.Args[2:])
 	case "ls":
 		err = cmdLs(os.Args[2:])
 	case "search", "grep":
@@ -68,6 +70,7 @@ usage:
   claude-sessions <command> [flags]
 
 commands:
+  push        copy new and changed sessions to the archive
   ls          list sessions on this machine
   search      search the text of every session
   stats       session counts and sizes per project
@@ -77,7 +80,7 @@ commands:
   version     print the version
 
 not yet implemented (see DESIGN.md for the build order):
-  push pull import restore render install uninstall backup
+  pull import restore render install uninstall backup
 
 common flags:
   --claude-dir <path>   override $CLAUDE_CONFIG_DIR / ~/.claude
@@ -89,5 +92,6 @@ examples:
   claude-sessions config set-destination "G:\My Drive\claude-sessions"
   claude-sessions ls --project airos --since 2026-08-01
   claude-sessions search "connection pool"
+  claude-sessions push --dry-run
 `)
 }

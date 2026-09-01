@@ -32,7 +32,7 @@ func cmdSearch(args []string) error {
 	project := fs.String("project", "", "only sessions whose path or bucket contains this text")
 	role := fs.String("role", "", "only messages from this role (user, assistant)")
 	useRegexp := fs.Bool("regexp", false, "treat the query as a regular expression")
-	ignoreCase := fs.Bool("i", true, "case-insensitive match")
+	caseSensitive := fs.Bool("case-sensitive", false, "match case exactly (default: case-insensitive)")
 	limit := fs.Int("limit", 50, "stop after this many matches (0 = all)")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
@@ -48,7 +48,7 @@ func cmdSearch(args []string) error {
 	if !*useRegexp {
 		pattern = regexp.QuoteMeta(query)
 	}
-	if *ignoreCase {
+	if !*caseSensitive {
 		pattern = "(?i)" + pattern
 	}
 	re, err := regexp.Compile(pattern)
@@ -68,30 +68,33 @@ func cmdSearch(args []string) error {
 	var hits []hit
 	var scanned, unreadable int
 
+	paths := newResolver()
+
 	for _, b := range buckets {
+		// A project filter is decided per bucket, so a filtered search never opens the
+		// transcripts it is about to discard.
+		if *project != "" {
+			path := paths.Path(b)
+			if !strings.Contains(strings.ToLower(path), strings.ToLower(*project)) &&
+				!strings.Contains(strings.ToLower(b.Name), strings.ToLower(*project)) {
+				continue
+			}
+		}
+
 		for _, tr := range b.Transcripts {
 			if *limit > 0 && len(hits) >= *limit {
 				break
 			}
-			// One cheap head-scan gives the project path, so a filtered search does
-			// not read the body of transcripts it is going to discard.
-			head, err := claude.ScanHead(tr.Path, headScanLines)
-			if err != nil {
-				unreadable++
-				continue
-			}
-			path := head.Cwd
-			if path == "" {
-				path = b.Name
-			}
-			if *project != "" &&
-				!strings.Contains(strings.ToLower(path), strings.ToLower(*project)) &&
-				!strings.Contains(strings.ToLower(b.Name), strings.ToLower(*project)) {
-				continue
-			}
 
+			// One pass. The cwd is picked up from the same walk that does the
+			// matching, rather than paying for a separate head scan over every file.
 			scanned++
-			_, err = claude.Walk(tr.Path, func(r claude.Record) bool {
+			var found []hit
+			cwd := ""
+			_, err := claude.Walk(tr.Path, func(r claude.Record) bool {
+				if cwd == "" && r.Cwd != "" {
+					cwd = r.Cwd
+				}
 				if r.Text == "" {
 					return true
 				}
@@ -102,16 +105,27 @@ func cmdSearch(args []string) error {
 				if loc == nil {
 					return true
 				}
-				hits = append(hits, hit{
-					Project: path, Bucket: b.Name, SessionID: tr.ID,
+				found = append(found, hit{
+					Bucket: b.Name, SessionID: tr.ID,
 					Role: firstNonEmpty(r.Role, r.Type), When: r.Timestamp,
 					Line: r.Line, Snippet: snippet(r.Text, loc[0], loc[1]),
 				})
-				return *limit <= 0 || len(hits) < *limit
+				return *limit <= 0 || len(hits)+len(found) < *limit
 			})
 			if err != nil {
 				unreadable++
 			}
+
+			// The path is only known once the walk has run, so stamp it afterwards.
+			paths.Set(b.Name, cwd)
+			path, _ := paths.Known(b.Name)
+			if path == "" {
+				path = b.Name
+			}
+			for i := range found {
+				found[i].Project = path
+			}
+			hits = append(hits, found...)
 		}
 	}
 

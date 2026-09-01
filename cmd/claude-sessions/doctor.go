@@ -41,6 +41,7 @@ func cmdDoctor(args []string) error {
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	archiveDir := fs.String("archive", "", "override the synced destination folder")
 	asJSON := fs.Bool("json", false, "machine-readable output")
+	noProbe := fs.Bool("no-write-probe", false, "skip the archive write test (which creates and deletes one file)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -129,7 +130,9 @@ func cmdDoctor(args []string) error {
 
 	// A read-only mount, an exhausted quota or a permissions problem passes every
 	// other check while backing up precisely nothing.
-	if err := archive.Writable(dest); err != nil {
+	if *noProbe {
+		add(check{"archive writable", levelInfo, "not tested (--no-write-probe)", ""})
+	} else if err := archive.Writable(dest); err != nil {
 		add(check{"archive writable", levelFail, err.Error(),
 			"The archive cannot be written to, so no session can be saved there."})
 	}
@@ -248,17 +251,32 @@ var secretNames = map[string]bool{
 	".claude.json":      true,
 }
 
+// maxSecretScanDepth bounds the walk.
+//
+// Everything this tool writes lives at <archive>/, <archive>/projects/<bucket>/ or
+// <archive>/projects/<bucket>/memory/ - depth 3. Walking deeper on a cloud or network
+// filesystem costs real time on every doctor run and cannot find anything the tool
+// itself put there.
+const maxSecretScanDepth = 3
+
 func findSecrets(dest string) []string {
 	var found []string
-	// A large archive is walked once; errors are ignored per-entry so an unreadable
-	// subdirectory cannot suppress the whole check.
+	// Errors are ignored per-entry so one unreadable subdirectory cannot suppress the
+	// whole check.
 	_ = filepath.WalkDir(dest, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		if d.IsDir() {
+			if path == dest {
+				return nil
+			}
 			if d.Name() == "html" {
 				return filepath.SkipDir // rendered output, never a credential store
+			}
+			rel, relErr := filepath.Rel(dest, path)
+			if relErr == nil && len(strings.Split(rel, string(filepath.Separator))) >= maxSecretScanDepth {
+				return filepath.SkipDir
 			}
 			return nil
 		}
@@ -268,6 +286,18 @@ func findSecrets(dest string) []string {
 		return nil
 	})
 	return found
+}
+
+// doctorReport is the machine-readable shape.
+//
+// It is an object rather than a bare array so a monitor does not have to aggregate
+// levels itself, and so the build that produced a report is identifiable.
+type doctorReport struct {
+	Version  string  `json:"version"`
+	Checks   []check `json:"checks"`
+	Warnings int     `json:"warnings"`
+	Failures int     `json:"failures"`
+	OK       bool    `json:"ok"`
 }
 
 func report(checks []check, asJSON bool) error {
@@ -282,9 +312,18 @@ func report(checks []check, asJSON bool) error {
 	}
 
 	if asJSON {
+		if checks == nil {
+			checks = []check{}
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(checks); err != nil {
+		if err := enc.Encode(doctorReport{
+			Version:  version,
+			Checks:   checks,
+			Warnings: warns,
+			Failures: fails,
+			OK:       fails == 0,
+		}); err != nil {
 			return err
 		}
 		if fails > 0 {

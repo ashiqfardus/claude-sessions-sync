@@ -47,6 +47,7 @@ func cmdStats(args []string) error {
 		return err
 	}
 
+	paths := newResolver()
 	rep := statsReport{}
 	for _, b := range buckets {
 		if !b.HasTranscripts() {
@@ -56,12 +57,7 @@ func cmdStats(args []string) error {
 			continue
 		}
 
-		name := b.Name
-		if newest, ok := b.Newest(); ok {
-			if s, err := claude.ScanHead(newest.Path, headScanLines); err == nil && s.Cwd != "" {
-				name = s.Cwd
-			}
-		}
+		name := paths.Path(b)
 
 		ps := projectStat{Project: name}
 		for _, t := range b.Transcripts {

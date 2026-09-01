@@ -13,11 +13,6 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 )
 
-// headScanLines caps how far into a transcript a listing reads for the cwd and the
-// first prompt. Both live in the opening entries; reading a 40MB file to print one
-// row would make the listing unusable.
-const headScanLines = 200
-
 type sessionRow struct {
 	Bucket      string    `json:"bucket"`
 	Project     string    `json:"project"`
