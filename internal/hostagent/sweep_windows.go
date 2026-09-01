@@ -13,7 +13,7 @@ import (
 func Sweep() (Status, error) {
 	s := Status{Mechanism: "Task Scheduler"}
 
-	out, err := exec.Command("schtasks", "/query", "/tn", Name, "/fo", "LIST", "/v").Output()
+	out, err := exec.Command(systemBinary("schtasks"), "/query", "/tn", Name, "/fo", "LIST", "/v").Output()
 	if err != nil {
 		// A missing task is the normal "not installed yet" answer, not a failure:
 		// schtasks exits non-zero for it.

@@ -1,12 +1,12 @@
 // Command claude-sessions archives Claude Code session transcripts to a synced
 // folder and files them onto any machine by project identity rather than by path.
 //
-// Milestone 1 is read-only: ls and doctor. Nothing here writes to disk, by design -
-// the format handling is proved against a real archive before any command can damage
-// one.
+// The read-only commands come first by design: format handling is proved against a
+// real archive before any command can damage one.
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -23,9 +23,17 @@ func main() {
 	switch os.Args[1] {
 	case "ls":
 		err = cmdLs(os.Args[2:])
+	case "search", "grep":
+		err = cmdSearch(os.Args[2:])
+	case "stats":
+		err = cmdStats(os.Args[2:])
 	case "doctor":
 		err = cmdDoctor(os.Args[2:])
-	case "version", "--version", "-V":
+	case "config":
+		err = cmdConfig(os.Args[2:])
+	case "completion":
+		err = cmdCompletion(os.Args[2:])
+	case "version", "--version", "-v", "-V":
 		fmt.Printf("claude-sessions %s\n", version)
 	case "help", "-h", "--help":
 		usage()
@@ -36,6 +44,11 @@ func main() {
 	}
 
 	if err != nil {
+		// doctor has already printed its report; exit non-zero without adding noise
+		// so the command is usable from a monitoring script.
+		if errors.Is(err, errChecksFailed) {
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -48,16 +61,26 @@ usage:
   claude-sessions <command> [flags]
 
 commands:
-  ls        list sessions on this machine
-  doctor    check the archive, the hook, retention and manifest drift
-  version   print the version
+  ls          list sessions on this machine
+  search      search the text of every session
+  stats       session counts and sizes per project
+  doctor      check the archive, hook, retention and manifest drift
+  config      show or set the archive destination
+  completion  print a shell completion script (bash|zsh|fish)
+  version     print the version
 
-not yet implemented (see DESIGN.md for the porting order):
+not yet implemented (see DESIGN.md for the build order):
   push pull import restore render install uninstall backup
 
-global flags:
+common flags:
   --claude-dir <path>   override $CLAUDE_CONFIG_DIR / ~/.claude
   --archive <path>      override the synced destination folder
   --json                machine-readable output
+
+examples:
+  claude-sessions doctor
+  claude-sessions config set-destination "G:\My Drive\claude-sessions"
+  claude-sessions ls --project airos --since 2026-08-01
+  claude-sessions search "connection pool"
 `)
 }

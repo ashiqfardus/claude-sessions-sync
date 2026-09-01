@@ -1,6 +1,8 @@
 # Build output
 /claude-sessions
 /claude-sessions.exe
+/cs
+/cs.exe
 /dist/
 
 # Go
@@ -8,9 +10,11 @@
 *.out
 
 # Never commit anything resembling real session data or credentials.
-# Fixtures under testdata/ must be hand-scrubbed before they are added.
+# Fixtures under any testdata/ directory are exempt - note the leading **, without
+# which the negation is anchored to the repository root and silently excludes
+# fixtures in nested packages.
 *.jsonl
-!testdata/**/*.jsonl
+!**/testdata/**/*.jsonl
 .credentials.json
 .claude.json
 session-sync.json

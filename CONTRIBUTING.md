@@ -74,3 +74,29 @@ private content), and any Claude Code release that changes the on-disk format.
 Small and focused. Explain *why* in the description — the constraints above mean a
 change that looks obviously correct can still be wrong. If it touches how data is
 written, say what happens when it is interrupted halfway.
+
+## Security rules that are not negotiable
+
+Added after a review found these before they shipped. See [SECURITY.md](SECURITY.md)
+for the reasoning:
+
+9. **Never execute `git` in a directory found by scanning.** A repository's own
+   `.git/config` can make git run arbitrary commands. Use `internal/identity.Remote`,
+   which parses the config file instead.
+10. **Resolve system binaries by absolute path**, via `internal/hostagent.systemBinary`.
+    `PATH` lookup is a privilege-escalation vector on Windows.
+11. **`doctor` must fail, not warn, on credentials found in an archive** — and it walks
+    the whole tree, because a recursive copy puts them inside a bucket, not at the root.
+
+## Gotchas that have already cost time
+
+- **Go's regexp is RE2: no backreferences.** `(?s)<(a|b)>.*?</\1>` does not compile.
+- **A literal UTF-8 BOM in a Go source file is a compile error** anywhere but byte
+  zero. Build one from bytes (`string([]byte{0xEF, 0xBB, 0xBF})`).
+- **Transcripts can start with a BOM**, and that first line carries `cwd` - so failing
+  to strip it costs the project's identity, not just one entry. There is a fixture for
+  this in `internal/claude/testdata`.
+- **`.gitignore` negations are anchored.** `!testdata/**/*.jsonl` only matches at the
+  repository root; nested fixtures need `!**/testdata/**/*.jsonl`.
+- **Windows will not rename onto an existing file**, so atomic writes need the remove
+  and retry that `archive.WriteFileAtomic` implements.

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -35,12 +34,13 @@ const (
 // ResolveDestination finds the archive folder: the flag, then the saved config, then
 // auto-detection of the usual synced folders.
 //
-// Auto-detection is a convenience, never a requirement - the whole point of writing
-// to a plain folder is that Google Drive, OneDrive, Dropbox, iCloud, Syncthing and a
-// NAS mount are all just paths. Anything undetected is passed with --archive.
+// Auto-detection is a convenience, never a requirement - the point of writing to a
+// plain folder is that Google Drive, OneDrive, Dropbox, iCloud, Syncthing and a NAS
+// mount are all just paths. Anything undetected is passed with --archive and saved
+// with `claude-sessions config set-destination`.
 func ResolveDestination(claudeRoot, flagValue string) (string, Source, error) {
 	if v := strings.TrimSpace(flagValue); v != "" {
-		return trimSep(v), SourceFlag, nil
+		return TrimSep(v), SourceFlag, nil
 	}
 
 	cfg, err := LoadConfig(claudeRoot)
@@ -48,7 +48,7 @@ func ResolveDestination(claudeRoot, flagValue string) (string, Source, error) {
 		return "", SourceNone, err
 	}
 	if v := strings.TrimSpace(cfg.Destination); v != "" {
-		return trimSep(v), SourceConfig, nil
+		return TrimSep(v), SourceConfig, nil
 	}
 
 	if d := detect(); d != "" {
@@ -77,17 +77,31 @@ func LoadConfig(claudeRoot string) (Config, error) {
 	return c, nil
 }
 
+// SaveConfig persists the destination, preserving any keys this version does not
+// know about - a newer build, or a hand-edited file, must not lose settings.
+func SaveConfig(claudeRoot string, c Config) error {
+	merged := map[string]any{}
+	if raw, err := os.ReadFile(ConfigPath(claudeRoot)); err == nil {
+		_ = json.Unmarshal(raw, &merged) // a corrupt file is replaced, not honoured
+	}
+	merged["destination"] = c.Destination
+
+	data, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(ConfigPath(claudeRoot), append(data, '\n'), 0o600)
+}
+
 const archiveFolderName = "claude-sessions"
 
 // detect looks for a synced folder in the conventional places.
 func detect() string {
 	var candidates []string
 
-	if runtime.GOOS == "windows" {
-		// Google Drive for Desktop mounts as <letter>:\My Drive.
-		for c := 'A'; c <= 'Z'; c++ {
-			candidates = append(candidates, filepath.Join(string(c)+`:\`, "My Drive", archiveFolderName))
-		}
+	// Google Drive for Desktop mounts as <letter>:\My Drive on Windows.
+	for _, root := range driveRoots() {
+		candidates = append(candidates, filepath.Join(root, "My Drive", archiveFolderName))
 	}
 
 	if home, err := os.UserHomeDir(); err == nil {
@@ -99,7 +113,8 @@ func detect() string {
 			{"Library", "Mobile Documents", "com~apple~CloudDocs"}, // iCloud Drive on macOS
 			{"Sync"}, // Syncthing's common default
 		} {
-			candidates = append(candidates, filepath.Join(append([]string{home}, append(rel, archiveFolderName)...)...))
+			parts := append([]string{home}, rel...)
+			candidates = append(candidates, filepath.Join(append(parts, archiveFolderName)...))
 		}
 	}
 
@@ -109,22 +124,19 @@ func detect() string {
 		}
 	}
 
-	// Nothing named claude-sessions yet: fall back to a parent that exists, so a
-	// first run has somewhere sensible to create it.
-	if runtime.GOOS == "windows" {
-		for c := 'A'; c <= 'Z'; c++ {
-			parent := filepath.Join(string(c)+`:\`, "My Drive")
-			if st, err := os.Stat(parent); err == nil && st.IsDir() {
-				return filepath.Join(parent, archiveFolderName)
-			}
+	// Nothing named claude-sessions yet: fall back to a synced parent that exists, so
+	// a first run has somewhere sensible to create it.
+	for _, root := range driveRoots() {
+		parent := filepath.Join(root, "My Drive")
+		if st, err := os.Stat(parent); err == nil && st.IsDir() {
+			return filepath.Join(parent, archiveFolderName)
 		}
 	}
 	return ""
 }
 
-func trimSep(p string) string {
-	return strings.TrimRight(p, `\/`)
-}
+// TrimSep removes trailing path separators so that comparisons and joins behave.
+func TrimSep(p string) string { return strings.TrimRight(p, `\/`) }
 
 // ProjectsDir is where transcripts live inside the archive.
 func ProjectsDir(dest string) string { return filepath.Join(dest, "projects") }

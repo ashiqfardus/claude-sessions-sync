@@ -31,7 +31,7 @@ func Sweep() (Status, error) {
 	s.Detail = plist
 
 	// `launchctl list <label>` prints the last exit status when the job is loaded.
-	if out, err := exec.Command("launchctl", "list", Label).Output(); err == nil {
+	if out, err := exec.Command(systemBinary("launchctl"), "list", Label).Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			if strings.Contains(line, "LastExitStatus") {
 				s.Detail = plist + ", " + strings.TrimSpace(line)

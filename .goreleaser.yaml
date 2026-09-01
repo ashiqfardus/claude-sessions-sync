@@ -1,0 +1,50 @@
+# Release configuration. Binaries are what most users will install: requiring a Go
+# toolchain excludes most of the audience.
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: claude-sessions
+    main: ./cmd/claude-sessions
+    binary: claude-sessions
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - DESIGN.md
+      - SECURITY.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+release:
+  draft: true
+  footer: |
+    ## Platform support
+
+    Windows is the only platform used day to day by the author. macOS and Linux
+    builds pass CI but have had little real-world exercise - reports welcome.

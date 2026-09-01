@@ -32,9 +32,11 @@ type Project struct {
 	Sessions int        `json:"sessions,omitempty"`
 	Source   PathSource `json:"source,omitempty"`
 
-	// Machine is filled in when shards are merged, so a caller can say where an
-	// entry came from. It is not stored per-project - the shard already names it.
-	Machine string `json:"-"`
+	// Machine names the machine an entry came from. A shard already records this at
+	// the top level, but it is serialised per-project too, because the merged
+	// projects.json compatibility view has nowhere else to put it - and the
+	// PowerShell implementation's format carries it per project as well.
+	Machine string `json:"machine,omitempty"`
 }
 
 // Routable reports whether this entry can be matched to a local folder at all.

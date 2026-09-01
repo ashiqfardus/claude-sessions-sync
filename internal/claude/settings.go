@@ -82,16 +82,23 @@ func (s Settings) EffectiveCleanupPeriodDays() int {
 	return *s.CleanupPeriodDays
 }
 
-// SessionEndHook finds an installed SessionEnd hook that mentions any of needles.
-func (s Settings) SessionEndHook(needles ...string) (Hook, bool) {
+// SessionEndHooks returns every installed SessionEnd hook mentioning any needle.
+//
+// It returns all of them, not the first: two archivers installed at once - say this
+// binary alongside the PowerShell script it replaces - both run at the end of every
+// session and race on the manifest, and that is worth reporting rather than hiding
+// behind the first match.
+func (s Settings) SessionEndHooks(needles ...string) []Hook {
+	var out []Hook
 	for _, group := range s.Hooks["SessionEnd"] {
 		for _, h := range group.Hooks {
 			for _, n := range needles {
 				if h.Mentions(n) {
-					return h, true
+					out = append(out, h)
+					break
 				}
 			}
 		}
 	}
-	return Hook{}, false
+	return out
 }

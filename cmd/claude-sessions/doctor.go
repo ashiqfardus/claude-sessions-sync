@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +31,11 @@ type check struct {
 	Advice string `json:"advice,omitempty"`
 }
 
+// errChecksFailed makes doctor usable from a monitoring script: the process exits
+// non-zero when something is actually broken. main prints nothing extra for it,
+// because the report has already said everything useful.
+var errChecksFailed = errors.New("doctor found failures")
+
 func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
@@ -52,6 +59,14 @@ func cmdDoctor(args []string) error {
 		return report(checks, *asJSON)
 	}
 	add(check{"claude root", levelOK, fmt.Sprintf("%s (%s)", root, rootSrc), ""})
+
+	// A pinned bucket name changes what the identity machinery can assume, so say so
+	// rather than letting it surprise someone later.
+	if v := strings.TrimSpace(os.Getenv("CLAUDE_CODE_PROJECT_DIR_NAME")); v != "" {
+		add(check{"bucket naming", levelInfo,
+			"CLAUDE_CODE_PROJECT_DIR_NAME=" + v,
+			"Bucket names are pinned by this variable, so they are not path slugs and must not be compared as such."})
+	}
 
 	buckets, err := claude.ListBuckets(claude.ProjectsDir(root))
 	if err != nil {
@@ -97,18 +112,32 @@ func cmdDoctor(args []string) error {
 	}
 	if dest == "" {
 		add(check{"archive", levelFail, "no destination configured and none auto-detected",
-			"Run with --archive '<folder>' once, or install a sync client."})
+			"Run `claude-sessions config set-destination <folder>` to choose one."})
 		return report(checks, *asJSON)
 	}
-	if st, err := os.Stat(dest); err != nil {
+	st, err := os.Stat(dest)
+	switch {
+	case err != nil:
 		add(check{"archive", levelFail, fmt.Sprintf("%s (%s) is not reachable", dest, src),
 			"Sync client offline or not mounted? Nothing is being backed up right now."})
 		return report(checks, *asJSON)
-	} else if !st.IsDir() {
+	case !st.IsDir():
 		add(check{"archive", levelFail, dest + " is not a directory", ""})
 		return report(checks, *asJSON)
 	}
 	add(check{"archive", levelOK, fmt.Sprintf("%s (%s)", dest, src), ""})
+
+	// A read-only mount, an exhausted quota or a permissions problem passes every
+	// other check while backing up precisely nothing.
+	if err := archive.Writable(dest); err != nil {
+		add(check{"archive writable", levelFail, err.Error(),
+			"The archive cannot be written to, so no session can be saved there."})
+	}
+
+	if src == archive.SourceDetected {
+		add(check{"archive config", levelInfo, "destination is auto-detected, not saved",
+			fmt.Sprintf("Run `claude-sessions config set-destination %q` so every run agrees.", dest)})
+	}
 
 	// --- manifest drift -------------------------------------------------------
 	// The check that matters: a bucket present in the archive but absent from the
@@ -133,16 +162,19 @@ func cmdDoctor(args []string) error {
 			unroutable = append(unroutable, name)
 		}
 	}
-	if len(unroutable) > 0 {
+	switch {
+	case len(archived) == 0:
+		add(check{"manifest", levelInfo, "the archive holds no projects yet", ""})
+	case len(unroutable) > 0:
 		add(check{"manifest", levelWarn,
 			fmt.Sprintf("%d of %d archived bucket(s) have no usable identity: %s",
 				len(unroutable), len(archived), strings.Join(unroutable, ", ")),
 			"Identity is read from a transcript's cwd, so a bucket holding only memory files records nothing. `import` cannot place these."})
-	} else {
+	default:
 		add(check{"manifest", levelOK, fmt.Sprintf("%d project(s) recorded, all routable", len(manifest)), ""})
 	}
 
-	if _, err := os.Stat(archive.ManifestDir(dest)); os.IsNotExist(err) {
+	if _, err := os.Stat(archive.ManifestDir(dest)); os.IsNotExist(err) && len(archived) > 0 {
 		add(check{"manifest format", levelInfo,
 			"flat projects.json only (written by the PowerShell tools)",
 			"Sharded manifest/<machine>.json arrives with `push`; until then concurrent pushes from two machines can drop entries."})
@@ -154,15 +186,25 @@ func cmdDoctor(args []string) error {
 	}
 
 	// --- automation -----------------------------------------------------------
-	// Both the Go binary and the PowerShell script it replaces count as installed:
-	// on this machine the PowerShell hook is the one actually running.
-	if hook, ok := settings.SessionEndHook("claude-sessions", "sync-claude-sessions"); ok {
-		cmd := hook.Command
-		if len(hook.Args) > 0 {
-			cmd += " " + strings.Join(hook.Args, " ")
+	goHooks := settings.SessionEndHooks("claude-sessions")
+	psHooks := settings.SessionEndHooks("sync-claude-sessions.ps1")
+	switch {
+	case len(goHooks) > 0 && len(psHooks) > 0:
+		add(check{"session hook", levelWarn,
+			"two archivers installed: this binary and the PowerShell script",
+			"Both will run at the end of every session, doubling the work and racing on the manifest. Uninstall one."})
+	case len(goHooks)+len(psHooks) > 1:
+		add(check{"session hook", levelWarn,
+			fmt.Sprintf("%d duplicate SessionEnd hooks installed", len(goHooks)+len(psHooks)),
+			"Each one runs on every session end. Keep one."})
+	case len(goHooks)+len(psHooks) == 1:
+		h := append(goHooks, psHooks...)[0]
+		cmd := h.Command
+		if len(h.Args) > 0 {
+			cmd += " " + strings.Join(h.Args, " ")
 		}
 		add(check{"session hook", levelOK, shorten(cmd, 96), ""})
-	} else {
+	default:
 		add(check{"session hook", levelWarn, "no SessionEnd hook installed",
 			"Sessions are only archived by the periodic sweep, so the most recent one can be missed."})
 	}
@@ -171,34 +213,87 @@ func cmdDoctor(args []string) error {
 	if err != nil {
 		add(check{"sweep", levelWarn, err.Error(), ""})
 	} else if sweep.Installed {
-		add(check{"sweep", levelOK, fmt.Sprintf("%s: %s", sweep.Mechanism, sweep.Detail), ""})
+		l := levelOK
+		if strings.Contains(sweep.Detail, "NOT running") {
+			l = levelFail
+		}
+		add(check{"sweep", l, fmt.Sprintf("%s: %s", sweep.Mechanism, sweep.Detail), ""})
 	} else {
 		add(check{"sweep", levelWarn, fmt.Sprintf("%s: %s", sweep.Mechanism, sweep.Detail),
 			"A session killed abruptly will not be archived until the next manual push."})
 	}
 
 	// --- secrets --------------------------------------------------------------
-	// A credentials file inside the archive means auth material is being synced to
-	// a cloud folder. That is a stop-everything finding, not a warning.
-	for _, name := range []string{".credentials.json", ".claude.json"} {
-		if _, err := os.Stat(filepath.Join(dest, name)); err == nil {
-			add(check{"secrets", levelFail, name + " is present in the archive",
-				"Delete it from the synced folder. This tool never copies it; something else did."})
+	// Auth material inside a cloud-synced folder is a stop-everything finding. Walk
+	// the tree: a naive recursive copy puts these inside a bucket, not at the root,
+	// where a root-only check would never see them.
+	for _, found := range findSecrets(dest) {
+		rel, err := filepath.Rel(dest, found)
+		if err != nil {
+			rel = found
 		}
+		add(check{"secrets", levelFail, rel + " is present in the archive",
+			"Delete it from the synced folder and rotate anything it contained. This tool never copies it; something else did."})
 	}
 
 	return report(checks, *asJSON)
 }
 
+// secretNames are files that must never reach a synced folder.
+//
+//	.credentials.json - auth tokens
+//	.claude.json      - rewritten by any live session; may carry project state
+var secretNames = map[string]bool{
+	".credentials.json": true,
+	".claude.json":      true,
+}
+
+func findSecrets(dest string) []string {
+	var found []string
+	// A large archive is walked once; errors are ignored per-entry so an unreadable
+	// subdirectory cannot suppress the whole check.
+	_ = filepath.WalkDir(dest, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == "html" {
+				return filepath.SkipDir // rendered output, never a credential store
+			}
+			return nil
+		}
+		if secretNames[strings.ToLower(d.Name())] {
+			found = append(found, path)
+		}
+		return nil
+	})
+	return found
+}
+
 func report(checks []check, asJSON bool) error {
+	var warns, fails int
+	for _, c := range checks {
+		switch c.Level {
+		case levelWarn:
+			warns++
+		case levelFail:
+			fails++
+		}
+	}
+
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(checks)
+		if err := enc.Encode(checks); err != nil {
+			return err
+		}
+		if fails > 0 {
+			return errChecksFailed
+		}
+		return nil
 	}
 
 	fmt.Println()
-	var warns, fails int
 	for _, c := range checks {
 		mark := " "
 		switch c.Level {
@@ -206,10 +301,8 @@ func report(checks []check, asJSON bool) error {
 			mark = "+"
 		case levelWarn:
 			mark = "!"
-			warns++
 		case levelFail:
 			mark = "x"
-			fails++
 		}
 		fmt.Printf("  %s %-16s %s\n", mark, c.Name, c.Detail)
 	}
@@ -224,6 +317,10 @@ func report(checks []check, asJSON bool) error {
 		fmt.Printf("\n%d warning(s), %d failure(s).\n", warns, fails)
 	} else {
 		fmt.Println("\nAll checks passed.")
+	}
+
+	if fails > 0 {
+		return errChecksFailed
 	}
 	return nil
 }

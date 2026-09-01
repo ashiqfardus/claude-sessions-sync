@@ -1,0 +1,27 @@
+name: macOS / Linux report
+description: Report how the tool behaves on a platform the author cannot test
+labels: [platform]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The author only has a Windows machine, so the launchd and systemd code paths
+        have never been used day to day. Reports here are the most valuable
+        contribution to the project - including "it worked fine".
+  - type: dropdown
+    id: os
+    attributes:
+      label: Platform
+      options: [macOS, Linux]
+    validations:
+      required: true
+  - type: input
+    id: detail
+    attributes:
+      label: Version / distribution
+  - type: textarea
+    id: what
+    attributes:
+      label: What you ran and what happened
+    validations:
+      required: true

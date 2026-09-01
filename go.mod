@@ -1,3 +1,3 @@
 module github.com/ashiqfardus/claude-sessions-sync
 
-go 1.27
+go 1.21

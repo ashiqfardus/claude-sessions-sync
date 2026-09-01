@@ -23,7 +23,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.27'
+          go-version: stable
           check-latest: true
 
       - name: gofmt
@@ -45,11 +45,41 @@ jobs:
       - name: smoke test
         shell: bash
         run: |
+          set -euo pipefail
           go build -o cs ./cmd/claude-sessions
-          ./cs version
-          # Must degrade gracefully against a profile that does not exist rather than
-          # crashing: a fresh machine is a normal starting state.
-          ./cs doctor --claude-dir "$RUNNER_TEMP/nope" --archive "$RUNNER_TEMP/nope" || true
+          ./cs version | grep -q claude-sessions
+
+          # A fresh machine is a normal starting state: doctor must produce a readable
+          # report and exit non-zero, rather than crashing or falsely passing.
+          empty="$RUNNER_TEMP/empty-profile"
+          mkdir -p "$empty/projects"
+          set +e
+          out=$(./cs doctor --claude-dir "$empty" --archive "$RUNNER_TEMP/not-mounted" 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          [ $code -ne 0 ] || { echo "FAIL: doctor should exit non-zero when the archive is unreachable"; exit 1; }
+          echo "$out" | grep -q "not reachable" || { echo "FAIL: expected an unreachable-archive report"; exit 1; }
+
+          # And it must pass cleanly once the archive is real and writable.
+          good="$RUNNER_TEMP/good-archive"
+          mkdir -p "$good"
+          ./cs doctor --claude-dir "$empty" --archive "$good" | grep -q "archive" \
+            || { echo "FAIL: expected an archive check"; exit 1; }
+
+          ./cs ls --claude-dir "$empty" | grep -q "No sessions found"
+          ./cs completion bash | grep -q complete
+
+  minimum-go:
+    # go.mod declares the oldest supported toolchain. Verify it is honest, so users on
+    # a distro Go are not told to upgrade for no reason.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - run: go build ./... && go vet ./... && go test ./...
 
   build:
     name: cross-compile
@@ -58,10 +88,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.27'
-      - name: build all targets
+          go-version: stable
+      - name: build all release targets
         run: |
+          set -e
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
-            GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./... \
-              && echo "ok  $target" || { echo "FAIL $target"; exit 1; }
+            GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./...
+            echo "ok  $target"
           done

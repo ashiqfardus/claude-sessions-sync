@@ -1,0 +1,48 @@
+name: Bug report
+description: Something behaved incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste transcript contents.** They contain your file contents, paths and
+        conversations. Describe the shape of the problem instead, or attach a scrubbed
+        minimal fixture.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the exact command and the output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `claude-sessions doctor`
+      description: Redact paths you would rather not share; the check names and levels are the useful part.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `claude-sessions version`
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux, Other]
+    validations:
+      required: true
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Code version
+      description: The transcript format is internal to Claude Code and changes between releases, so this matters more than usual.

@@ -222,8 +222,9 @@ func TestDoctorFailsOnSecretsInArchive(t *testing.T) {
 	mustWrite(t, filepath.Join(f.archive, ".credentials.json"), `{"token":"not-a-real-token"}`)
 
 	out, err := f.run(t, "doctor")
-	if err != nil {
-		t.Fatalf("doctor failed: %v\n%s", err, out)
+	// doctor must exit non-zero on a failure so it is usable from monitoring.
+	if err == nil {
+		t.Errorf("doctor must exit non-zero when checks fail:\n%s", out)
 	}
 	if !strings.Contains(out, ".credentials.json is present in the archive") {
 		t.Errorf("expected a secrets failure, got:\n%s", out)
@@ -233,16 +234,36 @@ func TestDoctorFailsOnSecretsInArchive(t *testing.T) {
 	}
 }
 
+// A root-only check would miss this: a naive recursive copy puts the credentials
+// file inside a bucket, not at the archive root.
+func TestDoctorFindsSecretsNestedInArchive(t *testing.T) {
+	f := newFixture(t)
+	mustWrite(t, filepath.Join(f.archive, "projects", "e--work-airos-frontend", ".credentials.json"),
+		`{"token":"not-a-real-token"}`)
+
+	out, err := f.run(t, "doctor")
+	if err == nil {
+		t.Errorf("nested secrets must still fail the run:\n%s", out)
+	}
+	if !strings.Contains(out, ".credentials.json is present in the archive") {
+		t.Errorf("expected the nested secret to be found, got:\n%s", out)
+	}
+}
+
 func TestDoctorFailsWhenArchiveMissing(t *testing.T) {
 	f := newFixture(t)
 	f.archive = filepath.Join(t.TempDir(), "not-mounted")
 
 	out, err := f.run(t, "doctor")
-	if err != nil {
-		t.Fatalf("doctor should report, not crash: %v\n%s", err, out)
+	if err == nil {
+		t.Errorf("an unreachable archive must exit non-zero:\n%s", out)
 	}
 	if !strings.Contains(out, "not reachable") {
-		t.Errorf("expected an unreachable-archive failure, got:\n%s", out)
+		t.Errorf("expected an unreachable-archive report, got:\n%s", out)
+	}
+	// It must still be a readable report rather than a crash.
+	if !strings.Contains(out, "claude root") {
+		t.Errorf("expected the full report before the failure, got:\n%s", out)
 	}
 }
 
@@ -273,5 +294,145 @@ func mustWrite(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// --- the commands added after the multi-hat review --------------------------
+
+func TestSearchFindsTextAcrossSessions(t *testing.T) {
+	f := newFixture(t)
+
+	out, err := f.run(t, "search", "login redirect")
+	if err != nil {
+		t.Fatalf("search failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "1 match(es)") {
+		t.Errorf("expected one match, got:\n%s", out)
+	}
+	if !strings.Contains(out, "claude --resume 11111111-2222-3333-4444-555555555555") {
+		t.Errorf("search should print how to resume the session, got:\n%s", out)
+	}
+}
+
+func TestSearchNoMatch(t *testing.T) {
+	f := newFixture(t)
+
+	out, err := f.run(t, "search", "nothing whatsoever like this")
+	if err != nil {
+		t.Fatalf("a miss is not an error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "No matches") {
+		t.Errorf("expected a no-match message, got:\n%s", out)
+	}
+}
+
+func TestSearchRoleFilter(t *testing.T) {
+	f := newFixture(t)
+
+	// "looking" appears only in the assistant's reply.
+	out, _ := f.run(t, "search", "--role", "user", "looking")
+	if !strings.Contains(out, "No matches") {
+		t.Errorf("--role user must exclude assistant text, got:\n%s", out)
+	}
+	out, _ = f.run(t, "search", "--role", "assistant", "looking")
+	if !strings.Contains(out, "1 match(es)") {
+		t.Errorf("--role assistant should match, got:\n%s", out)
+	}
+}
+
+func TestStatsCountsProjects(t *testing.T) {
+	f := newFixture(t)
+
+	out, err := f.run(t, "stats")
+	if err != nil {
+		t.Fatalf("stats failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "1 session(s) across 1 project(s)") {
+		t.Errorf("unexpected totals:\n%s", out)
+	}
+	if !strings.Contains(out, "1 bucket(s) hold memory but no transcripts") {
+		t.Errorf("the memory-only bucket should be reported:\n%s", out)
+	}
+}
+
+// config is what makes doctor's advice actionable: without it there is no way to
+// persist a destination.
+func TestConfigSetAndShowDestination(t *testing.T) {
+	f := newFixture(t)
+	target := filepath.Join(t.TempDir(), "my-archive")
+
+	out, err := f.run(t, "config", "set-destination", target)
+	if err != nil {
+		t.Fatalf("set-destination failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Destination set to") {
+		t.Errorf("unexpected output:\n%s", out)
+	}
+
+	out, err = f.run(t, "config")
+	if err != nil {
+		t.Fatalf("config show failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, target) {
+		t.Errorf("the saved destination should be shown, got:\n%s", out)
+	}
+}
+
+// Creating the parent silently is how someone ends up believing they have a cloud
+// backup when the sync client was never mounted.
+func TestConfigRefusesMissingParent(t *testing.T) {
+	f := newFixture(t)
+	target := filepath.Join(t.TempDir(), "not-mounted", "archive")
+
+	out, err := f.run(t, "config", "set-destination", target)
+	if err == nil {
+		t.Errorf("expected a refusal when the parent does not exist:\n%s", out)
+	}
+	if !strings.Contains(out, "is the sync client mounted") {
+		t.Errorf("expected an explanation, got:\n%s", out)
+	}
+}
+
+func TestCompletionScripts(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		out, err := exec.Command(binary, "completion", shell).CombinedOutput()
+		if err != nil {
+			t.Errorf("completion %s failed: %v", shell, err)
+		}
+		if !strings.Contains(string(out), "claude-sessions") {
+			t.Errorf("completion %s produced nothing usable:\n%s", shell, out)
+		}
+	}
+	if _, err := exec.Command(binary, "completion").CombinedOutput(); err == nil {
+		t.Error("completion with no shell must exit non-zero")
+	}
+}
+
+func TestVersionAcceptsLowercaseV(t *testing.T) {
+	for _, flag := range []string{"version", "--version", "-v", "-V"} {
+		out, err := exec.Command(binary, flag).CombinedOutput()
+		if err != nil {
+			t.Errorf("%s failed: %v", flag, err)
+		}
+		if !strings.Contains(string(out), "claude-sessions") {
+			t.Errorf("%s printed %q", flag, out)
+		}
+	}
+}
+
+func TestLsSinceUntilFilters(t *testing.T) {
+	f := newFixture(t)
+
+	out, _ := f.run(t, "ls", "--since", "2099-01-01")
+	if !strings.Contains(out, "No sessions found") {
+		t.Errorf("--since in the future should exclude everything:\n%s", out)
+	}
+	out, _ = f.run(t, "ls", "--since", "2000-01-01")
+	if !strings.Contains(out, "1 session(s).") {
+		t.Errorf("--since in the past should include everything:\n%s", out)
+	}
+	out, err := f.run(t, "ls", "--since", "not-a-date")
+	if err == nil {
+		t.Errorf("a malformed date must be rejected:\n%s", out)
 	}
 }
