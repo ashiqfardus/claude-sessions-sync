@@ -3,7 +3,6 @@ package hostagent
 import (
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 )
 
@@ -18,21 +17,10 @@ import (
 // calling schtasks directly avoids the whole problem.
 func Install(binary string, everyMinutes int) (Status, error) {
 	s := Status{Mechanism: "Task Scheduler"}
-	if everyMinutes <= 0 {
-		everyMinutes = 30
-	}
+	everyMinutes = normalMinutes(everyMinutes)
 
-	// The command must be one quoted string: the binary path routinely contains
-	// spaces (C:\Users\First Last\...).
-	action := fmt.Sprintf(`"%s" push --quiet`, binary)
-
-	out, err := exec.Command(systemBinary("schtasks"), "/Create",
-		"/TN", Name,
-		"/TR", action,
-		"/SC", "MINUTE",
-		"/MO", strconv.Itoa(everyMinutes),
-		"/F", // replace OUR OWN task rather than failing; the name is ours alone
-	).CombinedOutput()
+	out, err := exec.Command(systemBinary("schtasks"),
+		SchtasksCreateArgs(Name, binary, everyMinutes)...).CombinedOutput()
 	if err != nil {
 		return s, fmt.Errorf("schtasks failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -115,17 +103,4 @@ func taskAction(name string) (action string, exists bool, err error) {
 		}
 	}
 	return "", true, nil
-}
-
-// ownsAction reports whether a task's command line is this tool's binary.
-//
-// "sync-claude-sessions.ps1" contains "claude-sessions", so the PowerShell script has
-// to be excluded explicitly - the same substring trap that made doctor report two
-// archivers when only one was installed.
-func ownsAction(action string) bool {
-	a := strings.ToLower(action)
-	if strings.Contains(a, "sync-claude-sessions") {
-		return false
-	}
-	return strings.Contains(a, "claude-sessions")
 }

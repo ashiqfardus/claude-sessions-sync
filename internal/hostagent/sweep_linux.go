@@ -5,9 +5,6 @@ import (
 	"strings"
 )
 
-// Unit is the systemd user timer name.
-const Unit = "claude-sessions-sync-sweep.timer"
-
 // Sweep reports the state of the systemd user timer, falling back to crontab.
 //
 // NOT VERIFIED ON LINUX beyond CI. See the note in sweep_darwin.go.

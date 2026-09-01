@@ -7,9 +7,6 @@ import (
 	"strings"
 )
 
-// Label is the launchd job label.
-const Label = "com.github.ashiqfardus.claude-sessions-sync.sweep"
-
 // Sweep reports the state of the launchd user agent.
 //
 // NOT VERIFIED ON A MAC. This machine is Windows-only, so every darwin path in this

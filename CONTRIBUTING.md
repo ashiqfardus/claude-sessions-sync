@@ -61,10 +61,12 @@ file contents, paths, and whatever you happened to be discussing.
 
 ## Especially wanted
 
-**macOS and Linux testing.** The author has only a Windows machine. The launchd and
-systemd code in `internal/hostagent` compiles and runs in CI but has never been used
-day to day. If you run either platform, real-world reports are more valuable than
-anything else you could contribute.
+**Real-desktop macOS and Linux reports**, specifically whether the 30-minute sweep
+registers. CI now installs and uninstalls on all three platforms on every push, and
+the launchd/systemd/Task Scheduler definitions are asserted from any platform - but a
+CI runner has no login session, so `launchctl bootstrap` and `systemctl --user` may
+decline there for reasons that do not apply on a real desktop. That is the one gap
+only a person can close.
 
 Also useful: transcripts that break the reader (describe the shape, do not paste
 private content), and any Claude Code release that changes the on-disk format.
@@ -100,3 +102,22 @@ for the reasoning:
   repository root; nested fixtures need `!**/testdata/**/*.jsonl`.
 - **Windows will not rename onto an existing file**, so atomic writes need the remove
   and retry that `archive.WriteFileAtomic` implements.
+
+## Run this before pushing
+
+```sh
+gofmt -l .            # must print nothing
+go test ./...
+for os in linux darwin windows; do GOOS=$os go vet ./...; done
+```
+
+**That last loop matters more than it looks.** `go build` ignores `_test.go` files, so
+a test referencing something declared only in a `//go:build windows` file compiles
+happily on Windows and breaks the macOS and Linux CI jobs instead. `go vet`
+type-checks tests, so running it per platform catches it before you push. This has
+already happened once: `ownsAction` lived in `install_windows.go` while its test did
+not, and CI failed on two of three platforms while everything looked fine locally.
+
+Anything genuinely platform-independent — the plist, the systemd units, the cron line,
+the schtasks arguments, code-page and result-code handling — belongs in a file with no
+build tag, so it can be tested everywhere. See `internal/hostagent/spec.go`.

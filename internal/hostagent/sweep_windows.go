@@ -62,30 +62,3 @@ func Sweep() (Status, error) {
 	s.Detail = strings.Join(parts, ", ")
 	return s, nil
 }
-
-func neverRun(lastRun, lastResult string) bool {
-	return strings.Contains(lastRun, "1999") || strings.TrimSpace(lastResult) == "267011"
-}
-
-// describeResult translates the Task Scheduler codes worth naming. Anything else is
-// passed through: an unexplained number the user can search for beats a wrong guess.
-func describeResult(code string) string {
-	switch strings.TrimSpace(code) {
-	case "0":
-		return "0 (success)"
-	case "267009":
-		return "currently running"
-	case "267010":
-		return "not yet run"
-	case "267011":
-		return "not yet run"
-	case "267014":
-		return "terminated by user"
-	case "2147750687":
-		return "an instance was already running"
-	case "2147943645":
-		return "the service is not available (is the user logged on?)"
-	default:
-		return code
-	}
-}

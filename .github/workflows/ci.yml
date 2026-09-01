@@ -133,3 +133,113 @@ jobs:
             GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./...
             echo "ok  $target"
           done
+
+      # go build ignores _test.go files, so a test that references something declared
+      # only in a //go:build windows file compiles fine here and breaks the macOS and
+      # Linux jobs instead. vet type-checks tests, so run it per platform.
+      - name: vet tests for every platform
+        run: |
+          set -e
+          for os in linux darwin windows; do
+            GOOS=$os GOARCH=amd64 go vet ./...
+            echo "ok  vet $os"
+          done
+
+  install-e2e:
+    name: install on ${{ matrix.os }}
+    # Actually registers the hook and the sweep on each OS, rather than trusting that
+    # code which only compiles there also works there. The scheduler may legitimately
+    # fail on a CI runner - a macOS runner has no GUI session for launchd, an Ubuntu
+    # runner no user D-Bus for systemd - so the sweep is allowed to degrade, and the
+    # hook, which is what archives every normal session, is not.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: install, use, uninstall
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o cs ./cmd/claude-sessions
+
+          profile="$RUNNER_TEMP/claude"
+          archive="$RUNNER_TEMP/archive"
+          mkdir -p "$profile/projects/e--work-api" "$archive"
+
+          # A settings.json with someone else's hook and unrelated keys, all of which
+          # must survive install and uninstall untouched.
+          cat > "$profile/settings.json" <<'JSON'
+          {
+            "model": "opus",
+            "cleanupPeriodDays": 3650,
+            "hooks": {
+              "PostToolUse": [
+                {"matcher": "Edit", "hooks": [{"type": "command", "command": "prettier"}]}
+              ]
+            }
+          }
+          JSON
+
+          printf '%s\n' \
+            '{"type":"user","cwd":"/work/api","sessionId":"ci-1","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"why is the build failing"}}' \
+            '{"type":"assistant","timestamp":"2026-08-30T09:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"looking"},{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}}' \
+            > "$profile/projects/e--work-api/ci-1.jsonl"
+
+          echo "::group::install"
+          ./cs install --claude-dir "$profile" --archive "$archive" | tee install.log
+          echo "::endgroup::"
+
+          grep -q "hook      SessionEnd" install.log || { echo "FAIL: no hook reported"; exit 1; }
+
+          # The sweep is best-effort on a runner; say which happened, do not fail on it.
+          if grep -q "sweep     FAILED" install.log; then
+            echo "NOTE: scheduler unavailable on this runner - hook-only install"
+          fi
+
+          # The hook must be a real, runnable binary at the path that was installed.
+          hook_bin="$profile/bin/claude-sessions"
+          [ "$RUNNER_OS" = "Windows" ] && hook_bin="$profile/bin/claude-sessions.exe"
+          [ -x "$hook_bin" ] || { echo "FAIL: installed binary missing at $hook_bin"; exit 1; }
+
+          echo "::group::run the hook exactly as Claude Code would"
+          "$hook_bin" push --quiet --claude-dir "$profile" --archive "$archive"
+          echo "exit=$?"
+          echo "::endgroup::"
+
+          [ -f "$archive/projects/e--work-api/ci-1.jsonl" ] || { echo "FAIL: session not archived"; exit 1; }
+          [ -f "$archive/html/index.html" ] || { echo "FAIL: pages not rendered"; exit 1; }
+          grep -q "why is the build failing" "$archive/html/e--work-api/ci-1.html" \
+            || { echo "FAIL: rendered page missing the conversation"; exit 1; }
+
+          echo "::group::doctor"
+          ./cs doctor --claude-dir "$profile" --archive "$archive" | tee doctor.log || true
+          echo "::endgroup::"
+          grep -q "session hook" doctor.log || { echo "FAIL: doctor does not see the hook"; exit 1; }
+
+          # The hook must never break the end of a session, whatever the state of the
+          # archive. This is the single most important behaviour in the tool.
+          "$hook_bin" push --quiet --claude-dir "$profile" --archive "$RUNNER_TEMP/not-mounted"
+          echo "unreachable archive, quiet mode: exit=$? (must be 0)"
+
+          echo "::group::uninstall"
+          ./cs uninstall --claude-dir "$profile" | tee uninstall.log
+          echo "::endgroup::"
+
+          # Everything that was not ours must have survived both operations.
+          python3 - "$profile/settings.json" <<'PY'
+          import json, sys
+          s = json.load(open(sys.argv[1]))
+          assert s.get("model") == "opus", "unrelated setting lost"
+          assert s.get("cleanupPeriodDays") == 3650, "unrelated setting lost"
+          post = s.get("hooks", {}).get("PostToolUse")
+          assert post, "another tool's hook was removed"
+          assert "SessionEnd" not in s.get("hooks", {}), "our hook was not removed"
+          print("settings.json intact and our hook gone")
+          PY

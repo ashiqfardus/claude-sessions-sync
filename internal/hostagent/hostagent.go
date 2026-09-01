@@ -19,6 +19,15 @@ const Name = "claude-sessions-sync"
 // replaces. It is only ever read, or removed on explicit request.
 const LegacyName = "Claude Session Sync"
 
+// Label is the launchd job label on macOS.
+//
+// Declared here rather than in install_darwin.go so that the plist it names can be
+// generated and asserted on from any platform - see spec.go.
+const Label = "com.github.ashiqfardus.claude-sessions-sync.sweep"
+
+// Unit is the systemd user timer name on Linux.
+const Unit = "claude-sessions-sync-sweep.timer"
+
 // Status is what is currently registered on this machine.
 type Status struct {
 	Installed bool

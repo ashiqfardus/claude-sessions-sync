@@ -24,9 +24,21 @@ Three things go wrong with that:
    `claude --resume` on one machine cannot see the other's conversations — even if you
    copy the files across by hand.
 
-> **Status:** everything below works and is tested. Developed on **Windows**; the macOS
-> and Linux paths pass CI but have had little real-world use — please
-> [report what breaks](.github/ISSUE_TEMPLATE/platform_report.yml).
+> **Status:** everything below works and is tested.
+>
+> **Every push to this repository runs the full test suite on Windows, macOS and
+> Linux**, and separately installs the tool on each of the three — registering the
+> real session hook, archiving a session through it, rendering the pages, and
+> uninstalling again while checking that nothing else in `settings.json` was touched.
+> The launchd, systemd and Task Scheduler definitions are asserted on every platform,
+> not just the one they run on.
+>
+> What CI cannot cover is a real desktop: a GitHub runner has no login session, so
+> `launchctl` on macOS and `systemctl --user` on Linux may decline to start the
+> 30-minute sweep there. The session hook — which archives every normally-ended
+> session — is verified on all three. If the sweep does not register on your machine,
+> [please say so](.github/ISSUE_TEMPLATE/platform_report.yml); that is the one gap
+> real-world reports still close.
 
 ---
 
@@ -489,7 +501,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md); [DESIGN.md](DESIGN.md) explains the
 architecture and the constraints each command satisfies. Security policy:
 [SECURITY.md](SECURITY.md).
 
-**Especially wanted: macOS and Linux testing.** The author has only a Windows machine.
+**Especially wanted: real-desktop macOS and Linux reports** - specifically whether the
+30-minute sweep registers. CI installs and uninstalls on all three platforms every
+push, but a CI runner has no login session, so launchd and systemd may decline there
+for reasons that would not apply on your machine.
 
 ## License
 

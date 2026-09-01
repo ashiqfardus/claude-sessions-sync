@@ -15,9 +15,7 @@ import (
 // run in CI but have never been used in anger. Treat with suspicion.
 func Install(binary string, everyMinutes int) (Status, error) {
 	s := Status{Mechanism: "launchd"}
-	if everyMinutes <= 0 {
-		everyMinutes = 30
-	}
+	everyMinutes = normalMinutes(everyMinutes)
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -29,23 +27,7 @@ func Install(binary string, everyMinutes int) (Status, error) {
 	}
 	plistPath := filepath.Join(dir, Label+".plist")
 
-	plist := `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>` + xmlEscape(Label) + `</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>` + xmlEscape(binary) + `</string>
-    <string>push</string>
-    <string>--quiet</string>
-  </array>
-  <key>StartInterval</key><integer>` + strconv.Itoa(everyMinutes*60) + `</integer>
-  <key>RunAtLoad</key><false/>
-  <key>ProcessType</key><string>Background</string>
-</dict>
-</plist>
-`
+	plist := LaunchdPlist(Label, binary, everyMinutes)
 	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
 		return s, err
 	}
@@ -84,8 +66,4 @@ func Uninstall() error {
 		return err
 	}
 	return nil
-}
-
-func xmlEscape(s string) string {
-	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }

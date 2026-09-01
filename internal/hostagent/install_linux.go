@@ -14,9 +14,7 @@ import (
 // NOT VERIFIED ON LINUX beyond CI. See the note in install_darwin.go.
 func Install(binary string, everyMinutes int) (Status, error) {
 	s := Status{Mechanism: "systemd"}
-	if everyMinutes <= 0 {
-		everyMinutes = 30
-	}
+	everyMinutes = normalMinutes(everyMinutes)
 
 	home, err := os.UserHomeDir()
 	if err != nil {
