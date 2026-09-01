@@ -39,11 +39,11 @@ by `-`. Three consequences, and the third is the one that bites:
 
 > ### Status: the round trip works
 >
-> `install`, `push`, `import`, `pull`, `restore`, `machines`, `ls`, `search`, `stats`,
-> `doctor`, `config` and `completion` work and are tested - archiving is automatic
-> once installed, and an archive can be filed onto another machine whose projects live
-> at different paths. **`render` and `backup` are designed but not yet built.** See
-> [DESIGN.md](DESIGN.md) for the architecture.
+> `install`, `push`, `render`, `import`, `pull`, `restore`, `machines`, `ls`, `search`,
+> `stats`, `doctor`, `config` and `completion` work and are tested — archiving is
+> automatic once installed, your history is readable on a phone, and an archive can be
+> filed onto another machine whose projects live at different paths. **Only `backup` is
+> still unbuilt.** See [DESIGN.md](DESIGN.md) for the architecture.
 >
 > Developed and used on **Windows**. The macOS and Linux paths pass CI but have had
 > little real-world exercise. Reports welcome — see
