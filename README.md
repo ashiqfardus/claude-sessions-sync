@@ -273,6 +273,10 @@ To make it permanent so every `push` respects it, add it to your config file
 }
 ```
 
+The next `push` also copies those patterns into `render-exclude.txt` in the archive, so
+**every machine that pushes there honours them** — not only the one you configured.
+To publish a project again, remove its line from that file as well as from the config.
+
 `claude-sessions doctor` then lists what is being withheld, so a typo that matches
 nothing does not quietly publish it anyway. See [Privacy](#privacy) below.
 
@@ -288,11 +292,18 @@ claude-sessions search "connection pool"
 E:\airos-frontend  9ee16efa-4c1d-4a9e-9f3a-2b8e5d7c1a44
   2026-08-31 17:41  user       ...raise the connection pool size to 40 and see if...
 
-1 match(es) in 12 session(s).
+1 match(es); 12 session(s) searched, newest first.
 Resume one with:  claude --resume 9ee16efa-4c1d-4a9e-9f3a-2b8e5d7c1a44
 ```
 
 Copy that last command to reopen the conversation in Claude Code.
+
+By default only the conversation text is searched. To find a command you ran or
+something a tool printed, add `--all`:
+
+```sh
+claude-sessions search --all "psql -c"
+```
 
 Other ways to look around:
 
@@ -300,6 +311,13 @@ Other ways to look around:
 claude-sessions ls                          # every session, newest first
 claude-sessions ls --project api --limit 10 # just one project
 claude-sessions stats                       # how much history you have, per project
+```
+
+`ls`, `search` and `stats` read this machine's sessions. Claude Code deletes old ones
+locally, so add **`--archived`** to read the archive instead — it still has them:
+
+```sh
+claude-sessions search --archived "connection pool"
 ```
 
 ---
@@ -333,6 +351,11 @@ It tells you **why** each project matched. Anything ambiguous is skipped, never
 guessed — filing a conversation under the wrong project would be silent and you would
 never find it again.
 
+**Multi-folder workspaces are handled.** A session that starts in `frontend` and
+works in `backend` too records both paths. `push` notes the other git repositories each
+project's sessions touched, and `import` finds them on this machine **by git remote**
+and repoints those paths as well — including Git Bash forms like `/e/work/backend`.
+
 **8c. Do it for real:**
 
 ```sh
@@ -350,15 +373,35 @@ claude-sessions install
 
 ---
 
+## Moving to a new computer without a synced folder
+
+Take the whole profile with you in one file — every session, subagent conversation,
+memory file and hand-written setting:
+
+```sh
+claude-sessions backup --out D:\
+```
+
+It writes `claude-backup-<machine>-<date>.zip` with a `MANIFEST.txt` counting the
+transcripts per project, and warns loudly if there are none — a backup with no
+conversations in it is exactly how history gets lost in a move. Credentials are never
+included.
+
+---
+
 ## If something goes wrong
 
 **`doctor` says the archive is not reachable.**
 Your cloud drive is not mounted. Nothing is being backed up until it is.
 
 **`ls` shows nothing.**
-Claude Code files history by the *terminal's* working directory, not your editor's
-workspace. A multi-root workspace has one bucket per folder. If you use
-`CLAUDE_CONFIG_DIR`, pass `--claude-dir`.
+Claude Code files history by the folder a session *started* in, not your editor's
+workspace — a session that later `cd`s into a sibling folder stays filed under the
+first one. If you use `CLAUDE_CONFIG_DIR`, pass `--claude-dir`. Sessions deleted
+locally are still in the archive: `ls --archived`.
+
+**`doctor` says the sweep is disabled, failing, or its program is missing.**
+Run `claude-sessions install` again; it re-registers the scheduled job.
 
 **A session I copied by hand does not show in `claude --resume`.**
 It is in the wrong bucket. Use `claude-sessions import`, or for one folder:
@@ -406,9 +449,15 @@ discuss — which for most people includes commercially sensitive work.
   conversations in a browser, including through a cloud provider’s own file preview.
   Use `render --exclude` or the `renderExclude` config key for anything that should not
   be that legible, or `push --no-html` to stop rendering entirely. Excluding a project
-  also **removes pages already published for it**.
-- **`INDEX.md` at the top of the archive lists the opening line of every session**, so
-  the gist of your history is visible at a glance.
+  also **removes pages already published for it**, and is shared with every machine
+  through `render-exclude.txt`.
+- **Common credentials are masked on the pages** — API keys and tokens in known formats,
+  private keys, `PASSWORD=`/`api_key:` style values, passwords in URLs. The `.jsonl`
+  keeps everything. This is pattern matching, so it is a safety net, not a guarantee:
+  a project that must not be readable belongs in the exclude list.
+- **`INDEX.md` at the top of the archive lists the opening line of every session**
+  (masked the same way, and withheld for excluded projects), so the gist of your
+  history is visible at a glance.
 - **The tool itself never transmits anything.** No network calls, no telemetry, no
   accounts, no third-party dependencies. It writes files to a local path; a sync client
   you already installed does the uploading.
@@ -442,6 +491,10 @@ Applications\innovix`, `E:\Laravel-Applications\innovix` and
 is read from *inside* the transcript and cached in a manifest that travels with the
 archive.
 
+Other repositories a session worked in — the siblings in a multi-folder workspace — are
+recorded with their git remotes and placed **by remote only**; a folder that merely
+shares the name is never enough to rewrite paths into it.
+
 Git remotes are read by **parsing `.git/config`, never by running git** — see
 [SECURITY.md](SECURITY.md) for why that distinction matters.
 
@@ -456,9 +509,10 @@ Git remotes are read by **parsing `.git/config`, never by running git** — see
 | `push` | Copy new and changed sessions to the archive, then render the pages |
 | `install` / `uninstall` | Turn automatic archiving on or off |
 | `render` | Rebuild the HTML pages |
-| `ls` | List sessions (`--project`, `--since`, `--until`, `--limit`) |
-| `search` | Search the text of every session (`--role`, `--regexp`, `--project`) |
-| `stats` | Sessions, sizes and dates per project |
+| `ls` | List sessions (`--project`, `--since`, `--until`, `--limit`, `--archived`) |
+| `search` | Search every session, newest first (`--all`, `--role`, `--regexp`, `--project`, `--archived`) |
+| `stats` | Sessions, sizes and dates per project (`--archived`) |
+| `backup` | Zip the whole profile — sessions, subagents, memory, settings — without credentials |
 | `import` | File an archive onto this machine, matching projects by identity |
 | `pull` | Same-name copy, for machines with identical paths |
 | `restore` | File one folder of transcripts by hand |
@@ -471,7 +525,9 @@ Useful flags worth knowing:
 
 | Flag | On | Why |
 |---|---|---|
-| `--dry-run` | `push`, `import`, `restore`, `pull` | See what would happen first |
+| `--dry-run` | `push`, `import`, `restore`, `pull`, `backup` | See what would happen first |
+| `--archived` | `ls`, `search`, `stats` | Read the archive, which keeps sessions deleted locally |
+| `--all` | `search` | Also search tool commands, tool output and thinking |
 | `--quiet` | `push` | Hook mode: logs instead of printing, and **never fails** |
 | `--no-html` | `push` | Archive without rendering readable pages |
 | `--force` | `render` | Rebuild pages that are already current |
@@ -484,7 +540,10 @@ Useful flags worth knowing:
 Each of these is deliberate, and most come from a real failure:
 
 - **It never modifies your local transcripts.** They are only ever read.
-- **It never deletes from the archive.** A session that ages out locally survives.
+- **It never deletes from the archive.** A session that ages out locally survives, and
+  keeps its row in `INDEX.md`. The only files removed are half-written `.tmp-*` copies
+  an interrupted run left behind, once they are an hour old.
+- **An older or shorter copy never replaces a newer one**, in either direction.
 - **It never creates your cloud folder's parent.** An unmounted drive is an error, not
   something to paper over.
 - **It never copies credentials.**

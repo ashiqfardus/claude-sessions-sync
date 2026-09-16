@@ -5,6 +5,54 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed (audit, 2026-09-16)
+- **The scheduled sweep could be deleted by a test install.** The job name was
+  machine-wide, so `install --claude-dir <scratch>` then `uninstall` replaced and removed
+  the real profile's sweep. Jobs are now per profile; the default profile keeps its name.
+- **Subagent transcripts and saved tool output were never archived** (`<session>/subagents`,
+  `<session>/tool-results`). They are now pushed, pulled, imported and restored.
+- **A smaller or older file could overwrite a newer one.** Any size difference forced a
+  copy, so a stale copy on a second machine replaced the archived conversation, and
+  restore replaced memory edited locally. The newer file now wins, and a transcript is
+  never replaced by a shorter one.
+- **A killed run blocked archiving for 20 minutes** and left half-written temp files in
+  the synced folder. The lock is broken as soon as its process is dead, refreshed while
+  held, released only by its owner; leftover `.tmp-*` files are cleaned up.
+- **Bucket names used a partial rule.** Now Claude Code's own: every non-alphanumeric
+  character becomes `-`, long names get a hash suffix. Paths with `.`, `_` or
+  non-ASCII characters were filed where `/resume` never looks.
+- **Path rewriting matched prefixes** (`/proj` rewrote `/proj2`), aborted a transcript on
+  a pre-broken line or BOM, and abandoned the rest of the project after one failure.
+- **Multi-folder workspaces**: paths into sibling repositories a session worked in are
+  now repointed on import, matched by git remote; Git Bash `/e/...` paths are handled.
+- Manifest conflicts were decided by random map order and "today", and `projects.json`
+  fed its own entries back forever; a malformed `projects.json` failed every push.
+- `INDEX.md` and the manifest dropped sessions that had aged out locally.
+- Hooks and crontab lines containing "claude-sessions" anywhere were treated as ours and
+  removed, whole groups at a time; `settings.json` was re-sorted alphabetically.
+- `doctor` passed a disabled, failing or foreign sweep; the Windows task did not run on
+  battery; Linux paths with spaces broke systemd and cron.
+- Search interleaved sessions and cut off the newest; prompts typed while Claude was busy
+  were missing; pages did not refresh on growth inside the timestamp tolerance; index
+  prompts split multi-byte characters; page times were UTC.
+- `push --quiet` exited 1 on an unknown flag; `install` failed while the installed binary
+  was running on Windows.
+
+### Added (audit, 2026-09-16)
+- **`backup`**: a zip of the whole profile with a manifest, never credentials, and a loud
+  warning when it holds no transcripts.
+- `ls`, `search` and `stats` take `--archived`; `search --all` includes tool input,
+  output and thinking.
+- Per-project index pages instead of a 300-session cap.
+- Shell completion now covers every command, read from the binary itself.
+
+### Security (audit, 2026-09-16)
+- Rendered pages and index prompts mask common credentials.
+- Render exclusions are shared through `render-exclude.txt`, so another machine can no
+  longer re-publish an excluded project, and `INDEX.md` withholds its prompts.
+- Bucket, session and machine names read from the shared archive are validated before
+  being joined into paths that are written or deleted.
+
 ### Added
 - `render --exclude` and a `renderExclude` config key: archiving a project and
   publishing it as a readable web page are different decisions.
