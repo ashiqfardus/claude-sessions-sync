@@ -4,8 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf16"
 )
 
 // Bucket is one project folder under <root>/projects.
@@ -22,6 +25,12 @@ type Transcript struct {
 	Path    string
 	Size    int64
 	ModTime time.Time
+	// Extras are the files under the session's own folder, <bucket>/<id>/, as paths
+	// relative to it: subagents/agent-*.jsonl (+ .meta.json) and tool-results/*.
+	// Claude Code writes subagent conversations and oversized tool output there, not
+	// into the transcript, so archiving the .jsonl alone loses them for good once the
+	// local copy ages out.
+	Extras []string
 }
 
 // HasTranscripts reports whether the bucket holds any session at all.
@@ -55,8 +64,34 @@ func (b Bucket) Newest() (Transcript, bool) {
 // Note also that CLAUDE_CODE_PROJECT_DIR_NAME (Claude Code v2.1.234+) pins the
 // bucket name outright, in which case a bucket name is not a slug at all and must
 // not be compared against one.
+//
+// The rule is Claude Code's own, read from its bundle: every UTF-16 code unit that is
+// not an ASCII letter or digit becomes '-', and a result over 200 characters is cut
+// to 200 and suffixed with '-' and a base-36 string hash of the original path.
+// Replacing only ": \ / space" - what this did before - put any project whose path
+// held '.', '_' or non-ASCII (~/.config, my_app, a Bengali folder name) into a bucket
+// that /resume never looks in.
 func Slug(path string) string {
-	return strings.NewReplacer(":", "-", `\`, "-", "/", "-", " ", "-").Replace(path)
+	const maxSlug = 200
+	units := utf16.Encode([]rune(path))
+	out := make([]byte, len(units))
+	var hash int32 // (h<<5)-h+c with 32-bit wraparound, as in the JS
+	for i, u := range units {
+		hash = hash*31 + int32(u)
+		if u < 128 && (unicode.IsLetter(rune(u)) || unicode.IsDigit(rune(u))) {
+			out[i] = byte(u)
+		} else {
+			out[i] = '-'
+		}
+	}
+	if len(out) <= maxSlug {
+		return string(out)
+	}
+	abs := int64(hash)
+	if abs < 0 {
+		abs = -abs
+	}
+	return string(out[:maxSlug]) + "-" + strconv.FormatInt(abs, 36)
 }
 
 // FindBucket returns the existing bucket matching slug, compared case-insensitively.
@@ -75,6 +110,22 @@ func FindBucket(projectsDir, slug string) (Bucket, bool) {
 		}
 	}
 	return Bucket{}, false
+}
+
+// SessionFiles lists every regular file under a session's folder, relative to it.
+// A missing folder is the normal case and yields nothing.
+func SessionFiles(dir string) []string {
+	var files []string
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return nil // symlinks are not followed out of the profile
+		}
+		if rel, err := filepath.Rel(dir, path); err == nil {
+			files = append(files, rel)
+		}
+		return nil
+	})
+	return files
 }
 
 // ListBuckets reads every project bucket under projectsDir.
@@ -106,11 +157,13 @@ func ListBuckets(projectsDir string) ([]Bucket, error) {
 			if err != nil {
 				continue
 			}
+			id := strings.TrimSuffix(f.Name(), filepath.Ext(f.Name()))
 			b.Transcripts = append(b.Transcripts, Transcript{
-				ID:      strings.TrimSuffix(f.Name(), filepath.Ext(f.Name())),
+				ID:      id,
 				Path:    filepath.Join(b.Dir, f.Name()),
 				Size:    info.Size(),
 				ModTime: info.ModTime(),
+				Extras:  SessionFiles(filepath.Join(b.Dir, id)),
 			})
 		}
 

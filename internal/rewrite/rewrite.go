@@ -7,13 +7,19 @@ package rewrite
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 )
 
 // Rule is one literal substitution, named so the result can be reported per form.
@@ -22,15 +28,6 @@ type Rule struct {
 	Find    string
 	Replace string
 	re      *regexp.Regexp
-}
-
-// Slug flattens an absolute path the way Claude Code names a bucket.
-//
-// Duplicated from the claude package rather than imported, because this package must
-// not depend on it: the substitution table needs the slug form of a path that may not
-// exist on this machine at all.
-func Slug(path string) string {
-	return strings.NewReplacer(":", "-", `\`, "-", "/", "-", " ", "-").Replace(path)
 }
 
 // Rules builds the substitution table for oldPath -> newPath.
@@ -49,12 +46,15 @@ func Rules(oldPath, newPath string, includeBareName bool) []Rule {
 	rules := []Rule{
 		{Label: "json-escaped", Find: strings.ReplaceAll(oldPath, `\`, `\\`), Replace: strings.ReplaceAll(newPath, `\`, `\\`)},
 		{Label: "forward-slash", Find: strings.ReplaceAll(oldPath, `\`, "/"), Replace: strings.ReplaceAll(newPath, `\`, "/")},
+		// Git Bash spells E:\work\app as /e/work/app, and Claude Code records it that
+		// way when a session runs under MSYS.
+		{Label: "git-bash", Find: msysPath(oldPath), Replace: msysOrSlash(newPath)},
 		{Label: "literal", Find: oldPath, Replace: newPath},
-		{Label: "bucket-slug", Find: Slug(oldPath), Replace: Slug(newPath)},
+		{Label: "bucket-slug", Find: claude.Slug(oldPath), Replace: claude.Slug(newPath)},
 	}
 
 	if includeBareName {
-		oldLeaf, newLeaf := filepath.Base(oldPath), filepath.Base(newPath)
+		oldLeaf, newLeaf := LastSegment(oldPath), LastSegment(newPath)
 		if !strings.EqualFold(oldLeaf, newLeaf) {
 			rules = append(rules, Rule{Label: "bare-name", Find: oldLeaf, Replace: newLeaf})
 		}
@@ -73,18 +73,118 @@ func Rules(oldPath, newPath string, includeBareName bool) []Rule {
 	return out
 }
 
+// Move is one project path that changed between machines.
+type Move struct{ From, To string }
+
+// RulesForMoves builds rules for several moves at once - a session in a multi-folder
+// workspace names every repository it worked in. The most specific path goes first,
+// so /work/app/api is repointed before its parent /work/app could claim it.
+//
+// ponytail: rules apply in sequence, so a destination that equals another move's
+// source would be rewritten twice. Nothing in import produces that.
+func RulesForMoves(moves []Move) []Rule {
+	var sorted []Move
+	seen := map[string]bool{}
+	for _, m := range moves {
+		if key := strings.ToLower(strings.TrimRight(m.From, `\/`)); key != "" && !seen[key] {
+			seen[key] = true
+			sorted = append(sorted, m)
+		}
+	}
+	sort.SliceStable(sorted, func(i, j int) bool { return len(sorted[i].From) > len(sorted[j].From) })
+	var rules []Rule
+	for _, m := range sorted {
+		rules = append(rules, Rules(m.From, m.To, false)...)
+	}
+	return rules
+}
+
+// msysPath returns the Git Bash form of a Windows drive path, or "" for any other.
+func msysPath(p string) string {
+	if len(p) < 2 || p[1] != ':' || !unicode.IsLetter(rune(p[0])) {
+		return ""
+	}
+	return "/" + strings.ToLower(p[:1]) + strings.ReplaceAll(p[2:], `\`, "/")
+}
+
+func msysOrSlash(p string) string {
+	if m := msysPath(p); m != "" {
+		return m
+	}
+	return strings.ReplaceAll(p, `\`, "/")
+}
+
+// LastSegment is the last segment of a path from either OS. filepath.Base on Linux
+// returns a whole Windows path, because '\' is not a separator there.
+func LastSegment(p string) string {
+	if i := strings.LastIndexAny(p, `\/`); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
 // Apply rewrites one line, reporting which rules matched.
+//
+// A match only counts when it is a whole path: /home/a/proj must not rewrite
+// /home/a/proj2 or /home/a/proj-old, nor /mnt/home/a/proj. Before the match there
+// must be no path-name character, and after it either none or a sentence-ending
+// full stop.
 func Apply(line string, rules []Rule, hits map[string]int) string {
 	for _, r := range rules {
-		before := line
-		// A literal replacement, so a '$' in the destination path is never treated as
-		// a regexp expansion token.
-		line = r.re.ReplaceAllLiteralString(line, r.Replace)
-		if before != line && hits != nil {
+		matches := r.re.FindAllStringIndex(line, -1)
+		if len(matches) == 0 {
+			continue
+		}
+		var b strings.Builder
+		last, n := 0, 0
+		for _, m := range matches {
+			if !bounded(line, m[0], m[1]) {
+				continue
+			}
+			b.WriteString(line[last:m[0]])
+			// A literal replacement, so a '$' in the destination path is never
+			// treated as an expansion token.
+			b.WriteString(r.Replace)
+			last = m[1]
+			n++
+		}
+		if n == 0 {
+			continue
+		}
+		b.WriteString(line[last:])
+		line = b.String()
+		if hits != nil {
 			hits[r.Label]++
 		}
 	}
 	return line
+}
+
+func nameRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.'
+}
+
+func bounded(s string, start, end int) bool {
+	if start > 0 {
+		prev, size := utf8.DecodeLastRuneInString(s[:start])
+		// "\n" and "\t" escapes inside a JSON string end in a letter but are
+		// separators, and a path very often follows one in tool output.
+		escaped := size == 1 && strings.ContainsRune("ntr", prev) && start >= 2 && s[start-2] == '\\'
+		if nameRune(prev) && !escaped {
+			return false
+		}
+	}
+	if end < len(s) {
+		next, size := utf8.DecodeRuneInString(s[end:])
+		if next == '.' {
+			after, _ := utf8.DecodeRuneInString(s[end+size:])
+			return end+size == len(s) || !nameRune(after)
+		}
+		if nameRune(next) {
+			return false
+		}
+	}
+	return true
 }
 
 // Result reports what a file-level rewrite did.
@@ -92,15 +192,17 @@ type Result struct {
 	Hits          map[string]int
 	Lines         int
 	BareLeftovers int // lines still naming the old folder without a path prefix
+	Unparseable   int // lines that were not valid JSON before the rewrite either
 }
 
 // File rewrites src into dst.
 //
 // The source is never modified: rewriting happens on the way to the destination.
 //
-// Every output line is re-validated as JSON before the result is kept. A transcript
-// that no longer parses is worse than no transcript, so on any failure the
-// destination is removed and the error names the first bad line.
+// Every line that was valid JSON must still be valid after the rewrite; if one is not,
+// the destination is removed and the error names the line. Lines that were already
+// broken - a truncated last line from a killed session is normal - are carried
+// across as they are and counted, rather than failing the whole transcript.
 func File(src, dst string, rules []Rule, bareLeaf string) (Result, error) {
 	res := Result{Hits: map[string]int{}}
 
@@ -136,13 +238,20 @@ func File(src, dst string, rules []Rule, bareLeaf string) (Result, error) {
 	for {
 		line, readErr := r.ReadString('\n')
 		trimmed := strings.TrimRight(line, "\r\n")
+		if res.Lines == 0 {
+			// A UTF-8 BOM makes the first line - the one carrying cwd - unparseable.
+			trimmed = string(bytes.TrimPrefix([]byte(trimmed), []byte("\xef\xbb\xbf")))
+		}
 
 		if trimmed != "" || readErr == nil {
 			res.Lines++
 			out := Apply(trimmed, rules, res.Hits)
 
 			if strings.TrimSpace(out) != "" {
-				if !json.Valid([]byte(out)) {
+				switch {
+				case !json.Valid([]byte(trimmed)):
+					res.Unparseable++
+				case !json.Valid([]byte(out)):
 					return fail(fmt.Errorf("rewrite produced invalid JSON at line %d of %s; nothing was kept:\n%s",
 						res.Lines, filepath.Base(src), truncateForError(out)))
 				}

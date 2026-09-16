@@ -5,6 +5,7 @@ package main_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 )
 
 func (f fixture) push(t *testing.T, extra ...string) (string, error) {
@@ -246,6 +249,11 @@ func TestPushQuietNeverFails(t *testing.T) {
 		t.Errorf("push --quiet must exit 0 even with an unreachable archive: %v\n%s", err, out)
 	}
 
+	// A hook written by a newer version may pass a flag this binary does not know.
+	if out, err := f.push(t, "--quiet", "--flag-from-the-future"); err != nil {
+		t.Errorf("push --quiet must exit 0 on an unknown flag: %v\n%s", err, out)
+	}
+
 	// And it must leave a trace, because nobody is watching a hook run.
 	raw, readErr := os.ReadFile(filepath.Join(f.claudeDir, "session-sync.log"))
 	if readErr != nil {
@@ -260,7 +268,8 @@ func TestPushQuietNeverFails(t *testing.T) {
 // writes to the same manifest and index.
 func TestPushRefusesWhenLocked(t *testing.T) {
 	f := newFixture(t)
-	mustWrite(t, filepath.Join(f.claudeDir, "session-sync.lock"), "99999 2026-09-01T00:00:00Z\n")
+	// Held by a live process: this test binary.
+	mustWrite(t, filepath.Join(f.claudeDir, "session-sync.lock"), fmt.Sprintf("%d token 2026-09-01T00:00:00Z\n", os.Getpid()))
 
 	out, err := f.push(t)
 	if err == nil {
@@ -336,5 +345,97 @@ func TestPushNoHTMLSkipsRendering(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.archive, "html")); err == nil {
 		t.Error("--no-html should not write any pages")
+	}
+}
+
+// A second machine holding an older, shorter copy of a session - pulled before the
+// first machine carried on in it - used to overwrite the longer archived version,
+// because any size difference forced a copy.
+func TestPushNeverReplacesArchiveWithStalerCopy(t *testing.T) {
+	f := newFixture(t)
+	if out, err := f.push(t); err != nil {
+		t.Fatalf("first push failed: %v\n%s", err, out)
+	}
+
+	rel := filepath.Join("projects", "e--work-airos-frontend", "11111111-2222-3333-4444-555555555555.jsonl")
+	archived := filepath.Join(f.archive, rel)
+	local := filepath.Join(f.claudeDir, rel)
+
+	// The other machine continued the session and pushed a longer, newer file.
+	longer := mustRead(t, local) + line(`{"type":"user","message":{"role":"user","content":"and the logout page"}}`)
+	mustWrite(t, archived, longer)
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(archived, later, later); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, err := f.push(t); err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+	if got := mustRead(t, archived); got != longer {
+		t.Fatal("an older local copy overwrote the newer archived transcript")
+	}
+
+	// Newer but shorter locally - a truncated file or a fork - still keeps the archive.
+	mustWrite(t, local, line(`{"type":"user","message":{"role":"user","content":"x"}}`))
+	evenLater := later.Add(time.Hour)
+	if err := os.Chtimes(local, evenLater, evenLater); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := f.push(t); err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+	if got := mustRead(t, archived); got != longer {
+		t.Error("a shorter local transcript replaced the archived conversation")
+	}
+}
+
+// Memory edited on this machine must survive pulling an older archived original.
+func TestPullKeepsNewerLocalMemory(t *testing.T) {
+	f := newFixture(t)
+	if out, err := f.push(t); err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+
+	local := filepath.Join(f.claudeDir, "projects", "e--work-legacy-app", "memory", "MEMORY.md")
+	edited := "- a note\n- and a much longer note added later on this machine\n"
+	mustWrite(t, local, edited)
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(local, later, later); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, err := f.run(t, "pull", "--archive", f.archive); err != nil {
+		t.Fatalf("pull failed: %v\n%s", err, out)
+	}
+	if got := mustRead(t, local); got != edited {
+		t.Errorf("pull replaced newer local memory with the archived copy: %q", got)
+	}
+}
+
+// Claude Code deletes old transcripts locally. The archive is then the only copy,
+// and its row used to vanish from INDEX.md on the next push.
+func TestPushKeepsSessionsThatAgedOutLocally(t *testing.T) {
+	f := newFixture(t)
+	if out, err := f.push(t); err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+	if err := os.RemoveAll(filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend")); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := f.push(t); err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+
+	index := mustRead(t, filepath.Join(f.archive, "INDEX.md"))
+	if !strings.Contains(index, "fix the login redirect") {
+		t.Errorf("an archived session disappeared from INDEX.md:\n%s", index)
+	}
+	merged, _, err := archive.Merged(f.archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged["e--work-airos-frontend"].Path != `E:\work\airos-frontend` {
+		t.Errorf("the project lost its identity once its transcripts aged out: %+v", merged["e--work-airos-frontend"])
 	}
 }

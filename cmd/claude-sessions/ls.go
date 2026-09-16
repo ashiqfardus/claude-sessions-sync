@@ -33,6 +33,7 @@ type candidate struct {
 func cmdLs(args []string) error {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
+	archived, archiveDir := sourceFlags(fs)
 	project := fs.String("project", "", "only sessions whose bucket or path contains this substring")
 	since := fs.String("since", "", "only sessions updated on or after this date (YYYY-MM-DD)")
 	until := fs.String("until", "", "only sessions updated on or before this date (YYYY-MM-DD)")
@@ -59,9 +60,13 @@ func cmdLs(args []string) error {
 		return err
 	}
 
-	buckets, err := claude.ListBuckets(claude.ProjectsDir(root))
+	dir, err := sessionsDir(root, *archived, *archiveDir)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", claude.ProjectsDir(root), err)
+		return err
+	}
+	buckets, err := claude.ListBuckets(dir)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", dir, err)
 	}
 
 	// Collect and order first, using only directory metadata, so that --limit reads N
@@ -131,7 +136,7 @@ func cmdLs(args []string) error {
 	}
 
 	if len(rows) == 0 {
-		fmt.Println("No sessions found under", claude.ProjectsDir(root))
+		fmt.Println("No sessions found under", dir)
 		return nil
 	}
 
@@ -192,8 +197,10 @@ func shorten(s string, max int) string {
 		}
 		return s[:max]
 	}
-	if len(s) <= max {
+	// Counted in characters: a byte slice split non-ASCII paths mid-character.
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
-	return "..." + s[len(s)-(max-3):]
+	return "..." + string(r[len(r)-(max-3):])
 }

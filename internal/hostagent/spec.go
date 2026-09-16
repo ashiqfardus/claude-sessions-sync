@@ -1,9 +1,14 @@
 package hostagent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/xml"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // This file holds the exact content and arguments each platform's scheduler needs,
@@ -19,19 +24,57 @@ import (
 // What still cannot be checked this way is whether launchd or systemd accept and run
 // what we generate. That needs the real OS, and CI does it.
 
+// suffix distinguishes a non-default profile's job. Stable for a given path.
+func (j Job) suffix() string {
+	if j.Profile == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.ToLower(filepath.Clean(j.Profile))))
+	return "-" + hex.EncodeToString(sum[:])[:8]
+}
+
+// TaskName is the Windows Task Scheduler name.
+func (j Job) TaskName() string { return Name + j.suffix() }
+
+// LaunchdLabel is the macOS job label.
+func (j Job) LaunchdLabel() string { return Label + j.suffix() }
+
+// SystemdTimerName is the Linux timer unit; the service shares its base name.
+func (j Job) SystemdTimerName() string {
+	return strings.TrimSuffix(Unit, ".timer") + j.suffix() + ".timer"
+}
+
+// SystemdServiceName is the oneshot unit the timer starts.
+func (j Job) SystemdServiceName() string {
+	return strings.TrimSuffix(j.SystemdTimerName(), ".timer") + ".service"
+}
+
+// CronMarker tags our crontab line so uninstall removes that line and nothing else.
+func (j Job) CronMarker() string { return "# " + Name + j.suffix() }
+
+// Args is what every platform runs after the binary.
+func (j Job) Args() []string {
+	args := []string{"push", "--quiet"}
+	if j.Profile != "" {
+		args = append(args, "--claude-dir", j.Profile)
+	}
+	return args
+}
+
 // LaunchdPlist is the macOS user agent definition.
-func LaunchdPlist(label, binary string, everyMinutes int) string {
+func LaunchdPlist(j Job, everyMinutes int) string {
+	var args strings.Builder
+	for _, a := range append([]string{j.Binary}, j.Args()...) {
+		args.WriteString("    <string>" + xmlEscape(a) + "</string>\n")
+	}
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>` + xmlEscape(label) + `</string>
+  <key>Label</key><string>` + xmlEscape(j.LaunchdLabel()) + `</string>
   <key>ProgramArguments</key>
   <array>
-    <string>` + xmlEscape(binary) + `</string>
-    <string>push</string>
-    <string>--quiet</string>
-  </array>
+` + args.String() + `  </array>
   <key>StartInterval</key><integer>` + strconv.Itoa(everyMinutes*60) + `</integer>
   <key>RunAtLoad</key><false/>
   <key>ProcessType</key><string>Background</string>
@@ -41,42 +84,134 @@ func LaunchdPlist(label, binary string, everyMinutes int) string {
 }
 
 // SystemdService is the oneshot unit that runs a push.
-func SystemdService(binary string) string {
+func SystemdService(j Job) string {
 	return "[Unit]\nDescription=Archive Claude Code sessions\n\n" +
 		"[Service]\nType=oneshot\n" +
-		"ExecStart=" + binary + " push --quiet\n"
+		"ExecStart=" + systemdCommand(append([]string{j.Binary}, j.Args()...)) + "\n"
 }
 
 // SystemdTimer schedules the service.
 //
-// Persistent=true matters: without it a machine that was asleep at the scheduled
-// moment simply skips that run, which for a backup is the wrong answer.
+// A monotonic timer: it counts from boot and from the last run. Persistent= only
+// applies to OnCalendar timers and was a no-op here, so it is not emitted.
 func SystemdTimer(everyMinutes int) string {
 	n := strconv.Itoa(everyMinutes)
 	return "[Unit]\nDescription=Archive Claude Code sessions every " + n + " minutes\n\n" +
-		"[Timer]\nOnBootSec=5min\nOnUnitActiveSec=" + n + "min\n" +
-		"Persistent=true\n\n[Install]\nWantedBy=timers.target\n"
+		"[Timer]\nOnBootSec=5min\nOnUnitActiveSec=" + n + "min\n\n" +
+		"[Install]\nWantedBy=timers.target\n"
 }
 
 // CronLine is the fallback for systems without systemd.
-func CronLine(binary string, everyMinutes int) string {
-	return fmt.Sprintf("*/%d * * * * %s push --quiet", everyMinutes, binary)
+//
+// ponytail: intervals of an hour or more round down to whole hours; cron has no
+// "every 90 minutes".
+func CronLine(j Job, everyMinutes int) string {
+	schedule := fmt.Sprintf("*/%d * * * *", everyMinutes)
+	if everyMinutes >= 60 {
+		schedule = fmt.Sprintf("0 */%d * * *", everyMinutes/60)
+	}
+	var cmd []string
+	for _, a := range append([]string{j.Binary}, j.Args()...) {
+		cmd = append(cmd, shellQuote(a))
+	}
+	// A bare % in a crontab command is a newline.
+	line := strings.ReplaceAll(strings.Join(cmd, " "), "%", `\%`)
+	return schedule + " " + line + " " + j.CronMarker()
 }
 
-// SchtasksCreateArgs is the Windows Task Scheduler invocation.
+// ownsCronLine reports whether a crontab line is this job's.
 //
-// The command is one quoted string because the binary path routinely contains
-// spaces, and /SC MINUTE /MO n repeats indefinitely - the PowerShell predecessor
-// could not express that and needed a daily trigger with a repetition window.
-func SchtasksCreateArgs(name, binary string, everyMinutes int) []string {
-	return []string{
-		"/Create",
-		"/TN", name,
-		"/TR", fmt.Sprintf(`"%s" push --quiet`, binary),
-		"/SC", "MINUTE",
-		"/MO", strconv.Itoa(everyMinutes),
-		"/F",
+// Matching "claude-sessions" anywhere deleted the user's own lines. The marker is
+// exact; the unmarked form is what versions before the marker wrote for the default
+// profile.
+func ownsCronLine(j Job, line string) bool {
+	line = strings.TrimSpace(line)
+	if strings.HasSuffix(line, " "+j.CronMarker()) {
+		return true
 	}
+	return j.Profile == "" && !strings.Contains(line, "#") &&
+		strings.HasSuffix(line, " push --quiet") && ownsAction(line)
+}
+
+// TaskXML is the Windows Task Scheduler definition.
+//
+// Registered from XML rather than `schtasks /SC MINUTE` because the flags cannot turn
+// off Task Scheduler's defaults of not starting on battery and stopping when the
+// charger is pulled - on a laptop, the sweep silently skipped every unplugged hour.
+func TaskXML(j Job, everyMinutes int, now time.Time) string {
+	return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Archive Claude Code sessions (claude-sessions)</Description></RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <Repetition><Interval>PT` + strconv.Itoa(everyMinutes) + `M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <StartBoundary>` + now.Format("2006-01-02T15:04:05") + `</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>` + xmlEscape(j.Binary) + `</Command>
+      <Arguments>` + xmlEscape(windowsArgs(j.Args())) + `</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`
+}
+
+// taskDefinition is the part of `schtasks /query /xml` this tool reads. XML rather
+// than the LIST or CSV forms because their field names and states are translated on
+// non-English Windows.
+type taskDefinition struct {
+	Command   string `xml:"Actions>Exec>Command"`
+	Arguments string `xml:"Actions>Exec>Arguments"`
+	Enabled   string `xml:"Settings>Enabled"`
+}
+
+func parseTaskXML(data []byte) (taskDefinition, error) {
+	var t taskDefinition
+	// schtasks declares UTF-16 but writes the console encoding; the content that
+	// matters is ASCII-compatible either way.
+	text := strings.Replace(string(data), `encoding="UTF-16"`, `encoding="UTF-8"`, 1)
+	err := xml.Unmarshal([]byte(text), &t)
+	return t, err
+}
+
+// windowsArgs joins arguments the way CommandLineToArgvW splits them. Paths cannot
+// contain '"', so quoting anything with whitespace is enough.
+func windowsArgs(args []string) string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		if a == "" || strings.ContainsAny(a, " \t") {
+			a = `"` + a + `"`
+		}
+		out[i] = a
+	}
+	return strings.Join(out, " ")
+}
+
+// systemdCommand quotes an ExecStart line: '%' is a specifier and '$' an
+// environment expansion, and a path with a space is otherwise two words.
+func systemdCommand(args []string) string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		a = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%", "$", "$$").Replace(a)
+		out[i] = `"` + a + `"`
+	}
+	return strings.Join(out, " ")
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // normalMinutes applies the shared default so every platform agrees.
@@ -116,6 +251,17 @@ func neverRun(lastRun, lastResult string) bool {
 	return strings.Contains(lastRun, "1999") || strings.TrimSpace(lastResult) == "267011"
 }
 
+// resultIsHealthy reports whether a Task Scheduler last-result code means the sweep
+// works. push --quiet always exits 0, so anything else is the scheduler failing to
+// start it - typically 2147942402, the binary is gone.
+func resultIsHealthy(code string) bool {
+	switch strings.TrimSpace(code) {
+	case "", "0", "267009", "267010", "267011", "267014", "2147750687":
+		return true
+	}
+	return false
+}
+
 // describeResult translates the Task Scheduler codes worth naming. Anything else is
 // passed through: an unexplained number the user can search for beats a wrong guess.
 func describeResult(code string) string {
@@ -132,6 +278,8 @@ func describeResult(code string) string {
 		return "an instance was already running"
 	case "2147943645":
 		return "the service is not available (is the user logged on?)"
+	case "2147942402":
+		return "2147942402 (the program was not found)"
 	default:
 		return code
 	}

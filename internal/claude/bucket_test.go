@@ -3,6 +3,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,14 @@ func TestSlug(t *testing.T) {
 		{`C:\Users\Administrator`, "C--Users-Administrator"},
 		{"/home/aislam/dev/airos-frontend", "-home-aislam-dev-airos-frontend"},
 		{`E:\Laravel Applications\innovix`, "E--Laravel-Applications-innovix"},
+		// Expected values below were produced by Claude Code's own function, run
+		// under node - not derived from this implementation.
+		{`C:\Users\Administrator\.claude\projects`, "C--Users-Administrator--claude-projects"},
+		{"/home/me/my_app.v2", "-home-me-my-app-v2"},
+		// One '-' per UTF-16 code unit: the emoji is a surrogate pair.
+		{`E:\প্রকল্প\😀x`, "E------------x"},
+		{"/home/me/" + strings.Repeat("very_long.directory name/", 9) + "app",
+			"-home-me-very-long-directory-name-very-long-directory-name-very-long-directory-name-very-long-directory-name-very-long-directory-name-very-long-directory-name-very-long-directory-name-very-long-direct-oaspu9"},
 	}
 	for _, tc := range cases {
 		if got := Slug(tc.in); got != tc.want {

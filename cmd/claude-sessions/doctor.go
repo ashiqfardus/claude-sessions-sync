@@ -187,11 +187,7 @@ func cmdDoctor(args []string) error {
 	}
 
 	// Rendering is a user-visible feature that can quietly fall behind.
-	cfg, _ := archive.LoadConfig(root)
-	excludePatterns := cfg.RenderExclude
-	if strings.TrimSpace(*exclude) != "" {
-		excludePatterns = append(excludePatterns, strings.Split(*exclude, ",")...)
-	}
+	excludePatterns := archive.RenderExcludes(root, dest, splitList(*exclude), false)
 	if len(excludePatterns) > 0 {
 		// A pattern that matches nothing publishes what the user believed was
 		// withheld, so show what is configured and what it actually caught.
@@ -224,11 +220,11 @@ func cmdDoctor(args []string) error {
 	// Classify carefully. "sync-claude-sessions.ps1" CONTAINS "claude-sessions", so
 	// matching that substring counts the PowerShell script as this binary too and
 	// reports two archivers when only one is installed. Identify the script first,
-	// and treat anything else mentioning the name as this binary.
+	// and count as this binary only a hook that actually runs `claude-sessions push`.
 	psHooks := settings.SessionEndHooks("sync-claude-sessions")
 	var goHooks []claude.Hook
 	for _, h := range settings.SessionEndHooks("claude-sessions") {
-		if !h.Mentions("sync-claude-sessions") {
+		if ours, _ := claude.IsArchiveHook(h.Command, h.Args); ours {
 			goHooks = append(goHooks, h)
 		}
 	}
@@ -253,15 +249,14 @@ func cmdDoctor(args []string) error {
 			"Sessions are only archived by the periodic sweep, so the most recent one can be missed."})
 	}
 
-	sweep, err := hostagent.Sweep()
+	sweep, err := hostagent.Sweep(sweepJob(root, ""))
 	if err != nil {
 		add(check{"sweep", levelWarn, err.Error(), ""})
+	} else if sweep.Problem != "" {
+		add(check{"sweep", levelFail, fmt.Sprintf("%s: %s", sweep.Mechanism, sweep.Detail),
+			sweep.Problem + ". Re-run `claude-sessions install` to register it again."})
 	} else if sweep.Installed {
-		l := levelOK
-		if strings.Contains(sweep.Detail, "NOT running") {
-			l = levelFail
-		}
-		add(check{"sweep", l, fmt.Sprintf("%s: %s", sweep.Mechanism, sweep.Detail), ""})
+		add(check{"sweep", levelOK, fmt.Sprintf("%s: %s", sweep.Mechanism, sweep.Detail), ""})
 	} else {
 		add(check{"sweep", levelWarn, fmt.Sprintf("%s: %s", sweep.Mechanism, sweep.Detail),
 			"A session killed abruptly will not be archived until the next manual push."})
@@ -481,7 +476,8 @@ func renderState(dest string, manifest map[string]archive.Project, exclude []str
 			continue
 		}
 		for _, f := range files {
-			if !f.IsDir() && strings.EqualFold(filepath.Ext(f.Name()), ".html") {
+			// A project's index.html lists its sessions; it is not one.
+			if !f.IsDir() && strings.EqualFold(filepath.Ext(f.Name()), ".html") && !strings.EqualFold(f.Name(), "index.html") {
 				pages++
 			}
 		}

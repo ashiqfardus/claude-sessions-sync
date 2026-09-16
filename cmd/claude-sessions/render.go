@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
@@ -39,11 +38,7 @@ func cmdRender(args []string) error {
 		return fmt.Errorf("%s is not reachable - is the sync client mounted?", dest)
 	}
 
-	cfg, _ := archive.LoadConfig(root)
-	patterns := cfg.RenderExclude
-	if strings.TrimSpace(*exclude) != "" {
-		patterns = append(patterns, strings.Split(*exclude, ",")...)
-	}
+	patterns := archive.RenderExcludes(root, dest, splitList(*exclude), true)
 
 	res, err := render.Archive(dest, render.Options{
 		Force:         *force,

@@ -3,40 +3,37 @@ package hostagent
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
-// Sweep reports the state of the launchd user agent.
+// Sweep reports the state of this profile's launchd user agent.
 //
-// NOT VERIFIED ON A MAC. This machine is Windows-only, so every darwin path in this
-// package is unrun until CI or a real Mac exercises it. Do not claim macOS support
-// on the strength of it compiling.
-func Sweep() (Status, error) {
+// NOT VERIFIED ON A MAC beyond CI. Do not claim macOS support on the strength of it
+// compiling.
+func Sweep(j Job) (Status, error) {
 	s := Status{Mechanism: "launchd"}
 
-	home, err := os.UserHomeDir()
+	path, err := plistPath(j)
 	if err != nil {
 		return s, err
 	}
-	plist := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
-	if _, err := os.Stat(plist); err != nil {
+	if _, err := os.Stat(path); err != nil {
 		s.Detail = "not registered"
 		return s, nil
 	}
 	s.Installed = true
-	s.Detail = plist
+	s.Detail = path
 
 	// `launchctl list <label>` prints the last exit status when the job is loaded.
-	if out, err := exec.Command(systemBinary("launchctl"), "list", Label).Output(); err == nil {
+	if out, err := exec.Command(systemBinary("launchctl"), "list", j.LaunchdLabel()).Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			if strings.Contains(line, "LastExitStatus") {
-				s.Detail = plist + ", " + strings.TrimSpace(line)
+				s.Detail = path + ", " + strings.TrimSpace(line)
 				break
 			}
 		}
 	} else {
-		s.Detail = plist + ", present but not loaded (launchctl bootstrap gui/$UID)"
+		s.Problem = "the agent is present but not loaded (launchctl bootstrap gui/$UID " + path + ")"
 	}
 	return s, nil
 }

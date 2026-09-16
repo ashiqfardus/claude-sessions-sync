@@ -69,6 +69,14 @@ type entry struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
+	// A prompt typed while Claude is busy is stored only as an attachment of type
+	// queued_command with commandMode "prompt" - never as a user message - so reading
+	// message alone lost everything the user said mid-turn.
+	Attachment struct {
+		Type        string          `json:"type"`
+		Prompt      json.RawMessage `json:"prompt"`
+		CommandMode string          `json:"commandMode"`
+	} `json:"attachment"`
 }
 
 const maxPromptLen = 90
@@ -112,11 +120,19 @@ func Walk(path string, fn func(Record) bool) (Stats, error) {
 				if json.Unmarshal([]byte(trimmed), &e) != nil {
 					st.Skipped++
 				} else {
+					content, role, typ := e.Message.Content, e.Message.Role, e.Type
+					if e.Attachment.Type == "queued_command" && e.Attachment.CommandMode == "prompt" {
+						content, role, typ = e.Attachment.Prompt, "user", "user"
+					}
+					// Claude Code splices plumbing into user turns and tool output. An
+					// assistant only ever mentions those tags, and stripping there cut
+					// everything after an unclosed mention off the page.
+					strip := role != "assistant" && typ != "assistant"
 					rec := Record{
-						Type:      e.Type,
-						Role:      e.Message.Role,
-						Text:      contentText(e.Message.Content),
-						Blocks:    contentBlocks(e.Message.Content),
+						Type:      typ,
+						Role:      role,
+						Text:      contentText(content, strip),
+						Blocks:    contentBlocks(content, strip),
 						Timestamp: parseTime(e.Timestamp),
 						Cwd:       e.Cwd,
 						SessionID: e.SessionID,
@@ -134,6 +150,43 @@ func Walk(path string, fn func(Record) bool) (Stats, error) {
 				return st, nil
 			}
 			return st, readErr
+		}
+	}
+}
+
+// Cwds returns every distinct working directory a transcript records, in order of
+// first appearance.
+//
+// A session in a multi-folder workspace moves between repositories - it starts in
+// one and cds into its siblings - and every one of those paths needs repointing on
+// another machine. The field is found by bytes rather than by decoding each line:
+// this reads whole transcripts, which reach tens of megabytes. Only a top-level cwd
+// matches; one quoted inside tool output is escaped (\"cwd\":\") and does not.
+func Cwds(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	needle := []byte(`"cwd":"`)
+	seen := map[string]bool{}
+	var out []string
+	r := bufio.NewReaderSize(f, 256*1024)
+	for {
+		line, readErr := r.ReadBytes('\n')
+		if i := bytes.Index(line, needle); i >= 0 {
+			var cwd string
+			if json.NewDecoder(bytes.NewReader(line[i+len(needle)-1:])).Decode(&cwd) == nil && cwd != "" && !seen[cwd] {
+				seen[cwd] = true
+				out = append(out, cwd)
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return out, nil
+			}
+			return out, readErr
 		}
 	}
 }
@@ -224,7 +277,7 @@ var injected = regexp.MustCompile(`(?s)` + strings.Join([]string{
 
 // contentText pulls readable text out of a message's content, which is either a
 // plain string or an array of typed blocks.
-func contentText(raw json.RawMessage) string {
+func contentText(raw json.RawMessage, strip bool) string {
 	if len(raw) == 0 {
 		return ""
 	}
@@ -250,7 +303,9 @@ func contentText(raw json.RawMessage) string {
 		text = strings.Join(parts, " ")
 	}
 
-	text = stripInjected(text)
+	if strip {
+		text = stripInjected(text)
+	}
 	return strings.TrimSpace(strings.Join(strings.Fields(text), " "))
 }
 
@@ -278,14 +333,17 @@ type rawBlock struct {
 // stored. Anything whose shape is not recognised still yields a block carrying
 // whatever text could be found, so a format change degrades the display rather than
 // emptying it.
-func contentBlocks(raw json.RawMessage) []Block {
+func contentBlocks(raw json.RawMessage, strip bool) []Block {
 	if len(raw) == 0 {
 		return nil
 	}
 
 	var asString string
 	if json.Unmarshal(raw, &asString) == nil {
-		text := stripInjected(asString)
+		text := asString
+		if strip {
+			text = stripInjected(text)
+		}
 		if strings.TrimSpace(text) == "" {
 			return nil
 		}
@@ -313,7 +371,7 @@ func contentBlocks(raw json.RawMessage) []Block {
 		case "tool_use":
 			out = append(out, Block{Kind: "tool_use", Name: rb.Name, Text: prettyJSON(rb.Input)})
 		case "tool_result":
-			out = append(out, Block{Kind: "tool_result", Text: flattenResult(rb.Content)})
+			out = append(out, Block{Kind: "tool_result", Text: stripInjected(flattenResult(rb.Content))})
 		case "image":
 			out = append(out, Block{Kind: "image", Text: "(image)"})
 		default:
@@ -328,7 +386,9 @@ func contentBlocks(raw json.RawMessage) []Block {
 			// Strip the blocks Claude Code splices into a user turn. contentText has
 			// always done this; contentBlocks did not, so rendered pages published
 			// every system-reminder into a cloud folder.
-			text = stripInjected(text)
+			if strip {
+				text = stripInjected(text)
+			}
 			if strings.TrimSpace(text) != "" {
 				out = append(out, Block{Kind: kind, Text: text})
 			}
@@ -352,8 +412,12 @@ func flattenResult(raw json.RawMessage) string {
 	}
 	var parts []string
 	for _, rb := range raws {
-		if rb.Text != "" {
+		switch {
+		case rb.Text != "":
 			parts = append(parts, rb.Text)
+		case rb.Type == "image":
+			// A screenshot result used to render as nothing at all.
+			parts = append(parts, "(image)")
 		}
 	}
 	return strings.Join(parts, "\n")
@@ -386,5 +450,5 @@ func truncate(s string, max int) string {
 
 // firstPrompt is retained for tests that exercise content extraction directly.
 func firstPrompt(raw json.RawMessage) string {
-	return truncate(contentText(raw), maxPromptLen)
+	return truncate(contentText(raw, true), maxPromptLen)
 }

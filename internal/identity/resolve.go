@@ -47,9 +47,16 @@ type Match struct {
 // project is worse than leaving it unfiled, because it is silent and the user has no
 // reason to go looking for it.
 func Resolve(recordedPath, leaf, remote string, scanner *Scanner) Match {
-	if recordedPath != "" {
+	// The recorded path only counts when it is absolute for THIS operating system - a
+	// Linux "/home/me/api" on Windows would otherwise be looked up on the current
+	// drive - and when it is not demonstrably a different repository. The same path
+	// on two machines holding different repos used to be filed silently.
+	if recordedPath != "" && filepath.IsAbs(recordedPath) {
 		if st, err := os.Stat(recordedPath); err == nil && st.IsDir() {
-			return Match{How: ByRecordedPath, Path: recordedPath}
+			local := Remote(recordedPath)
+			if remote == "" || local == "" || SameRemote(local, remote) {
+				return Match{How: ByRecordedPath, Path: recordedPath}
+			}
 		}
 	}
 
@@ -88,6 +95,21 @@ func Resolve(recordedPath, leaf, remote string, scanner *Scanner) Match {
 		if len(byRemote) > 1 {
 			return Match{How: Ambiguous, Candidates: byRemote}
 		}
+		// None has the remote. Only folders with no remote of their own could still be
+		// the project; when every one is a different repository, it is not here.
+		var unknown []string
+		for _, c := range candidates {
+			if Remote(c) == "" {
+				unknown = append(unknown, c)
+			}
+		}
+		if len(unknown) == 0 {
+			return Match{How: NotFound, Candidates: candidates}
+		}
+		if len(unknown) == 1 {
+			return Match{How: ByFolderName, Path: unknown[0]}
+		}
+		return Match{How: Ambiguous, Candidates: unknown}
 	}
 
 	return Match{How: Ambiguous, Candidates: candidates}
@@ -147,16 +169,27 @@ func NewScanner(roots []string, maxDepth int) *Scanner {
 				continue // unreadable directory: skip, never fail the whole scan
 			}
 			for _, e := range entries {
-				if !e.IsDir() || skipDirs[e.Name()] {
+				if skipDirs[e.Name()] {
 					continue
 				}
 				child := filepath.Join(cur.path, e.Name())
+				// A symlinked project folder (~/dev -> /data/dev is common) reports as
+				// not a directory. Index it, but never descend through a link: that is
+				// how a scan loops.
+				link := e.Type()&os.ModeSymlink != 0
+				if link {
+					if st, err := os.Stat(child); err != nil || !st.IsDir() {
+						continue
+					}
+				} else if !e.IsDir() {
+					continue
+				}
 				if key := strings.ToLower(child); !seen[key] {
 					seen[key] = true
 					name := strings.ToLower(e.Name())
 					s.byName[name] = append(s.byName[name], child)
 				}
-				if cur.depth+1 < maxDepth {
+				if !link && cur.depth+1 < maxDepth {
 					queue = append(queue, node{path: child, depth: cur.depth + 1})
 				}
 			}

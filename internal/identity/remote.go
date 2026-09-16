@@ -59,11 +59,50 @@ func Remote(dir string) string {
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(key), "url") {
-			url = strings.TrimSpace(value)
+			url = configValue(value)
 			break
 		}
 	}
 	return url
+}
+
+// RepoRoot returns the nearest folder at or above dir that holds a .git entry, or ""
+// when dir is not inside a repository. Nothing is executed.
+func RepoRoot(dir string) string {
+	d := filepath.Clean(dir)
+	for {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return d
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return ""
+		}
+		d = parent
+	}
+}
+
+// configValue reads a git config value the way git does for the forms that occur in
+// a url line: surrounding double quotes are removed, and a # or ; outside quotes
+// starts a comment. `url = "https://..."` or a trailing comment used to leave the
+// quotes or the comment in the URL, so it never matched.
+//
+// ponytail: backslash escapes inside quotes are not decoded; a URL has no reason to
+// contain one.
+func configValue(v string) string {
+	var b strings.Builder
+	quoted := false
+	for _, r := range strings.TrimSpace(v) {
+		switch {
+		case r == '"':
+			quoted = !quoted
+		case (r == '#' || r == ';') && !quoted:
+			return strings.TrimSpace(b.String())
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // SameRemote compares two remotes ignoring protocol, credentials, a trailing .git
@@ -86,21 +125,27 @@ func normaliseRemote(u string) string {
 	u = strings.TrimSpace(u)
 
 	// scheme://
+	hasScheme := false
 	if i := strings.Index(u, "://"); i >= 0 {
 		u = u[i+3:]
+		hasScheme = true
 	}
 	// user@ or user:password@
 	if i := strings.Index(u, "@"); i >= 0 && !strings.Contains(u[:i], "/") {
 		u = u[i+1:]
 	}
 	// Drop an explicit port before the scp-style colon is rewritten, or ssh://host:22/
-	// would turn into host/22/ and never match https://host/.
-	u = hostPort.ReplaceAllString(u, "$1$2")
+	// would turn into host/22/ and never match https://host/. Only a URL has a port:
+	// in scp form git@host:1234/repo, 1234 is the owner.
+	if hasScheme {
+		u = hostPort.ReplaceAllString(u, "$1$2")
+	}
 
 	// scp-style host:path -> host/path
 	u = strings.ReplaceAll(u, ":", "/")
-	u = strings.TrimSuffix(u, ".git")
+	// Separators first, then the suffix: "repo.git/" otherwise kept its ".git".
 	u = strings.TrimRight(u, "/")
+	u = strings.TrimSuffix(u, ".git")
 
 	// Collapse any doubled separator the rewrites left behind.
 	for strings.Contains(u, "//") {

@@ -33,6 +33,7 @@ type statsReport struct {
 func cmdStats(args []string) error {
 	fs := flag.NewFlagSet("stats", flag.ContinueOnError)
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
+	archived, archiveDir := sourceFlags(fs)
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -42,7 +43,11 @@ func cmdStats(args []string) error {
 	if err != nil {
 		return err
 	}
-	buckets, err := claude.ListBuckets(claude.ProjectsDir(root))
+	dir, err := sessionsDir(root, *archived, *archiveDir)
+	if err != nil {
+		return err
+	}
+	buckets, err := claude.ListBuckets(dir)
 	if err != nil {
 		return err
 	}

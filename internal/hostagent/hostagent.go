@@ -28,9 +28,26 @@ const Label = "com.github.ashiqfardus.claude-sessions-sync.sweep"
 // Unit is the systemd user timer name on Linux.
 const Unit = "claude-sessions-sync-sweep.timer"
 
+// Job is the sweep for ONE Claude profile.
+//
+// The scheduler namespace is per machine, but a profile is not. When every install
+// shared one job name, `install --claude-dir <scratch>` followed by `uninstall`
+// silently replaced and then deleted the real profile's sweep - which is how the
+// sweep on the machine this was developed on disappeared, found two weeks later.
+// The default profile keeps the historical names so existing installs still match;
+// any other profile gets its own names and passes --claude-dir, because a scheduler
+// does not inherit CLAUDE_CONFIG_DIR from a shell profile.
+type Job struct {
+	Binary  string // may be empty when only querying or removing
+	Profile string // the Claude root; "" means the default ~/.claude
+}
+
 // Status is what is currently registered on this machine.
 type Status struct {
 	Installed bool
 	Detail    string // human-readable: schedule, last result, or why it is not running
 	Mechanism string // "Task Scheduler", "launchd", "systemd", "cron"
+	// Problem is set when the job is registered but will not archive anything:
+	// disabled, stopped, failing, or running some other program.
+	Problem string
 }

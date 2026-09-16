@@ -84,3 +84,36 @@ func TestSameRemote(t *testing.T) {
 		}
 	}
 }
+
+// A quoted value or a trailing comment used to stay in the URL, so it never matched.
+func TestRemoteReadsQuotedAndCommentedValues(t *testing.T) {
+	for body, want := range map[string]string{
+		"[remote \"origin\"]\n\turl = \"https://github.com/o/r.git\"\n":              "https://github.com/o/r.git",
+		"[remote \"origin\"]\n\turl = git@github.com:o/r.git # mirror\n":             "git@github.com:o/r.git",
+		"[remote \"origin\"]\n\turl = https://github.com/o/r.git ; old\n":            "https://github.com/o/r.git",
+		"[remote \"origin\"]\n\turl = \"https://host/a#b.git\" # quoted hash kept\n": "https://host/a#b.git",
+	} {
+		dir := writeGitConfig(t, t.TempDir(), body)
+		if got := Remote(dir); got != want {
+			t.Errorf("Remote() = %q, want %q for:\n%s", got, want, body)
+		}
+	}
+}
+
+func TestSameRemoteEdgeCases(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		// A trailing slash after .git.
+		{"https://github.com/o/r.git/", "git@github.com:o/r.git", true},
+		// In scp form a numeric owner is not a port.
+		{"git@github.com:1234/repo.git", "https://github.com/1234/repo", true},
+		{"git@github.com:1234/repo.git", "https://github.com/repo", false},
+	}
+	for _, tc := range cases {
+		if got := SameRemote(tc.a, tc.b); got != tc.want {
+			t.Errorf("SameRemote(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}

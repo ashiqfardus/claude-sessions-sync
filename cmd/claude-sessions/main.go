@@ -36,6 +36,8 @@ func main() {
 		err = cmdUninstall(os.Args[2:])
 	case "render":
 		err = cmdRender(os.Args[2:])
+	case "backup":
+		err = cmdBackup(os.Args[2:])
 	case "machines":
 		err = cmdMachines(os.Args[2:])
 	case "ls":
@@ -92,16 +94,14 @@ commands:
   render      write mobile-readable HTML pages of every archived session
   install     archive automatically: SessionEnd hook plus a periodic sweep
   uninstall   remove the hook and the sweep (your archive is kept)
-  ls          list sessions on this machine
-  search      search the text of every session
+  backup      zip the whole profile: sessions, subagents, memory and settings
+  ls          list sessions (--archived: the archive's)
+  search      search the text of every session (--archived: the archive's)
   stats       session counts and sizes per project
   doctor      check the archive, hook, retention and manifest drift
   config      show or set the archive destination
   completion  print a shell completion script (bash|zsh|fish)
   version     print the version
-
-not yet implemented (see DESIGN.md for the build order):
-  backup
 
 common flags:
   --claude-dir <path>   override $CLAUDE_CONFIG_DIR / ~/.claude

@@ -12,6 +12,7 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 )
 
 type importRow struct {
@@ -82,19 +83,80 @@ func cmdImport(args []string) error {
 		}
 	}
 
+	// Every bucket in the archive, not only the ones the manifest knows. A bucket with
+	// no recorded identity, or with memory but no sessions, used to be skipped without
+	// a word - which reads as "handled".
 	buckets := make([]string, 0, len(manifest))
 	for name := range manifest {
 		buckets = append(buckets, name)
 	}
+	if names, err := archive.BucketNames(dest); err == nil {
+		for _, name := range names {
+			if _, known := manifest[name]; !known {
+				buckets = append(buckets, name)
+			}
+		}
+	}
 	sort.Strings(buckets)
+
+	// Every repository that moved, known before any transcript is filed. A session in a
+	// multi-folder workspace names its siblings too, and import used to repoint only
+	// the project a session started in. Related repositories are placed by git remote
+	// alone: a same-named folder is never enough to rewrite someone's paths into it.
+	var moves []rewrite.Move
+	for _, p := range manifest {
+		if m := identity.Resolve(p.Path, p.Leaf, p.Remote, scanner); m.Path != "" && !samePath(p.Path, m.Path) {
+			moves = append(moves, rewrite.Move{From: p.Path, To: m.Path})
+		}
+		for _, r := range p.Related {
+			m := identity.Resolve(r.Path, rewrite.LastSegment(r.Path), r.Remote, scanner)
+			if m.How == identity.ByGitRemote && !samePath(r.Path, m.Path) {
+				moves = append(moves, rewrite.Move{From: r.Path, To: m.Path})
+			}
+		}
+	}
 
 	var rows []importRow
 	var filed, sameLayout, notFound, ambiguous int
 
+	report := func(row importRow, marker string) {
+		rows = append(rows, row)
+		if !*asJSON {
+			fmt.Printf("%s %s: %s\n", marker, row.Bucket, row.Note)
+		}
+	}
+
 	for _, bucket := range buckets {
-		p := manifest[bucket]
+		p, known := manifest[bucket]
 		archived := filepath.Join(archive.ProjectsDir(dest), bucket)
+		if !known {
+			notFound++
+			report(importRow{Bucket: bucket, How: string(identity.NotFound),
+				Note: "no project path was ever recorded for it; file it by hand with `restore`"}, "-")
+			continue
+		}
 		if !hasTranscripts(archived) {
+			if _, err := os.Stat(filepath.Join(archived, "memory")); err != nil {
+				continue // nothing archived under this name
+			}
+			// No sessions to rewrite, but the project's memory still belongs somewhere.
+			match := identity.Resolve(p.Path, p.Leaf, p.Remote, scanner)
+			row := importRow{Bucket: bucket, Recorded: p.Path, How: string(match.How)}
+			if match.Path == "" {
+				notFound++
+				row.Note = "memory only, and no local folder matches it"
+				report(row, "-")
+				continue
+			}
+			local := claude.Slug(match.Path)
+			if existing, ok := claude.FindBucket(claude.ProjectsDir(root), local); ok {
+				local = existing.Name
+			}
+			n := restoreMemory(filepath.Join(archived, "memory"),
+				filepath.Join(claude.ProjectsDir(root), local, "memory"), *dryRun)
+			row.Local = match.Path
+			row.Note = fmt.Sprintf("memory only -> %s (matched by %s): %d memory file(s) filed", match.Path, match.How, n)
+			report(row, "+")
 			continue
 		}
 
@@ -137,11 +199,11 @@ func cmdImport(args []string) error {
 		// Only rewrite when the path actually differs; an identical layout needs no
 		// edit, and not touching the bytes is always safer.
 		rewriteFrom := ""
-		if !strings.EqualFold(strings.TrimRight(p.Path, `\/`), strings.TrimRight(match.Path, `\/`)) {
+		if !samePath(p.Path, match.Path) {
 			rewriteFrom = p.Path
 		}
 
-		res, err := restoreInto(root, archived, match.Path, rewriteFrom, *bareName, *dryRun)
+		res, err := restoreInto(root, archived, match.Path, rewriteFrom, moves, *bareName, *dryRun)
 		if err != nil {
 			row.Note = err.Error()
 			rows = append(rows, row)
@@ -151,6 +213,9 @@ func cmdImport(args []string) error {
 			continue
 		}
 		row.Filed, row.Skipped = res.Copied, res.Skipped
+		if len(res.Failed) > 0 {
+			row.Note = fmt.Sprintf("%d transcript(s) not filed: %s", len(res.Failed), strings.Join(res.Failed, "; "))
+		}
 		filed += res.Copied
 		if match.How == identity.ByRecordedPath {
 			sameLayout++
@@ -164,6 +229,9 @@ func cmdImport(args []string) error {
 			}
 			fmt.Printf("%s %s -> %s (matched by %s): %d filed, %d already present\n",
 				marker, bucket, match.Path, match.How, res.Copied, res.Skipped)
+			for _, f := range res.Failed {
+				fmt.Printf("    x %s\n", f)
+			}
 		}
 	}
 
@@ -299,6 +367,8 @@ func cmdPull(args []string) error {
 				continue
 			}
 			target := filepath.Join(projectsDir, targetName, e.Name())
+			restoreSessionFiles(srcDir, filepath.Join(projectsDir, targetName),
+				strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())), *dryRun)
 			if _, err := os.Stat(target); err == nil {
 				already++
 				continue
@@ -320,4 +390,8 @@ func cmdPull(args []string) error {
 	fmt.Println("pull files by bucket name only. If a project lives at a different path here,")
 	fmt.Println("use `claude-sessions import`, which matches by identity and rewrites paths.")
 	return nil
+}
+
+func samePath(a, b string) bool {
+	return strings.EqualFold(strings.TrimRight(a, `\/`), strings.TrimRight(b, `\/`))
 }

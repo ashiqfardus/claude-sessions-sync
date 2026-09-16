@@ -20,6 +20,9 @@ type restoreResult struct {
 	Memory        int
 	Hits          map[string]int
 	BareLeftovers int
+	// Failed names transcripts that could not be filed. One bad transcript no longer
+	// abandons the rest of the project.
+	Failed []string
 }
 
 func cmdRestore(args []string) error {
@@ -48,13 +51,16 @@ func cmdRestore(args []string) error {
 	}
 	defer lock.Release()
 
-	res, err := restoreInto(root, *source, *projectPath, *rewriteFrom, *bareName, *dryRun)
+	res, err := restoreInto(root, *source, *projectPath, *rewriteFrom, nil, *bareName, *dryRun)
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("\n%s %d transcript(s) and %d memory file(s), skipped %d already present -> %s\n",
 		verbFor(*dryRun), res.Copied, res.Memory, res.Skipped, res.Bucket)
+	for _, f := range res.Failed {
+		fmt.Printf("  x %s\n", f)
+	}
 
 	if len(res.Hits) > 0 {
 		fmt.Println("\nLines rewritten, by form:")
@@ -78,7 +84,9 @@ func cmdRestore(args []string) error {
 }
 
 // restoreInto files transcripts from source into the bucket for projectPath.
-func restoreInto(root, source, projectPath, rewriteFrom string, bareName, dryRun bool) (restoreResult, error) {
+// extra are other repositories that moved - the siblings a multi-folder workspace
+// session also worked in - repointed alongside the project itself.
+func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.Move, bareName, dryRun bool) (restoreResult, error) {
 	res := restoreResult{Hits: map[string]int{}}
 
 	entries, err := os.ReadDir(source)
@@ -95,7 +103,13 @@ func restoreInto(root, source, projectPath, rewriteFrom string, bareName, dryRun
 		return res, fmt.Errorf("no .jsonl transcripts in %s (memory .md files are not sessions - check the folder)", source)
 	}
 
-	newPath := strings.TrimRight(projectPath, `\/`)
+	// Relative input ("." or "../app") used to become a bucket named "." or "", filing
+	// transcripts straight into the projects folder.
+	abs, err := filepath.Abs(projectPath)
+	if err != nil {
+		return res, err
+	}
+	newPath := filepath.Clean(abs)
 	projectsDir := claude.ProjectsDir(root)
 
 	// Prefer a bucket that already exists, matched case-insensitively: the casing of a
@@ -107,18 +121,29 @@ func restoreInto(root, source, projectPath, rewriteFrom string, bareName, dryRun
 	}
 	res.Bucket = filepath.Join(projectsDir, bucketName)
 
-	var rules []rewrite.Rule
+	moves := extra
 	bareLeaf := ""
 	if strings.TrimSpace(rewriteFrom) != "" {
-		rules = rewrite.Rules(rewriteFrom, newPath, bareName)
-		bareLeaf = filepath.Base(strings.TrimRight(rewriteFrom, `\/`))
-		if strings.EqualFold(bareLeaf, filepath.Base(newPath)) {
+		moves = append([]rewrite.Move{{From: rewriteFrom, To: newPath}}, extra...)
+		bareLeaf = rewrite.LastSegment(strings.TrimRight(rewriteFrom, `\/`))
+		if strings.EqualFold(bareLeaf, rewrite.LastSegment(newPath)) {
 			bareLeaf = "" // unchanged name: nothing to warn about
+		}
+	}
+	// One list, most specific path first, so a parent folder never claims the paths of
+	// a repository inside it that moved somewhere else.
+	rules := rewrite.RulesForMoves(moves)
+	if bareName && strings.TrimSpace(rewriteFrom) != "" {
+		for _, r := range rewrite.Rules(rewriteFrom, newPath, true) {
+			if r.Label == "bare-name" {
+				rules = append(rules, r)
+			}
 		}
 	}
 
 	for _, src := range transcripts {
 		dst := filepath.Join(res.Bucket, filepath.Base(src))
+		restoreSessionFiles(source, res.Bucket, strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)), dryRun)
 		if _, err := os.Stat(dst); err == nil {
 			res.Skipped++
 			continue
@@ -130,7 +155,8 @@ func restoreInto(root, source, projectPath, rewriteFrom string, bareName, dryRun
 
 		if len(rules) == 0 {
 			if err := copyPlain(src, dst); err != nil {
-				return res, err
+				res.Failed = append(res.Failed, fmt.Sprintf("%s: %v", filepath.Base(src), err))
+				continue
 			}
 			res.Copied++
 			continue
@@ -138,7 +164,8 @@ func restoreInto(root, source, projectPath, rewriteFrom string, bareName, dryRun
 
 		out, err := rewrite.File(src, dst, rules, bareLeaf)
 		if err != nil {
-			return res, err
+			res.Failed = append(res.Failed, fmt.Sprintf("%s: %v", filepath.Base(src), err))
+			continue
 		}
 		for k, v := range out.Hits {
 			res.Hits[k] += v
@@ -155,6 +182,9 @@ func restoreInto(root, source, projectPath, rewriteFrom string, bareName, dryRun
 	// substituting paths inside it would corrupt meaning rather than fix references.
 	res.Memory = restoreMemory(filepath.Join(source, "memory"), filepath.Join(res.Bucket, "memory"), dryRun)
 
+	if len(res.Failed) > 0 && res.Copied == 0 && res.Skipped == 0 {
+		return res, fmt.Errorf("no transcript could be filed: %s", res.Failed[0])
+	}
 	return res, nil
 }
 
@@ -188,6 +218,22 @@ func restoreMemory(srcDir, dstDir string, dryRun bool) int {
 		n++
 	}
 	return n
+}
+
+// restoreSessionFiles copies a session's own folder - subagent transcripts and saved
+// tool output - adding only files that are not here yet. A local file belongs to a
+// live or newer session and is never replaced.
+//
+// ponytail: paths inside subagent transcripts are not rewritten; add it if a
+// subagent's recorded cwd ever matters to Claude Code.
+func restoreSessionFiles(srcBucket, dstBucket, id string, dryRun bool) {
+	for _, rel := range claude.SessionFiles(filepath.Join(srcBucket, id)) {
+		dst := filepath.Join(dstBucket, id, rel)
+		if dryRun || archive.StatOrNil(dst) != nil {
+			continue
+		}
+		_ = archive.CopyFile(filepath.Join(srcBucket, id, rel), dst)
+	}
 }
 
 func copyPlain(src, dst string) error {

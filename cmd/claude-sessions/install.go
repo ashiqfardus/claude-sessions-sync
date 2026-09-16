@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
@@ -94,7 +95,7 @@ func cmdInstall(args []string) error {
 			}
 		}
 
-		status, err := hostagent.Install(binary, *every)
+		status, err := hostagent.Install(sweepJob(root, binary), *every)
 		if err != nil {
 			// The hook alone still archives every session that ends normally, so this
 			// is a degraded install, not a failed one.
@@ -131,7 +132,7 @@ func cmdUninstall(args []string) error {
 	}
 	fmt.Printf("  hook      removed %d entr(y/ies)\n", removed)
 
-	if err := hostagent.Uninstall(); err != nil {
+	if err := hostagent.Uninstall(sweepJob(root, "")); err != nil {
 		fmt.Printf("  sweep     FAILED: %v\n", err)
 	} else {
 		fmt.Printf("  sweep     removed\n")
@@ -167,9 +168,19 @@ func installBinary(root string) (string, error) {
 	target := filepath.Join(binDir, name)
 
 	// Already running from the install location: nothing to copy, and copying a file
-	// onto itself would truncate it.
-	if strings.EqualFold(self, target) {
-		return target, nil
+	// onto itself would truncate it. Compared as files, not strings: an 8.3 short path
+	// (ADMINI~1), a symlinked root or different separators name the same file.
+	if selfInfo, err := os.Stat(self); err == nil {
+		if targetInfo, err := os.Stat(target); err == nil && os.SameFile(selfInfo, targetInfo) {
+			return target, nil
+		}
+	}
+
+	// Copies left by an earlier upgrade that replaced a running binary.
+	if old, _ := filepath.Glob(target + ".old-*"); len(old) > 0 {
+		for _, o := range old {
+			os.Remove(o) // still running is fine: it goes next time
+		}
 	}
 
 	in, err := os.Open(self)
@@ -178,9 +189,6 @@ func installBinary(root string) (string, error) {
 	}
 	defer in.Close()
 
-	// Windows will not overwrite a running executable, but the running one is the
-	// source here, not the target - unless a scheduled sweep is executing the target
-	// at this instant, which the rename below makes atomic anyway.
 	tmp, err := os.CreateTemp(binDir, ".tmp-claude-sessions-*")
 	if err != nil {
 		return "", err
@@ -200,8 +208,26 @@ func installBinary(root string) (string, error) {
 		return "", err
 	}
 	if err := os.Rename(tmpName, target); err != nil {
-		os.Remove(tmpName)
-		return "", fmt.Errorf("could not install the binary to %s: %w", target, err)
+		// Windows refuses to replace an executable that is running - the hook or the
+		// sweep, mid-push - but does allow renaming it. Move it aside and retry; the
+		// leftover is removed by the next install.
+		aside := fmt.Sprintf("%s.old-%d", target, time.Now().UnixNano())
+		if runtime.GOOS != "windows" || os.Rename(target, aside) != nil || os.Rename(tmpName, target) != nil {
+			os.Remove(tmpName)
+			return "", fmt.Errorf("could not install the binary to %s: %w", target, err)
+		}
+		os.Remove(aside)
 	}
 	return target, nil
+}
+
+// sweepJob names the scheduled job for a profile. The default ~/.claude keeps the
+// machine-wide name existing installs registered; any other profile gets its own.
+func sweepJob(root, binary string) hostagent.Job {
+	j := hostagent.Job{Binary: binary, Profile: root}
+	if home, err := os.UserHomeDir(); err == nil &&
+		strings.EqualFold(filepath.Clean(root), filepath.Join(home, ".claude")) {
+		j.Profile = ""
+	}
+	return j
 }

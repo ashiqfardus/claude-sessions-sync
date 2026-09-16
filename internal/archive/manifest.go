@@ -26,11 +26,14 @@ const (
 
 // Project is one bucket's identity, as recorded by one machine.
 type Project struct {
-	Path     string     `json:"path"`   // real absolute path, recovered - NOT decoded from the bucket name
-	Leaf     string     `json:"leaf"`   // final path segment, the folder-name fallback
-	Remote   string     `json:"remote"` // git remote, the strongest cross-machine identity
-	OS       string     `json:"os,omitempty"`
-	Seen     string     `json:"seen"` // YYYY-MM-DD
+	Path   string `json:"path"`   // real absolute path, recovered - NOT decoded from the bucket name
+	Leaf   string `json:"leaf"`   // final path segment, the folder-name fallback
+	Remote string `json:"remote"` // git remote, the strongest cross-machine identity
+	OS     string `json:"os,omitempty"`
+	// Seen is when this machine's data for the bucket last changed: the newest
+	// transcript's mtime as RFC 3339 UTC. Older entries hold a bare YYYY-MM-DD, which
+	// still compares correctly as a string against the longer form.
+	Seen     string     `json:"seen"`
 	Sessions int        `json:"sessions,omitempty"`
 	Source   PathSource `json:"source,omitempty"`
 
@@ -39,6 +42,19 @@ type Project struct {
 	// projects.json compatibility view has nowhere else to put it - and the
 	// PowerShell implementation's format carries it per project as well.
 	Machine string `json:"machine,omitempty"`
+
+	// Related are the other repositories this project's sessions worked in - the
+	// sibling folders of a multi-folder workspace. import repoints paths into them
+	// too, which it can only do if it knows where they were and what they are.
+	Related []Related `json:"related,omitempty"`
+}
+
+// Related is one other repository a project's sessions touched. Only git
+// repositories with a remote are recorded: a remote is what lets import find the
+// folder on another machine without guessing.
+type Related struct {
+	Path   string `json:"path"`
+	Remote string `json:"remote"`
 }
 
 // Routable reports whether this entry can be matched to a local folder at all.
@@ -56,6 +72,10 @@ type Shard struct {
 	SchemaVersion int                `json:"schemaVersion"`
 	Machine       string             `json:"machine"`
 	Projects      map[string]Project `json:"projects"`
+
+	// RelatedIndexed records that every transcript has been scanned for related
+	// repositories once, so later pushes only scan the transcripts that changed.
+	RelatedIndexed bool `json:"relatedIndexed,omitempty"`
 
 	// Sessions is only read from shards written before the index was split out into
 	// its own file. New pushes write index/<machine>.json instead: session rows grow
@@ -126,6 +146,9 @@ func AllSessions(dest string) ([]Session, error) {
 	var out []Session
 	for machine, sessions := range byMachine {
 		for _, sess := range sessions {
+			if !ValidName(sess.Bucket) || !ValidName(sess.ID) {
+				continue
+			}
 			sess.Machine = machine
 			out = append(out, sess)
 		}
@@ -197,6 +220,9 @@ func Machines(dest string) ([]MachineInfo, error) {
 //
 // Returns how many pages were removed.
 func ForgetMachine(dest, machine string) (int, error) {
+	if !ValidName(machine) {
+		return 0, fmt.Errorf("%q is not a machine name", machine)
+	}
 	shard := filepath.Join(ManifestDir(dest), machine+".json")
 	if _, err := os.Stat(shard); err != nil {
 		return 0, fmt.Errorf("no machine named %q in this archive", machine)
@@ -208,6 +234,9 @@ func ForgetMachine(dest, machine string) (int, error) {
 		var idx SessionIndex
 		if json.Unmarshal(raw, &idx) == nil {
 			for _, s := range idx.Sessions {
+				if !ValidName(s.Bucket) || !ValidName(s.ID) {
+					continue
+				}
 				pages = append(pages, filepath.Join(dest, "html", s.Bucket, s.ID+".html"))
 			}
 		}
@@ -217,6 +246,19 @@ func ForgetMachine(dest, machine string) (int, error) {
 		return 0, err
 	}
 	os.Remove(filepath.Join(IndexDir(dest), machine+".json"))
+
+	// projects.json is regenerated from the shards on the next push, but until then its
+	// copy of this machine's entries would keep routing imports to it.
+	if legacy, err := ReadLegacy(dest); err == nil && legacy != nil {
+		for bucket, p := range legacy {
+			if p.Machine == machine {
+				delete(legacy, bucket)
+			}
+		}
+		if data, err := json.MarshalIndent(legacy, "", "  "); err == nil {
+			_ = WriteFileAtomic(LegacyManifestPath(dest), append(data, '\n'), 0o644)
+		}
+	}
 
 	// Build the set of sessions the remaining machines still claim, once.
 	//
@@ -283,15 +325,31 @@ func ReadShards(dest string) (map[string]Shard, []string, error) {
 		if s.Machine == "" {
 			s.Machine = strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
 		}
+		for name := range s.Projects {
+			if !ValidName(name) {
+				delete(s.Projects, name)
+			}
+		}
 		shards[s.Machine] = s
 	}
 	return shards, bad, nil
 }
 
+// ValidName reports whether a bucket or session name read from the archive is a
+// single plain path component.
+//
+// The manifest and index live on a shared, synced folder. A name like "../../x" or
+// ".." there would otherwise be joined into paths this tool reads, writes, and - in
+// `machines forget` - deletes.
+func ValidName(name string) bool {
+	return name != "" && name != "." && name != ".." &&
+		!strings.ContainsAny(name, `/\:`) && filepath.Base(name) == name
+}
+
 // ReadLegacy loads the flat projects.json written by the PowerShell implementation.
 //
-// It has no schema version and no machine attribution, so its entries are treated as
-// the lowest-confidence source when merging.
+// It has no schema version, so its entries are treated as the lowest-confidence
+// source when merging.
 func ReadLegacy(dest string) (map[string]Project, error) {
 	raw, err := os.ReadFile(LegacyManifestPath(dest))
 	if os.IsNotExist(err) {
@@ -300,39 +358,69 @@ func ReadLegacy(dest string) (map[string]Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Windows PowerShell 5.1 writes UTF-8 with a BOM, which encoding/json rejects.
+	raw = []byte(strings.TrimPrefix(string(raw), "\xef\xbb\xbf"))
 	var m map[string]Project
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, err
 	}
+	for name := range m {
+		if !ValidName(name) {
+			delete(m, name)
+		}
+	}
 	return m, nil
 }
 
+// legacyMachine marks an entry that came from projects.json.
+const legacyMachine = "(projects.json)"
+
 // Merged returns one view of every project any machine has recorded.
 //
-// Conflicts on the same bucket are settled by the newest "seen" date. Shards always
-// beat the legacy projects.json, which carries no attribution and may have already
-// lost a write before this tool ever ran.
+// Conflicts on the same bucket go to the newest "seen" value; an exact tie goes to
+// the machine whose name sorts first, so every run and every machine agrees. (Map
+// order used to decide, which let import choose a different path from one run to
+// the next.)
+//
+// Shards always beat the legacy projects.json. That file is also regenerated from
+// the shards, so an entry in it attributed to a machine is ignored whenever that
+// machine has a shard - the shard is its current word - and dropped entirely once the
+// machine has been forgotten. Otherwise every entry fed back into itself forever.
+//
+// An unreadable projects.json is reported in the bad list, not returned as an error:
+// it used to fail every push, silently under --quiet.
 func Merged(dest string) (map[string]Project, []string, error) {
 	out := map[string]Project{}
-
-	legacy, err := ReadLegacy(dest)
-	if err != nil {
-		return nil, nil, err
-	}
-	for bucket, p := range legacy {
-		p.Machine = "(projects.json)"
-		out[bucket] = p
-	}
 
 	shards, bad, err := ReadShards(dest)
 	if err != nil {
 		return nil, bad, err
 	}
-	for _, s := range shards {
-		for bucket, p := range s.Projects {
-			p.Machine = s.Machine
+
+	legacy, err := ReadLegacy(dest)
+	if err != nil {
+		bad = append(bad, "projects.json")
+	}
+	for bucket, p := range legacy {
+		// A machine that only ever ran the PowerShell tool has no shard, and its
+		// entries are the only record of its projects: those are kept.
+		if _, hasShard := shards[p.Machine]; hasShard {
+			continue
+		}
+		p.Machine = legacyMachine
+		out[bucket] = p
+	}
+
+	names := make([]string, 0, len(shards))
+	for name := range shards {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for bucket, p := range shards[name].Projects {
+			p.Machine = name
 			existing, seen := out[bucket]
-			if !seen || existing.Machine == "(projects.json)" || p.Seen > existing.Seen {
+			if !seen || existing.Machine == legacyMachine || p.Seen > existing.Seen {
 				out[bucket] = p
 			}
 		}

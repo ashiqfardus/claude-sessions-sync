@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
@@ -37,6 +38,13 @@ func cmdPush(args []string) error {
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	noHTML := fs.Bool("no-html", false, "skip rendering the mobile HTML pages")
 	if err := fs.Parse(args); err != nil {
+		// A hook written by a newer version may pass a flag this binary does not know.
+		// That must not break the end of the session any more than a missing drive.
+		for _, a := range args {
+			if a == "--quiet" || a == "-quiet" || a == "--quiet=true" || a == "-quiet=true" {
+				return nil
+			}
+		}
 		return err
 	}
 
@@ -107,6 +115,9 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 			logf("ERROR: %v", err)
 			return err
 		}
+		if n := archive.RemoveOrphanTemps(dest); n > 0 {
+			logf("CLEAN: removed %d temporary file(s) left by an interrupted run", n)
+		}
 	}
 
 	buckets, err := claude.ListBuckets(claude.ProjectsDir(root))
@@ -116,6 +127,7 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 	}
 
 	statePaths, _ := claude.ProjectPaths(claude.StatePath(root))
+	excludes := archive.RenderExcludes(root, dest, nil, !dryRun)
 
 	res := pushResult{Archive: dest, DryRun: dryRun}
 	shard := archive.Shard{
@@ -125,6 +137,13 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 	}
 	var sessions []archive.Session
 
+	// Related repositories are carried forward from this machine's last shard and only
+	// looked for again in transcripts that changed; the first push after upgrading
+	// scans everything once.
+	prevShard := readShard(dest, shard.Machine)
+	scanAll := !prevShard.RelatedIndexed
+	shard.RelatedIndexed = true
+
 	for _, b := range buckets {
 		destBucket := filepath.Join(archive.ProjectsDir(dest), b.Name)
 
@@ -132,6 +151,7 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 		// one yields rather than opening it a second time.
 		var newestCwd string
 		var newestAt time.Time
+		var changed []string
 
 		for _, t := range b.Transcripts {
 			target := filepath.Join(destBucket, filepath.Base(t.Path))
@@ -140,7 +160,15 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 				res.Skipped = append(res.Skipped, t.ID)
 				continue
 			}
-			if archive.NeedsCopy(srcInfo, archive.StatOrNil(target)) {
+			dstInfo := archive.StatOrNil(target)
+			if archive.NeedsCopy(srcInfo, dstInfo) && dstInfo != nil && srcInfo.Size() < dstInfo.Size() {
+				// Transcripts only grow. A newer but shorter local file is a session
+				// that forked on two machines, or a truncated copy; either way the
+				// archived conversation is not thrown away for it.
+				logf("WARN: %s: local copy is shorter than the archived one (%d < %d bytes); archive kept",
+					t.ID, srcInfo.Size(), dstInfo.Size())
+				res.Skipped = append(res.Skipped, t.ID)
+			} else if archive.NeedsCopy(srcInfo, dstInfo) {
 				if !dryRun {
 					if err := archive.CopyFile(t.Path, target); err != nil {
 						// One unreadable transcript must not abandon the rest.
@@ -150,15 +178,36 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 					}
 				}
 				res.Copied++
+				changed = append(changed, t.Path)
 			} else {
 				res.Unchanged++
 			}
 			res.Sessions++
 
+			for _, rel := range t.Extras {
+				srcPath := filepath.Join(b.Dir, t.ID, rel)
+				srcInfo, statErr := os.Stat(srcPath)
+				if statErr != nil {
+					continue
+				}
+				extraTarget := filepath.Join(destBucket, t.ID, rel)
+				if !archive.NeedsCopy(srcInfo, archive.StatOrNil(extraTarget)) {
+					res.Unchanged++
+					continue
+				}
+				if !dryRun {
+					if err := archive.CopyFile(srcPath, extraTarget); err != nil {
+						logf("WARN: %s/%s: %v", t.ID, rel, err)
+						continue
+					}
+				}
+				res.Copied++
+			}
+
 			summary, _ := claude.ScanHead(t.Path, headScanLines)
 			sessions = append(sessions, archive.Session{
 				Bucket: b.Name, Project: summary.Cwd, ID: t.ID,
-				Updated: t.ModTime, Size: t.Size, Prompt: summary.FirstPrompt,
+				Updated: t.ModTime, Size: t.Size, Prompt: indexPrompt(summary.FirstPrompt, summary.Cwd, b.Name, excludes),
 			})
 			if summary.Cwd != "" && t.ModTime.After(newestAt) {
 				newestAt = t.ModTime
@@ -188,12 +237,21 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 		}
 
 		if entry, ok := projectIdentity(b, newestCwd, statePaths); ok {
+			scan := changed
+			if scanAll {
+				scan = nil
+				for _, t := range b.Transcripts {
+					scan = append(scan, t.Path)
+				}
+			}
+			entry.Related = relatedRepos(entry.Path, prevShard.Projects[b.Name].Related, scan)
 			shard.Projects[b.Name] = entry
 			res.Projects++
 		}
 	}
 
 	if !dryRun {
+		sessions = keepArchivedHistory(dest, &shard, sessions)
 		if err := writeManifest(dest, shard); err != nil {
 			logf("ERROR: manifest: %v", err)
 			return err
@@ -203,7 +261,7 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 			return err
 		}
 		// Built from every machine, not just this one - see writeIndex.
-		if err := writeIndex(dest); err != nil {
+		if err := writeIndex(dest, excludes); err != nil {
 			logf("ERROR: index: %v", err)
 			return err
 		}
@@ -216,9 +274,8 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 	// problem must never fail a sync that has already succeeded, so this is wrapped
 	// and only ever logged.
 	if !dryRun && !noHTML {
-		cfg, _ := archive.LoadConfig(root)
 		if r, err := render.Archive(dest, render.Options{
-			Exclude:       cfg.RenderExclude,
+			Exclude:       excludes,
 			LocalProjects: claude.ProjectsDir(root),
 		}); err != nil {
 			logf("HTML step failed (transcripts are still archived): %v", err)
@@ -254,8 +311,23 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 func projectIdentity(b claude.Bucket, cwdFromNewest string, statePaths []string) (archive.Project, bool) {
 	entry := archive.Project{
 		OS:       runtime.GOOS,
-		Seen:     time.Now().Format("2006-01-02"),
 		Sessions: len(b.Transcripts),
+	}
+
+	// How fresh this machine's knowledge of the bucket is - which is what decides a
+	// conflict with another machine. Stamping "today" made every machine that pushed
+	// today tie, however stale its copy of the project.
+	var newest time.Time
+	if len(b.Transcripts) > 0 {
+		newest = b.Transcripts[0].ModTime // sorted newest first
+	}
+	for _, name := range b.Memory {
+		if info, err := os.Stat(filepath.Join(b.Dir, "memory", name)); err == nil && info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	if !newest.IsZero() {
+		entry.Seen = newest.UTC().Format(time.RFC3339)
 	}
 
 	if cwdFromNewest != "" {
@@ -280,6 +352,115 @@ func projectIdentity(b claude.Bucket, cwdFromNewest string, statePaths []string)
 
 	// Record it even when unroutable, so it is at least visible rather than absent.
 	return entry, entry.Path != "" || len(b.Transcripts) > 0
+}
+
+// readShard loads this machine's previous shard from the archive, or an empty one.
+func readShard(dest, machine string) archive.Shard {
+	var s archive.Shard
+	if raw, err := os.ReadFile(filepath.Join(archive.ManifestDir(dest), machine+".json")); err == nil {
+		_ = json.Unmarshal(raw, &s)
+	}
+	return s
+}
+
+// relatedRepos lists the other git repositories a project's sessions worked in.
+//
+// A session in a multi-folder workspace starts in one repository and cds into its
+// siblings, and import used to repoint only the one it started in - every path into
+// the others still named the old machine. Each working directory is reduced to its
+// repository root; the project itself, repositories that contain it, and anything
+// without a remote are left out, because a remote is the only safe way to find the
+// folder again elsewhere.
+func relatedRepos(own string, prev []archive.Related, transcripts []string) []archive.Related {
+	byKey := map[string]archive.Related{}
+	for _, r := range prev {
+		byKey[strings.ToLower(r.Path)] = r
+	}
+	ownRoot := own
+	if r := identity.RepoRoot(own); r != "" {
+		ownRoot = r
+	}
+	for _, t := range transcripts {
+		cwds, _ := claude.Cwds(t)
+		for _, c := range cwds {
+			root := identity.RepoRoot(nativePath(c))
+			if root == "" || strings.EqualFold(root, ownRoot) || within(ownRoot, root) {
+				continue
+			}
+			key := strings.ToLower(root)
+			if _, ok := byKey[key]; ok {
+				continue
+			}
+			if remote := identity.Remote(root); remote != "" {
+				byKey[key] = archive.Related{Path: root, Remote: remote}
+			}
+		}
+	}
+	out := make([]archive.Related, 0, len(byKey))
+	for _, r := range byKey {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// nativePath turns a Git Bash path (/e/work/app), which Claude Code records when a
+// session runs under MSYS, into the Windows path it names. Elsewhere it is unchanged.
+func nativePath(p string) string {
+	if runtime.GOOS != "windows" || len(p) < 2 || p[0] != '/' || !unicode.IsLetter(rune(p[1])) || (len(p) > 2 && p[2] != '/') {
+		return p
+	}
+	return strings.ToUpper(p[1:2]) + `:\` + filepath.FromSlash(strings.TrimPrefix(p[2:], "/"))
+}
+
+// within reports whether child is strictly inside parent, ignoring case.
+func within(child, parent string) bool {
+	sep := string(filepath.Separator)
+	c := strings.ToLower(filepath.Clean(child)) + sep
+	p := strings.ToLower(filepath.Clean(parent)) + sep
+	return len(c) > len(p) && strings.HasPrefix(c, p)
+}
+
+// keepArchivedHistory carries this machine's earlier manifest and index entries
+// forward for sessions that are gone from local disk but still in the archive.
+//
+// Both files used to be rebuilt from local disk alone. Claude Code deletes old
+// transcripts locally, and the archive is then the only copy - yet its row vanished
+// from INDEX.md, and a project whose transcripts had all aged out lost its identity,
+// leaving it unroutable on import.
+func keepArchivedHistory(dest string, shard *archive.Shard, sessions []archive.Session) []archive.Session {
+	if raw, err := os.ReadFile(filepath.Join(archive.ManifestDir(dest), shard.Machine+".json")); err == nil {
+		var old archive.Shard
+		if json.Unmarshal(raw, &old) == nil {
+			for bucket, p := range old.Projects {
+				if _, ok := shard.Projects[bucket]; ok || !archive.ValidName(bucket) {
+					continue
+				}
+				if st, err := os.Stat(filepath.Join(archive.ProjectsDir(dest), bucket)); err == nil && st.IsDir() {
+					shard.Projects[bucket] = p
+				}
+			}
+		}
+	}
+
+	have := map[string]bool{}
+	for _, s := range sessions {
+		have[s.Bucket+"/"+s.ID] = true
+	}
+	if raw, err := os.ReadFile(filepath.Join(archive.IndexDir(dest), shard.Machine+".json")); err == nil {
+		var old archive.SessionIndex
+		if json.Unmarshal(raw, &old) == nil {
+			for _, s := range old.Sessions {
+				if have[s.Bucket+"/"+s.ID] || !archive.ValidName(s.Bucket) || !archive.ValidName(s.ID) {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(archive.ProjectsDir(dest), s.Bucket, s.ID+".jsonl")); err == nil {
+					sessions = append(sessions, s)
+				}
+			}
+		}
+	}
+	return sessions
 }
 
 func writeManifest(dest string, shard archive.Shard) error {
@@ -315,7 +496,28 @@ const maxIndexRowsPerProject = 200
 // sessions - which is what the first version did - means each push erases every other
 // machine's listing, the same defect the sharded manifest exists to avoid. Rows are
 // cached in the shards, so this costs no reads across the cloud filesystem.
-func writeIndex(dest string) error {
+// indexPrompt is the opening prompt as it may appear in INDEX.md and index/*.json:
+// withheld for an excluded project - excluding it used to hide only its pages - and
+// with credentials masked, as on the pages.
+func indexPrompt(prompt, project, bucket string, excludes []string) string {
+	if render.IsExcluded(project, bucket, excludes) {
+		return "(excluded)"
+	}
+	return render.Redact(prompt)
+}
+
+// splitList parses a comma-separated flag value.
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func writeIndex(dest string, excludes []string) error {
 	rows, err := archive.AllSessions(dest)
 	if err != nil {
 		return err
@@ -374,7 +576,9 @@ func writeIndex(dest string) error {
 		}
 		for _, r := range shown {
 			// A pipe in a prompt would break the table.
-			prompt := strings.ReplaceAll(r.Prompt, "|", "\\|")
+			// Rows from another machine may predate an exclusion or redaction, so both
+			// are applied again here rather than trusted from the index file.
+			prompt := strings.ReplaceAll(indexPrompt(r.Prompt, r.Project, r.Bucket, excludes), "|", "\\|")
 			if multiMachine {
 				fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s |\n",
 					r.Updated.Format("2006-01-02 15:04"), humanSize(r.Size), r.Machine, r.ID, prompt)

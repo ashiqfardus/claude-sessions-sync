@@ -29,7 +29,14 @@ func TestNeedsCopyToleratesRoundedTimestamps(t *testing.T) {
 		{"FAT 2-second granularity", 100, 100, -2 * time.Second, false},
 		{"genuinely older", 100, 100, -10 * time.Second, true},
 		{"destination newer", 100, 100, 5 * time.Second, false},
-		{"size differs", 100, 101, 0, true},
+		{"source grew", 101, 100, 0, true},
+		// A stale copy of a session on another machine, or a truncated file, must not
+		// replace the longer archived version.
+		{"source smaller, same time", 100, 101, 0, false},
+		{"destination newer and larger", 100, 500, 10 * time.Second, false},
+		{"destination newer but smaller", 500, 100, 10 * time.Second, false},
+		// Memory is edited, not appended: a newer, shorter file is still the one to keep.
+		{"source newer and smaller", 100, 500, -10 * time.Second, true},
 	}
 
 	for _, tc := range cases {

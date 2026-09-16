@@ -65,6 +65,7 @@ func LoadSettings(path string) (Settings, bool, error) {
 	if err != nil {
 		return s, false, err
 	}
+	raw = []byte(strings.TrimPrefix(string(raw), "\xef\xbb\xbf"))
 	if len(strings.TrimSpace(string(raw))) == 0 {
 		return s, true, nil
 	}

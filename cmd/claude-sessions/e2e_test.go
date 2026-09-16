@@ -5,6 +5,7 @@ package main_test
 // found in the PowerShell implementation, so they assert on those cases explicitly.
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 var binary string
@@ -61,6 +63,16 @@ func newFixture(t *testing.T) fixture {
 	mustWrite(t, filepath.Join(projects, "e--work-airos-frontend", "11111111-2222-3333-4444-555555555555.jsonl"),
 		line(`{"type":"user","cwd":"E:\\work\\airos-frontend","sessionId":"11111111-2222-3333-4444-555555555555","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"fix the login redirect"}}`)+
 			line(`{"type":"assistant","timestamp":"2026-08-30T09:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"looking"}]}}`))
+
+	// The session's own folder: Claude Code writes subagent conversations and oversized
+	// tool output here, not into the transcript. These were never archived.
+	session := filepath.Join(projects, "e--work-airos-frontend", "11111111-2222-3333-4444-555555555555")
+	mustMkdir(t, filepath.Join(session, "subagents"))
+	mustMkdir(t, filepath.Join(session, "tool-results"))
+	mustWrite(t, filepath.Join(session, "subagents", "agent-a1b2.jsonl"),
+		line(`{"type":"user","isSidechain":true,"message":{"role":"user","content":"search the repo"}}`))
+	mustWrite(t, filepath.Join(session, "subagents", "agent-a1b2.meta.json"), `{"agentType":"Explore"}`)
+	mustWrite(t, filepath.Join(session, "tool-results", "toolu_01.txt"), "very long output\n")
 
 	// Memory but no transcript - the unroutable case.
 	mustMkdir(t, filepath.Join(projects, "e--work-legacy-app", "memory"))
@@ -451,5 +463,154 @@ func TestLsSinceUntilFilters(t *testing.T) {
 	out, err := f.run(t, "ls", "--since", "not-a-date")
 	if err == nil {
 		t.Errorf("a malformed date must be rejected:\n%s", out)
+	}
+}
+
+// Search sorted every hit by time across sessions, so two sessions interleaved and
+// each header printed again and again; --limit kept alphabetical-first, not newest.
+func TestSearchGroupsNewestSessionFirst(t *testing.T) {
+	f := newFixture(t)
+	bucket := filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend")
+	newer := filepath.Join(bucket, "99999999-0000-0000-0000-000000000000.jsonl")
+	mustWrite(t, newer,
+		line(`{"type":"user","timestamp":"2026-08-29T09:00:00.000Z","message":{"role":"user","content":"login bug again"}}`)+
+			line(`{"type":"user","timestamp":"2026-08-31T09:00:00.000Z","message":{"role":"user","content":"login still broken"}}`)+
+			line(`{"type":"assistant","timestamp":"2026-08-31T09:01:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"psql -c 'select 1'"}}]}}`))
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(newer, later, later); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := f.run(t, "search", "login")
+	if err != nil {
+		t.Fatalf("search failed: %v\n%s", err, out)
+	}
+	// The header is "<project>  <session>"; the resume hint also ends in the id.
+	if strings.Count(out, "  99999999-0000-0000-0000-000000000000\n") != 1 {
+		t.Errorf("a session header was printed more than once:\n%s", out)
+	}
+	if strings.Index(out, "99999999") > strings.Index(out, "11111111") {
+		t.Errorf("the newest session should come first:\n%s", out)
+	}
+	if out, _ := f.run(t, "search", "--limit", "1", "login"); !strings.Contains(out, "99999999") {
+		t.Errorf("--limit kept an older session over the newest:\n%s", out)
+	}
+
+	// A command someone ran lives in tool input, not message text.
+	if out, _ := f.run(t, "search", "psql"); !strings.Contains(out, "No matches") {
+		t.Errorf("tool input should need --all:\n%s", out)
+	}
+	if out, _ := f.run(t, "search", "--all", "psql"); !strings.Contains(out, "1 match(es)") {
+		t.Errorf("--all did not search tool input:\n%s", out)
+	}
+}
+
+// The archive is the only copy of a session Claude Code has deleted locally.
+func TestSearchAndLsReadTheArchive(t *testing.T) {
+	f := newFixture(t)
+	if out, err := f.push(t); err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+	if err := os.RemoveAll(filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend")); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, _ := f.run(t, "search", "login redirect"); !strings.Contains(out, "No matches") {
+		t.Fatalf("expected the local copy to be gone:\n%s", out)
+	}
+	out, err := f.run(t, "search", "--archive", f.archive, "login redirect")
+	if err != nil || !strings.Contains(out, "1 match(es)") {
+		t.Errorf("search --archive did not find the archived session: %v\n%s", err, out)
+	}
+	out, err = f.run(t, "ls", "--archive", f.archive)
+	if err != nil || !strings.Contains(out, "fix the login redirect") {
+		t.Errorf("ls --archive did not list the archived session: %v\n%s", err, out)
+	}
+}
+
+// Shell completion reads the command list from `help` and each command's flags from
+// `<command> -h`. Both must keep working, or completion silently offers nothing.
+func TestHelpDrivesCompletion(t *testing.T) {
+	out, _ := exec.Command(binary, "help").CombinedOutput()
+	var commands []string
+	in := false
+	for _, l := range strings.Split(strings.ReplaceAll(string(out), "\r", ""), "\n") {
+		switch {
+		case strings.HasPrefix(l, "commands:"):
+			in = true
+		case strings.TrimSpace(l) == "":
+			in = false
+		case in:
+			commands = append(commands, strings.Fields(l)[0])
+		}
+	}
+	if len(commands) < 15 {
+		t.Fatalf("help lists %d commands: %v", len(commands), commands)
+	}
+	for _, c := range commands {
+		if c == "version" || c == "completion" {
+			continue
+		}
+		cmd := exec.Command(binary, c, "-h")
+		help, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Errorf("%s -h exited with %v", c, err)
+		}
+		if !strings.Contains(string(help), "  -claude-dir") {
+			t.Errorf("%s -h lists no flags:\n%s", c, help)
+		}
+	}
+}
+
+func TestBackupZipsTheWholeProfileButNoSecrets(t *testing.T) {
+	f := newFixture(t)
+	mustWrite(t, filepath.Join(f.claudeDir, ".credentials.json"), `{"token":"x"}`)
+	mustWrite(t, filepath.Join(f.claudeDir, ".claude.json"), `{}`)
+	mustWrite(t, filepath.Join(f.claudeDir, "CLAUDE.md"), "# rules\n")
+	out := t.TempDir()
+
+	res, err := f.run(t, "backup", "--out", out)
+	if err != nil {
+		t.Fatalf("backup failed: %v\n%s", err, res)
+	}
+	zips, _ := filepath.Glob(filepath.Join(out, "claude-backup-*.zip"))
+	if len(zips) != 1 {
+		t.Fatalf("expected one zip, got %v\n%s", zips, res)
+	}
+	zr, err := zip.OpenReader(zips[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	got := map[string]bool{}
+	for _, file := range zr.File {
+		got[file.Name] = true
+	}
+	for _, want := range []string{
+		"MANIFEST.txt", "CLAUDE.md", "settings.json",
+		"projects/e--work-airos-frontend/11111111-2222-3333-4444-555555555555.jsonl",
+		"projects/e--work-airos-frontend/11111111-2222-3333-4444-555555555555/subagents/agent-a1b2.jsonl",
+		"projects/e--work-legacy-app/memory/MEMORY.md",
+	} {
+		if !got[want] {
+			t.Errorf("backup is missing %s (has %v)", want, got)
+		}
+	}
+	for _, never := range []string{".credentials.json", ".claude.json"} {
+		if got[never] {
+			t.Errorf("backup contains %s", never)
+		}
+	}
+}
+
+// A backup with no conversations in it is the failure that lost a machine's history.
+func TestBackupWarnsWhenThereAreNoTranscripts(t *testing.T) {
+	f := newFixture(t)
+	if err := os.RemoveAll(filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend")); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := f.run(t, "backup", "--out", t.TempDir(), "--dry-run")
+	if !strings.Contains(out, "NO conversation history") {
+		t.Errorf("no warning for a transcript-less backup:\n%s", out)
 	}
 }

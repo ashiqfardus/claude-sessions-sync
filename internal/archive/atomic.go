@@ -18,20 +18,29 @@ import (
 // on a USB stick, whose timestamps are only accurate to 2 seconds.
 const MTimeToleranceSeconds = 2
 
-// NeedsCopy reports whether src must be copied to dst.
+// NeedsCopy reports whether src must be copied over dst: the newer file wins.
 //
-// Size differences are decisive. Timestamps are compared with tolerance, never
-// exactly. Any future size/mtime comparison against a synced or removable filesystem
-// needs the same treatment.
+// Size used to be decisive, which let an OLDER file replace a newer one whenever
+// the sizes differed: a machine holding a stale pulled copy of a session overwrote
+// the longer version another machine had just pushed, and restore replaced memory
+// edited locally with the archived original. Copies preserve mtime, so mtime says
+// which side is newer; size only breaks a tie inside the tolerance, where the larger
+// file wins because transcripts grow.
+//
+// Timestamps are compared with tolerance, never exactly. Any future size/mtime
+// comparison against a synced or removable filesystem needs the same treatment.
 func NeedsCopy(src, dst os.FileInfo) bool {
 	if dst == nil {
 		return true
 	}
-	if src.Size() != dst.Size() {
+	tolerance := MTimeToleranceSeconds * time.Second
+	switch {
+	case src.ModTime().After(dst.ModTime().Add(tolerance)):
 		return true
+	case src.ModTime().Before(dst.ModTime().Add(-tolerance)):
+		return false
 	}
-	cutoff := src.ModTime().Add(-MTimeToleranceSeconds * time.Second)
-	return dst.ModTime().Before(cutoff)
+	return src.Size() > dst.Size()
 }
 
 // WriteFileAtomic writes data to path via a temporary file in the same directory,

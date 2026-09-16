@@ -6,6 +6,7 @@
 package render
 
 import (
+	"encoding/json"
 	"fmt"
 	"html"
 	"os"
@@ -31,12 +32,10 @@ const maxBlockChars = 4000
 // Turns are rendered oldest-first, so the cap drops the tail and says so.
 const maxPageBytes = 2 << 20 // 2 MiB
 
-// maxIndexRows caps the session list.
-//
-// The same mistake as INDEX.md, which listed every session ever: at roughly a
-// kilobyte per row this is a megabyte at a thousand sessions, opened on a phone from
-// a cloud folder.
-const maxIndexRows = 300
+// maxRowsPerProject caps each project's rows on the main index; the project's own
+// page lists all of them. Listing every session on one page is a megabyte at a
+// thousand sessions, opened on a phone from a cloud folder.
+const maxRowsPerProject = 20
 
 // Options controls a render pass.
 type Options struct {
@@ -92,6 +91,13 @@ func Archive(dest string, opts Options) (Result, error) {
 		Prompt  string
 	}
 	var entries []indexEntry
+
+	// A page is current only if it was rendered by this template, from a transcript
+	// of this size. Comparing timestamps alone missed an append inside the tolerance
+	// window, and a renderer fix - such as redaction - never reached pages that were
+	// already published.
+	prev := loadState(res.OutputDir)
+	next := renderState{Version: templateVersion, Pages: map[string]pageState{}}
 
 	for _, bucket := range buckets {
 		bucketDir := filepath.Join(archive.ProjectsDir(dest), bucket)
@@ -155,7 +161,15 @@ func Archive(dest string, opts Options) (Result, error) {
 				}
 			}
 
-			page, err := renderOne(read, project, id, opts.Force, out, info)
+			key := bucket + "/" + id
+			var known *pageState
+			if ps, ok := prev.Pages[key]; ok && !opts.Force && prev.Version == templateVersion && ps.Size == info.Size() {
+				known = &ps
+			}
+			page, err := renderOne(read, project, id, known, out, info)
+			if err == nil {
+				next.Pages[key] = pageState{Size: info.Size(), Prompt: page.prompt}
+			}
 			switch {
 			case err != nil:
 				// One bad transcript must not stop the rest: the point of the archive
@@ -179,56 +193,114 @@ func Archive(dest string, opts Options) (Result, error) {
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Updated.After(entries[j].Updated) })
 
-	total := len(entries)
-	omitted := 0
-	if total > maxIndexRows {
-		omitted = total - maxIndexRows
-		entries = entries[:maxIndexRows]
-	}
-
-	var b strings.Builder
-	b.WriteString(pageHead("Claude sessions"))
-	b.WriteString(`<h1>Claude sessions</h1>`)
-	fmt.Fprintf(&b, `<p class="meta">%d session(s) &middot; updated %s`,
-		total, html.EscapeString(time.Now().Format("2006-01-02 15:04")))
-	if omitted > 0 {
-		fmt.Fprintf(&b, `<br>showing the %d most recent; %d older are in <code>projects/</code> and <code>index/</code>`,
-			maxIndexRows, omitted)
-	}
-	b.WriteString(`</p>`)
-
-	byProject := map[string][]indexEntry{}
+	byBucket := map[string][]indexEntry{}
 	for _, e := range entries {
-		byProject[e.Project] = append(byProject[e.Project], e)
+		byBucket[e.Bucket] = append(byBucket[e.Bucket], e)
 	}
-	names := make([]string, 0, len(byProject))
-	for k := range byProject {
-		names = append(names, k)
+	order := make([]string, 0, len(byBucket))
+	for k := range byBucket {
+		order = append(order, k)
 	}
-	sort.Strings(names)
+	sort.Slice(order, func(i, j int) bool {
+		pi, pj := byBucket[order[i]][0].Project, byBucket[order[j]][0].Project
+		if pi != pj {
+			return pi < pj
+		}
+		return order[i] < order[j]
+	})
 
-	for _, name := range names {
-		fmt.Fprintf(&b, `<h2>%s</h2><ul class="sessions">`, html.EscapeString(name))
-		for _, e := range byProject[name] {
+	writeRows := func(b *strings.Builder, rows []indexEntry, href func(indexEntry) string) {
+		b.WriteString(`<ul class="sessions">`)
+		for _, e := range rows {
 			prompt := e.Prompt
 			if prompt == "" {
 				prompt = "(no opening message)"
 			}
-			fmt.Fprintf(&b,
+			fmt.Fprintf(b,
 				`<li><a href="%s"><span class="when">%s</span><span class="prompt">%s</span><span class="size">%s</span></a></li>`,
-				html.EscapeString(e.Href),
+				html.EscapeString(href(e)),
 				html.EscapeString(e.Updated.Format("2006-01-02 15:04")),
 				html.EscapeString(prompt),
 				html.EscapeString(humanSize(e.Size)))
 		}
 		b.WriteString(`</ul>`)
 	}
+
+	var b strings.Builder
+	b.WriteString(pageHead("Claude sessions"))
+	b.WriteString(`<h1>Claude sessions</h1>`)
+	fmt.Fprintf(&b, `<p class="meta">%d session(s) &middot; updated %s</p>`,
+		len(entries), html.EscapeString(time.Now().Format("2006-01-02 15:04")))
+
+	for _, bucket := range order {
+		group := byBucket[bucket]
+		project := group[0].Project
+
+		// Every project gets its own complete list. The main index shows only each
+		// project's most recent sessions and links there: it used to stop at 300
+		// sessions overall and point at JSON, leaving the rest unreachable from a phone.
+		shown := group
+		if len(shown) > maxRowsPerProject {
+			shown = shown[:maxRowsPerProject]
+		}
+		fmt.Fprintf(&b, `<h2>%s</h2>`, html.EscapeString(project))
+		writeRows(&b, shown, func(e indexEntry) string { return e.Href })
+		if len(group) > len(shown) {
+			fmt.Fprintf(&b, `<p class="meta"><a href="%s">all %d sessions &rarr;</a></p>`,
+				html.EscapeString(bucket+"/index.html"), len(group))
+		}
+
+		var p strings.Builder
+		p.WriteString(pageHead(project))
+		p.WriteString(`<p class="back"><a href="../index.html">&larr; all projects</a></p>`)
+		fmt.Fprintf(&p, `<h1>%s</h1><p class="meta">%d session(s)</p>`, html.EscapeString(project), len(group))
+		writeRows(&p, group, func(e indexEntry) string { return e.ID + ".html" })
+		p.WriteString(pageFoot())
+		if err := archive.WriteFileAtomic(filepath.Join(res.OutputDir, bucket, "index.html"), []byte(p.String()), 0o644); err != nil {
+			res.Failed++
+		}
+	}
 	b.WriteString(pageFoot())
 
 	if err := archive.WriteFileAtomic(filepath.Join(res.OutputDir, "index.html"), []byte(b.String()), 0o644); err != nil {
 		return res, err
 	}
-	return res, nil
+	return res, saveState(res.OutputDir, next)
+}
+
+// templateVersion changes whenever a rendered page would come out differently, so
+// every page is rendered again once. 2: secrets are redacted, times are local.
+const templateVersion = 2
+
+type pageState struct {
+	Size   int64  `json:"size"`
+	Prompt string `json:"prompt"`
+}
+
+// renderState is html/.render-state.json: what each page was rendered from. It also
+// carries each session's opening prompt, so the index needs no read of a transcript
+// whose page is current - on a cloud filesystem that read is a download, every run.
+type renderState struct {
+	Version int                  `json:"version"`
+	Pages   map[string]pageState `json:"pages"`
+}
+
+func statePath(htmlDir string) string { return filepath.Join(htmlDir, ".render-state.json") }
+
+func loadState(htmlDir string) renderState {
+	var s renderState
+	if raw, err := os.ReadFile(statePath(htmlDir)); err == nil {
+		_ = json.Unmarshal(raw, &s)
+	}
+	return s
+}
+
+func saveState(htmlDir string, s renderState) error {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	return archive.WriteFileAtomic(statePath(htmlDir), data, 0o644)
 }
 
 type pageInfo struct {
@@ -238,26 +310,24 @@ type pageInfo struct {
 	unrecordedThinking int
 }
 
-func renderOne(src, project, id string, force bool, out string, srcInfo os.FileInfo) (pageInfo, error) {
+// renderOne writes one page. known is what the page was last rendered from, when that
+// was this template and a transcript of the same size; nil forces a render.
+func renderOne(src, project, id string, known *pageState, out string, srcInfo os.FileInfo) (pageInfo, error) {
 	var info pageInfo
 
-	// Up to date when the page is at least as new as the transcript. The same
-	// tolerance as everywhere else: a synced filesystem rounds timestamps, and an
-	// exact comparison would re-render the whole archive on every run.
 	// Pages carry their source's timestamp, so "current" means the two match - not
 	// merely that the page is newer. A transcript replaced with OLDER content, which
 	// is exactly what import does when it preserves archived timestamps, would
-	// otherwise leave a stale page that never re-renders.
-	if !force {
+	// otherwise leave a stale page that never re-renders. The same tolerance as
+	// everywhere else: a synced filesystem rounds timestamps.
+	if known != nil {
 		if outInfo, err := os.Stat(out); err == nil {
 			drift := outInfo.ModTime().Sub(srcInfo.ModTime())
 			if drift < 0 {
 				drift = -drift
 			}
 			if drift <= archive.MTimeToleranceSeconds*time.Second {
-				if s, err := claude.ScanHead(src, 200); err == nil {
-					info.prompt = s.FirstPrompt
-				}
+				info.prompt = known.Prompt
 				info.upToDate = true
 				return info, nil
 			}
@@ -271,12 +341,17 @@ func renderOne(src, project, id string, force bool, out string, srcInfo os.FileI
 
 	stats, err := claude.Walk(src, func(r claude.Record) bool {
 		if info.prompt == "" && r.Type == "user" && !r.IsMeta && r.Text != "" {
-			info.prompt = r.Text
-			if len(info.prompt) > 120 {
-				info.prompt = info.prompt[:120] + "..."
+			// Cut by characters, not bytes: a byte slice split Bengali text and emoji
+			// mid-character in the index.
+			info.prompt = Redact(r.Text)
+			if runes := []rune(info.prompt); len(runes) > 120 {
+				info.prompt = string(runes[:120]) + "..."
 			}
 		}
 		if !r.Timestamp.IsZero() {
+			// Transcripts record UTC; the index shows local file times. Pages used to
+			// disagree with their own index row by the UTC offset.
+			r.Timestamp = r.Timestamp.Local()
 			if first.IsZero() {
 				first = r.Timestamp
 			}
@@ -307,9 +382,13 @@ func renderOne(src, project, id string, force bool, out string, srcInfo os.FileI
 	fmt.Fprintf(&b, `<h1>%s</h1>`, html.EscapeString(project))
 	fmt.Fprintf(&b, `<p class="meta">%s`, html.EscapeString(id))
 	if !first.IsZero() {
+		end := last.Format("15:04")
+		if last.Format("2006-01-02") != first.Format("2006-01-02") {
+			end = last.Format("2006-01-02 15:04") // a session that ran past midnight
+		}
 		fmt.Fprintf(&b, ` &middot; %s → %s`,
 			html.EscapeString(first.Format("2006-01-02 15:04")),
-			html.EscapeString(last.Format("15:04")))
+			html.EscapeString(end))
 	}
 	b.WriteString(`</p>`)
 	b.WriteString(body.String())
@@ -359,7 +438,7 @@ func writeTurn(b *strings.Builder, r claude.Record) int {
 
 	when := ""
 	if !r.Timestamp.IsZero() {
-		when = r.Timestamp.Format("15:04")
+		when = r.Timestamp.Local().Format("15:04")
 	}
 
 	fmt.Fprintf(b, `<div class="turn %s"><div class="who">%s<span class="time">%s</span></div>`,
@@ -437,7 +516,9 @@ func removePages(htmlDir, bucket string) (int, error) {
 			}
 			continue
 		}
-		removed++
+		if !strings.EqualFold(e.Name(), "index.html") { // the project's listing, not a session
+			removed++
+		}
 	}
 
 	// Leaves the directory alone if anything else is in it.
@@ -471,6 +552,7 @@ func formatBody(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
+	text = Redact(text)
 
 	truncated := false
 	if len(text) > maxBlockChars {

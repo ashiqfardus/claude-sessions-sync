@@ -72,7 +72,7 @@ func expectedFallback(name string) string {
 // Sweep must always answer, never error out, on every platform: doctor reports its
 // result as one line and a missing scheduler is a normal state, not a failure.
 func TestSweepReportsSomething(t *testing.T) {
-	s, err := Sweep()
+	s, err := Sweep(Job{Profile: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Sweep returned an error: %v", err)
 	}

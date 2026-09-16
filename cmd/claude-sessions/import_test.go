@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 )
 
 // importFixture is a machine that has an archive but none of the local buckets, as a
@@ -349,11 +351,74 @@ func TestRestoreRefusesToWriteInvalidJSON(t *testing.T) {
 	}
 }
 
-func slugOf(path string) string {
-	return strings.NewReplacer(":", "-", `\`, "-", "/", "-", " ", "-").Replace(path)
-}
+// slugOf is the bucket Claude Code uses. A local copy of the old, partial rule here
+// agreed with the old, partial implementation, so neither caught the other.
+func slugOf(path string) string { return claude.Slug(path) }
 
 func jsonEscape(s string) string {
 	b, _ := json.Marshal(s)
 	return strings.Trim(string(b), `"`)
+}
+
+// A bucket with memory but no sessions, or with no recorded identity at all, used to
+// be skipped without a word.
+func TestImportReportsMemoryOnlyAndUnknownBuckets(t *testing.T) {
+	f := newImportFixture(t)
+	local := f.makeRepo(t, "notes", "git@github.com:example/notes.git")
+
+	mustWrite(t, filepath.Join(f.archive, "projects", "D--work-notes", "memory", "MEMORY.md"), "- remember this\n")
+	mustWrite(t, filepath.Join(f.archive, "projects", "D--mystery", "memory", "MEMORY.md"), "- orphan\n")
+	f.archiveProject(t, "D--work-api", `D:\work\api`, "11111111-1111-1111-1111-111111111111", "hello")
+	f.writeManifest(t, map[string]any{
+		"D--work-notes": map[string]any{"path": `D:\work\notes`, "leaf": "notes",
+			"remote": "https://github.com/example/notes", "seen": "2026-08-30"},
+		"D--work-api": map[string]any{"path": `D:\work\api`, "leaf": "api", "seen": "2026-08-30"},
+	})
+
+	out, err := f.run(t, "import", "--search-root", f.dev)
+	if err != nil {
+		t.Fatalf("import failed: %v\n%s", err, out)
+	}
+	memory := filepath.Join(f.claudeDir, "projects", slugOf(local), "memory", "MEMORY.md")
+	if got := mustRead(t, memory); got != "- remember this\n" {
+		t.Errorf("memory-only project was not filed: %q\n%s", got, out)
+	}
+	if !strings.Contains(out, "D--mystery") {
+		t.Errorf("a bucket with no recorded identity was not reported:\n%s", out)
+	}
+}
+
+// Sessions in one workspace folder cd into sibling repositories; each sibling must be
+// repointed by its git remote, not just the folder the session started in.
+func TestImportRepointsRelatedWorkspaceRepos(t *testing.T) {
+	f := newImportFixture(t)
+	front := f.makeRepo(t, "front", "git@github.com:example/front.git")
+	back := f.makeRepo(t, "back", "git@github.com:example/back.git")
+
+	escaped := func(p string) string { b, _ := json.Marshal(p); return string(b) }
+	mustWrite(t, filepath.Join(f.archive, "projects", "D--ws-front", "66666666-6666-6666-6666-666666666666.jsonl"),
+		`{"type":"user","cwd":"D:\\ws\\front","sessionId":"66666666-6666-6666-6666-666666666666","message":{"role":"user","content":"hi"}}`+"\n"+
+			`{"type":"assistant","cwd":"D:\\ws\\back","message":{"role":"assistant","content":[{"type":"text","text":"edited D:\\ws\\back\\app.php and ran cd /d/ws/back"}]}}`+"\n")
+	f.writeManifest(t, map[string]any{
+		"D--ws-front": map[string]any{
+			"path": `D:\ws\front`, "leaf": "front", "remote": "https://github.com/example/front", "seen": "2026-09-01",
+			"related": []any{map[string]any{"path": `D:\ws\back`, "remote": "https://github.com/example/back.git"}},
+		},
+	})
+
+	out, err := f.run(t, "import", "--search-root", f.dev)
+	if err != nil {
+		t.Fatalf("import failed: %v\n%s", err, out)
+	}
+	files := f.localBucket(t, slugOf(front))
+	if len(files) != 1 {
+		t.Fatalf("transcript not filed: %v\n%s", files, out)
+	}
+	body := mustRead(t, filepath.Join(f.claudeDir, "projects", slugOf(front), files[0]))
+	if strings.Contains(body, `D:\\ws\\back`) || strings.Contains(body, "/d/ws/back") {
+		t.Errorf("the sibling repository still points at the old machine:\n%s", body)
+	}
+	if !strings.Contains(body, strings.Trim(escaped(back), `"`)) {
+		t.Errorf("the sibling repository was not repointed to %s:\n%s", back, body)
+	}
 }

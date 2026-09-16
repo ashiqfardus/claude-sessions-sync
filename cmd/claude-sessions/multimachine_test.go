@@ -212,3 +212,34 @@ func TestDoctorIgnoresExcludedProjectsWhenCheckingPages(t *testing.T) {
 		t.Errorf("page and transcript counts disagree:\n%s", out)
 	}
 }
+
+// renderExclude lived only in each machine's own config while rendering covers the
+// whole shared archive, so the next machine to push published the project again -
+// and INDEX.md listed its opening prompts all along.
+func TestExclusionHoldsOnEveryMachine(t *testing.T) {
+	a := newFixture(t)
+	mustWrite(t, filepath.Join(a.claudeDir, "session-sync.json"),
+		`{"destination":"","renderExclude":["airos-frontend"]}`)
+	if out, err := a.push(t); err != nil {
+		t.Fatalf("push from A failed: %v\n%s", err, out)
+	}
+
+	// Machine B shares the archive and has no exclusion configured.
+	b := newFixture(t)
+	b.archive = a.archive
+	if out, err := b.push(t); err != nil {
+		t.Fatalf("push from B failed: %v\n%s", err, out)
+	}
+
+	page := filepath.Join(a.archive, "html", "e--work-airos-frontend", "11111111-2222-3333-4444-555555555555.html")
+	if _, err := os.Stat(page); err == nil {
+		t.Error("a machine without the setting published the excluded project")
+	}
+	index := mustRead(t, filepath.Join(a.archive, "INDEX.md"))
+	if strings.Contains(index, "fix the login redirect") {
+		t.Errorf("INDEX.md shows an excluded project's prompt:\n%s", index)
+	}
+	if !strings.Contains(mustRead(t, filepath.Join(a.archive, "render-exclude.txt")), "airos-frontend") {
+		t.Error("the exclusion was not shared through the archive")
+	}
+}

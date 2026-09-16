@@ -101,6 +101,66 @@ func SaveConfig(claudeRoot string, c Config) error {
 	return WriteFileAtomic(ConfigPath(claudeRoot), append(data, '\n'), 0o600)
 }
 
+// SharedExcludePath is <archive>/render-exclude.txt: one pattern per line.
+func SharedExcludePath(dest string) string { return filepath.Join(dest, "render-exclude.txt") }
+
+// RenderExcludes returns the exclusions in force for an archive: this machine's
+// renderExclude, the archive's shared list, and any one-off extras.
+//
+// renderExclude used to live only in each machine's own config, while rendering
+// covers the whole shared archive - so a second machine without the setting rendered
+// the excluded project straight back. With persist, this machine's patterns are added
+// to the shared list so every machine honours them. It only ever adds: to publish a
+// project again, remove its line from render-exclude.txt as well as from the config.
+func RenderExcludes(claudeRoot, dest string, extra []string, persist bool) []string {
+	cfg, _ := LoadConfig(claudeRoot)
+
+	var shared []string
+	if raw, err := os.ReadFile(SharedExcludePath(dest)); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if p := strings.TrimSpace(line); p != "" && !strings.HasPrefix(p, "#") {
+				shared = append(shared, p)
+			}
+		}
+	}
+
+	seen := map[string]bool{}
+	var all, added []string
+	add := func(p string, local bool) {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[strings.ToLower(p)] {
+			return
+		}
+		seen[strings.ToLower(p)] = true
+		all = append(all, p)
+		if local {
+			added = append(added, p)
+		}
+	}
+	for _, p := range shared {
+		add(p, false)
+	}
+	for _, p := range cfg.RenderExclude {
+		add(p, true)
+	}
+
+	if persist && len(added) > 0 {
+		if _, err := os.Stat(dest); err == nil {
+			body := "# Projects whose sessions are not published as pages, on any machine.\n" +
+				"# One case-insensitive fragment of a project path or bucket name per line.\n"
+			for _, p := range all {
+				body += p + "\n"
+			}
+			_ = WriteFileAtomic(SharedExcludePath(dest), []byte(body), 0o644)
+		}
+	}
+
+	for _, p := range extra {
+		add(p, false)
+	}
+	return all
+}
+
 const archiveFolderName = "claude-sessions"
 
 // detect looks for a synced folder in the conventional places.

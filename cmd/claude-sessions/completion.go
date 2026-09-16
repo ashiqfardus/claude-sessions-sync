@@ -30,77 +30,63 @@ func cmdCompletion(args []string) error {
 	return nil
 }
 
+// The scripts ask the binary for its commands (`help`) and each command's flags
+// (`<command> -h`) at completion time. The hand-written lists they replaced covered
+// six of fifteen commands - push, install, render, import and the rest were missing -
+// because nothing kept them in step with the code.
+
+const listCommands = `awk '/^commands:/{f=1;next} /^$/{f=0} f{print $1}'`
+const listFlags = `awk '$1 ~ /^-/ {print "-" $1}'`
+
 const bashCompletion = `# bash completion for claude-sessions
 _claude_sessions() {
-  local cur prev commands
-  cur="${COMP_WORDS[COMP_CWORD]}"
-  prev="${COMP_WORDS[COMP_CWORD-1]}"
-  commands="ls search stats doctor config completion version help"
-
+  local cur="${COMP_WORDS[COMP_CWORD]}" bin="${COMP_WORDS[0]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+    COMPREPLY=( $(compgen -W "$("$bin" help 2>&1 | ` + listCommands + `)" -- "$cur") )
     return
   fi
-
   case "${COMP_WORDS[1]}" in
-    ls)     COMPREPLY=( $(compgen -W "--project --since --until --limit --json --claude-dir" -- "$cur") ) ;;
-    search) COMPREPLY=( $(compgen -W "--project --role --regexp --limit --json --claude-dir" -- "$cur") ) ;;
-    stats)  COMPREPLY=( $(compgen -W "--json --claude-dir" -- "$cur") ) ;;
-    doctor) COMPREPLY=( $(compgen -W "--archive --json --claude-dir" -- "$cur") ) ;;
     config)
       if [ "$COMP_CWORD" -eq 2 ]; then
-        COMPREPLY=( $(compgen -W "show set-destination" -- "$cur") )
-      else
-        COMPREPLY=( $(compgen -d -- "$cur") )
-      fi
-      ;;
-    completion) COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") ) ;;
+        COMPREPLY=( $(compgen -W "show set-destination" -- "$cur") ); return
+      fi ;;
+    completion) COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") ); return ;;
   esac
-  [ -n "$prev" ] || true
+  if [[ "$cur" == -* ]]; then
+    COMPREPLY=( $(compgen -W "$("$bin" "${COMP_WORDS[1]}" -h 2>&1 | ` + listFlags + `)" -- "$cur") )
+  else
+    COMPREPLY=( $(compgen -f -- "$cur") )
+  fi
 }
 complete -F _claude_sessions claude-sessions
 `
 
 const zshCompletion = `#compdef claude-sessions
 _claude-sessions() {
-  local -a commands
-  commands=(
-    'ls:list sessions on this machine'
-    'search:search the text of every session'
-    'stats:session counts and sizes per project'
-    'doctor:check archive, hook, retention and manifest drift'
-    'config:show or set the archive destination'
-    'completion:print a shell completion script'
-    'version:print the version'
-  )
+  local -a items
   if (( CURRENT == 2 )); then
-    _describe 'command' commands
+    items=(${(f)"$($words[1] help 2>&1 | ` + listCommands + `)"})
+    compadd -a items
     return
   fi
   case "$words[2]" in
-    ls)     _arguments '--project=[filter by path]' '--since=[YYYY-MM-DD]' '--until=[YYYY-MM-DD]' '--limit=[max rows]' '--json' '--claude-dir=[profile]:directory:_files -/' ;;
-    search) _arguments '--project=[filter by path]' '--role=[user or assistant]' '--regexp' '--limit=[max hits]' '--json' ;;
-    doctor) _arguments '--archive=[folder]:directory:_files -/' '--json' ;;
-    config) _values 'action' 'show' 'set-destination' ;;
-    completion) _values 'shell' 'bash' 'zsh' 'fish' ;;
+    config) if (( CURRENT == 3 )); then compadd show set-destination; return; fi ;;
+    completion) compadd bash zsh fish; return ;;
   esac
+  if [[ $PREFIX == -* ]]; then
+    items=(${(f)"$($words[1] $words[2] -h 2>&1 | ` + listFlags + `)"})
+    compadd -a items
+  else
+    _files
+  fi
 }
 _claude-sessions "$@"
 `
 
 const fishCompletion = `# fish completion for claude-sessions
 complete -c claude-sessions -f
-complete -c claude-sessions -n __fish_use_subcommand -a ls         -d 'list sessions on this machine'
-complete -c claude-sessions -n __fish_use_subcommand -a search     -d 'search the text of every session'
-complete -c claude-sessions -n __fish_use_subcommand -a stats      -d 'session counts and sizes per project'
-complete -c claude-sessions -n __fish_use_subcommand -a doctor     -d 'check archive, hook, retention, manifest'
-complete -c claude-sessions -n __fish_use_subcommand -a config     -d 'show or set the archive destination'
-complete -c claude-sessions -n __fish_use_subcommand -a completion -d 'print a shell completion script'
-complete -c claude-sessions -n __fish_use_subcommand -a version    -d 'print the version'
-
-complete -c claude-sessions -n '__fish_seen_subcommand_from ls'     -l project -l since -l until -l limit -l json -l claude-dir
-complete -c claude-sessions -n '__fish_seen_subcommand_from search' -l project -l role -l regexp -l limit -l json
-complete -c claude-sessions -n '__fish_seen_subcommand_from doctor' -l archive -l json -l claude-dir
+complete -c claude-sessions -n __fish_use_subcommand -a "(claude-sessions help 2>&1 | ` + listCommands + `)"
 complete -c claude-sessions -n '__fish_seen_subcommand_from config' -a 'show set-destination'
 complete -c claude-sessions -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'
+complete -c claude-sessions -n 'not __fish_use_subcommand' -a "(claude-sessions (commandline -opc)[2] -h 2>&1 | ` + listFlags + `)"
 `

@@ -29,10 +29,12 @@ type hit struct {
 func cmdSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
+	archived, archiveDir := sourceFlags(fs)
 	project := fs.String("project", "", "only sessions whose path or bucket contains this text")
 	role := fs.String("role", "", "only messages from this role (user, assistant)")
 	useRegexp := fs.Bool("regexp", false, "treat the query as a regular expression")
 	caseSensitive := fs.Bool("case-sensitive", false, "match case exactly (default: case-insensitive)")
+	all := fs.Bool("all", false, "also search tool input, tool output and thinking")
 	limit := fs.Int("limit", 50, "stop after this many matches (0 = all)")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := fs.Parse(args); err != nil {
@@ -60,7 +62,11 @@ func cmdSearch(args []string) error {
 	if err != nil {
 		return err
 	}
-	buckets, err := claude.ListBuckets(claude.ProjectsDir(root))
+	dir, err := sessionsDir(root, *archived, *archiveDir)
+	if err != nil {
+		return err
+	}
+	buckets, err := claude.ListBuckets(dir)
 	if err != nil {
 		return err
 	}
@@ -70,6 +76,10 @@ func cmdSearch(args []string) error {
 
 	paths := newResolver()
 
+	// Newest sessions first, across every project. --limit used to keep the first
+	// matches in alphabetical bucket order, which cut off exactly the recent sessions
+	// someone is usually looking for.
+	var candidates []candidate
 	for _, b := range buckets {
 		// A project filter is decided per bucket, so a filtered search never opens the
 		// transcripts it is about to discard.
@@ -80,64 +90,72 @@ func cmdSearch(args []string) error {
 				continue
 			}
 		}
-
 		for _, tr := range b.Transcripts {
-			if *limit > 0 && len(hits) >= *limit {
-				break
-			}
-
-			// One pass. The cwd is picked up from the same walk that does the
-			// matching, rather than paying for a separate head scan over every file.
-			scanned++
-			var found []hit
-			cwd := ""
-			_, err := claude.Walk(tr.Path, func(r claude.Record) bool {
-				if cwd == "" && r.Cwd != "" {
-					cwd = r.Cwd
-				}
-				if r.Text == "" {
-					return true
-				}
-				if *role != "" && !strings.EqualFold(r.Role, *role) && !strings.EqualFold(r.Type, *role) {
-					return true
-				}
-				loc := re.FindStringIndex(r.Text)
-				if loc == nil {
-					return true
-				}
-				found = append(found, hit{
-					Bucket: b.Name, SessionID: tr.ID,
-					Role: firstNonEmpty(r.Role, r.Type), When: r.Timestamp,
-					Line: r.Line, Snippet: snippet(r.Text, loc[0], loc[1]),
-				})
-				return *limit <= 0 || len(hits)+len(found) < *limit
-			})
-			if err != nil {
-				unreadable++
-			}
-
-			// The path is only known once the walk has run, so stamp it afterwards.
-			paths.Set(b.Name, cwd)
-			path, _ := paths.Known(b.Name)
-			if path == "" {
-				path = b.Name
-			}
-			for i := range found {
-				found[i].Project = path
-			}
-			hits = append(hits, found...)
+			candidates = append(candidates, candidate{bucket: b.Name, t: tr})
 		}
 	}
-
-	// Sort by session first, then by time within it. Sorting by time alone interleaves
-	// sessions, and the grouped output below would then reprint the same session
-	// header every time the listing switched back to it.
-	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].SessionID != hits[j].SessionID {
-			return hits[i].When.After(hits[j].When)
-		}
-		return hits[i].Line < hits[j].Line
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].t.ModTime.After(candidates[j].t.ModTime)
 	})
+
+	for _, c := range candidates {
+		if *limit > 0 && len(hits) >= *limit {
+			break
+		}
+		tr := c.t
+
+		// One pass. The cwd is picked up from the same walk that does the matching,
+		// rather than paying for a separate head scan over every file.
+		scanned++
+		var found []hit
+		cwd := ""
+		_, err := claude.Walk(tr.Path, func(r claude.Record) bool {
+			if cwd == "" && r.Cwd != "" {
+				cwd = r.Cwd
+			}
+			if *role != "" && !strings.EqualFold(r.Role, *role) && !strings.EqualFold(r.Type, *role) {
+				return true
+			}
+			// The message text by default; with --all also tool input, tool output and
+			// thinking, which is where "which command did I run" is answered.
+			texts := []string{r.Text}
+			if *all {
+				for _, blk := range r.Blocks {
+					if blk.Kind != "text" {
+						texts = append(texts, blk.Text)
+					}
+				}
+			}
+			for _, text := range texts {
+				if loc := re.FindStringIndex(text); loc != nil {
+					found = append(found, hit{
+						Bucket: c.bucket, SessionID: tr.ID,
+						Role: firstNonEmpty(r.Role, r.Type), When: r.Timestamp,
+						Line: r.Line, Snippet: snippet(text, loc[0], loc[1]),
+					})
+					break
+				}
+			}
+			return *limit <= 0 || len(hits)+len(found) < *limit
+		})
+		if err != nil {
+			unreadable++
+		}
+
+		// The path is only known once the walk has run, so stamp it afterwards.
+		paths.Set(c.bucket, cwd)
+		path, _ := paths.Known(c.bucket)
+		if path == "" {
+			path = c.bucket
+		}
+		for i := range found {
+			found[i].Project = path
+		}
+		// Hits arrive grouped by session, newest session first, in line order within
+		// it. They are not re-sorted: sorting by time across sessions interleaved them
+		// and reprinted the same session header over and over.
+		hits = append(hits, found...)
+	}
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -161,12 +179,15 @@ func cmdSearch(args []string) error {
 		}
 		when := ""
 		if !h.When.IsZero() {
-			when = h.When.Format("2006-01-02 15:04")
+			when = h.When.Local().Format("2006-01-02 15:04")
 		}
 		fmt.Printf("  %-16s %-9s %s\n", when, h.Role, h.Snippet)
 	}
 
-	fmt.Printf("\n%d match(es) in %d session(s).\n", len(hits), scanned)
+	fmt.Printf("\n%d match(es); %d session(s) searched, newest first.\n", len(hits), scanned)
+	if *limit > 0 && len(hits) >= *limit {
+		fmt.Printf("Stopped at --limit %d; older sessions were not searched.\n", *limit)
+	}
 	if unreadable > 0 {
 		fmt.Printf("%d transcript(s) could not be read.\n", unreadable)
 	}
