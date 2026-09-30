@@ -48,28 +48,27 @@ func Install(j Job, everyMinutes int) (Status, error) {
 	return s, nil
 }
 
-// Uninstall removes this profile's scheduled task, and only this tool's.
+// Uninstall removes this profile's scheduled task, and only this tool's. It reports
+// whether there was one.
 //
 // The task is queried and its action inspected first. Deleting by name alone removed
 // a live task belonging to the PowerShell predecessor during testing on a real
 // machine; a tool must never remove automation it did not install.
-func Uninstall(j Job) error {
+func Uninstall(j Job) (bool, error) {
 	def, exists, err := queryTask(j.TaskName())
-	if err != nil {
-		return err
+	if err != nil || !exists {
+		return false, err // nothing of ours registered: not an error
 	}
-	if !exists {
-		return nil // nothing of ours registered: not an error
-	}
-	if action := def.Command + " " + def.Arguments; !ownsAction(action) {
-		return fmt.Errorf("the task %q does not run this tool (%s) - refusing to remove it", j.TaskName(), action)
+	if !ownsTask(def) {
+		return false, fmt.Errorf("the task %q does not run this tool (%s %s) - refusing to remove it",
+			j.TaskName(), def.Command, def.Arguments)
 	}
 
 	out, err := exec.Command(systemBinary("schtasks"), "/Delete", "/TN", j.TaskName(), "/F").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("schtasks failed: %v: %s", err, strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("schtasks failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return true, nil
 }
 
 // LegacySweep reports whether the PowerShell predecessor's task is registered, so the

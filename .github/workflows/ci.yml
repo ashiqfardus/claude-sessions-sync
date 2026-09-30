@@ -19,9 +19,9 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: stable
           check-latest: true
@@ -112,8 +112,8 @@ jobs:
     # a distro Go are not told to upgrade for no reason.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.21'
       - run: go build ./... && go vet ./... && go test ./...
@@ -122,8 +122,8 @@ jobs:
     name: cross-compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: stable
       - name: build all release targets
@@ -158,8 +158,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: stable
 
@@ -199,12 +199,12 @@ jobs:
           grep -q "hook      SessionEnd" install.log || { echo "FAIL: no hook reported"; exit 1; }
 
           # Record whether the scheduler registered, for the informational step below.
+          sweep=registered
           if grep -q "sweep     FAILED" install.log; then
             echo "NOTE: scheduler unavailable on this runner - hook-only install"
-            echo "sweep=degraded" >> "$GITHUB_ENV"
-          else
-            echo "sweep=registered" >> "$GITHUB_ENV"
+            sweep=degraded
           fi
+          echo "sweep=$sweep" >> "$GITHUB_ENV"
 
           # The hook must be a real, runnable binary at the path that was installed.
           hook_bin="$profile/bin/claude-sessions"
@@ -225,6 +225,23 @@ jobs:
           ./cs doctor --claude-dir "$profile" --archive "$archive" | tee doctor.log || true
           echo "::endgroup::"
           grep -q "session hook" doctor.log || { echo "FAIL: doctor does not see the hook"; exit 1; }
+
+          # Windows: the task must run the windowless copy - a console program opens a
+          # terminal every 30 minutes - and, when the runner lets it start at all, push.
+          if [ "$RUNNER_OS" = "Windows" ] && [ "$sweep" = registered ]; then
+            task=$(sed -n 's/.*Task Scheduler: \([^,]*\),.*/\1/p' install.log)
+            MSYS_NO_PATHCONV=1 schtasks /query /tn "$task" /xml | grep -q 'claude-sessionsw.exe' \
+              || { echo "FAIL: the task does not run claude-sessionsw.exe"; exit 1; }
+            before=$(grep -c "PUSH:" "$profile/session-sync.log" || true)
+            MSYS_NO_PATHCONV=1 schtasks /run /tn "$task"
+            fired=no
+            for _ in $(seq 60); do
+              [ "$(grep -c "PUSH:" "$profile/session-sync.log" || true)" -gt "$before" ] && { fired=yes; break; }
+              sleep 1
+            done
+            echo "sweep fired and pushed: $fired"
+            echo "sweep_fired=$fired" >> "$GITHUB_ENV"
+          fi
 
           # The hook must never break the end of a session, whatever the state of the
           # archive. This is the single most important behaviour in the tool.
@@ -261,3 +278,14 @@ jobs:
         run: |
           echo "sweep: ${sweep:-unknown}"
           [ "${sweep:-}" = "registered" ]
+
+      # Registering is not running. Green means the Windows task actually started the
+      # windowless binary and it pushed. A runner without a logged-on user may refuse
+      # to start an interactive-token task, which is why this cannot fail the job.
+      - name: sweep fired and pushed (informational, Windows)
+        if: always() && runner.os == 'Windows'
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "sweep fired: ${sweep_fired:-not attempted}"
+          [ "${sweep_fired:-}" = "yes" ]

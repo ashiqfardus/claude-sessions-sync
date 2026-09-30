@@ -53,6 +53,12 @@ func Sweep(j Job) (Status, error) {
 				s.Installed = true
 				s.Mechanism = "cron"
 				s.Detail = "crontab entry present"
+				// An entry is not a schedule: WSL, and many containers, never start a
+				// cron daemon, so the line sits there and nothing ever runs it.
+				if _, err := exec.LookPath("pgrep"); err == nil &&
+					strings.TrimSpace(runOut("pgrep", "-x", "cron|crond|cronie|busybox")) == "" {
+					s.Problem = "no cron daemon is running, so the entry never fires (on WSL: sudo service cron start)"
+				}
 				return s, nil
 			}
 		}

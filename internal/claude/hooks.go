@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -35,6 +36,20 @@ func IsArchiveHook(command string, args []string) (ours, legacy bool) {
 	return archiveCommand.MatchString(line), false
 }
 
+// keepBackups is how many settings.json.bak-* files install leaves behind. Each
+// install writes one, and every upgrade is an install: one machine had 13.
+const keepBackups = 3
+
+// pruneBackups removes all but the newest keep backups of settingsPath. The
+// timestamp in the name sorts chronologically.
+func pruneBackups(settingsPath string, keep int) {
+	old, _ := filepath.Glob(settingsPath + ".bak-*")
+	sort.Strings(old)
+	for i := 0; i < len(old)-keep; i++ {
+		os.Remove(old[i])
+	}
+}
+
 // InstallHook merges a SessionEnd hook into settings.json.
 //
 // settings.json belongs to the user, not to this tool: it may hold formatter hooks,
@@ -54,6 +69,7 @@ func InstallHook(settingsPath, binary string, alsoRemoveLegacy bool) (replaced i
 	if data, err := os.ReadFile(settingsPath); err == nil {
 		backup := fmt.Sprintf("%s.bak-%s", settingsPath, time.Now().Format("20060102-150405"))
 		_ = os.WriteFile(backup, data, 0o600)
+		pruneBackups(settingsPath, keepBackups)
 	}
 
 	hooks, _ := doc.get("hooks").(*object)

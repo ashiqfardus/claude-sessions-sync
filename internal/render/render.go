@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,12 +53,17 @@ type Options struct {
 	// is byte-identical there is read from local disk instead of back across the cloud
 	// filesystem the push just wrote it to.
 	LocalProjects string
+
+	// Budget, when set, stops rendering new pages once it has elapsed; the rest are
+	// left for the next pass. Pages already current are still listed.
+	Budget time.Duration
 }
 
 // Result reports what a render pass did.
 type Result struct {
 	Rendered    int
 	UpToDate    int
+	Deferred    int // needed rendering, left for the next pass by Budget
 	Failed      int
 	Excluded    int
 	Unpublished int // pages removed because a project is now excluded
@@ -65,9 +71,21 @@ type Result struct {
 	OutputDir   string
 }
 
+// stateSaveEvery is how often progress is saved during a long render, so a run
+// that is killed - the SessionEnd hook's timeout - keeps what it finished.
+const stateSaveEvery = 10 * time.Second
+
 // Archive renders every transcript in the archive.
 func Archive(dest string, opts Options) (Result, error) {
 	res := Result{OutputDir: filepath.Join(dest, "html")}
+	start := time.Now()
+
+	// Pages are written into, and withdrawn from, html/<bucket>. If html - or a bucket
+	// folder in it - is a symlink planted in the shared archive, those writes and
+	// deletions land wherever it points.
+	if _, err := os.Lstat(res.OutputDir); err == nil && !archive.IsRealDir(res.OutputDir) {
+		return res, fmt.Errorf("%s is not a plain folder (a link?); not rendering into it", res.OutputDir)
+	}
 
 	buckets, err := archive.BucketNames(dest)
 	if err != nil {
@@ -98,12 +116,19 @@ func Archive(dest string, opts Options) (Result, error) {
 	// already published.
 	prev := loadState(res.OutputDir)
 	next := renderState{Version: templateVersion, Pages: map[string]pageState{}}
+	lastSave := time.Now()
 
 	for _, bucket := range buckets {
 		bucketDir := filepath.Join(archive.ProjectsDir(dest), bucket)
 		files, err := os.ReadDir(bucketDir)
 		if err != nil {
 			continue
+		}
+		if pages := filepath.Join(res.OutputDir, bucket); !archive.IsRealDir(pages) {
+			if _, err := os.Lstat(pages); err == nil {
+				res.Failed++ // see the check on html itself above
+				continue
+			}
 		}
 
 		project := bucket
@@ -128,7 +153,8 @@ func Archive(dest string, opts Options) (Result, error) {
 		}
 
 		for _, f := range files {
-			if f.IsDir() || !strings.EqualFold(filepath.Ext(f.Name()), ".jsonl") {
+			// Regular files only: a symlink would be read through to whatever it names.
+			if !f.Type().IsRegular() || !strings.EqualFold(filepath.Ext(f.Name()), ".jsonl") {
 				continue
 			}
 			src := filepath.Join(bucketDir, f.Name())
@@ -150,14 +176,8 @@ func Archive(dest string, opts Options) (Result, error) {
 				// Size AND timestamp: same size with different content is unlikely but
 				// possible, and rendering local bytes while the page claims to be the
 				// archive is not a trade worth making to save one read.
-				if li, err := os.Stat(local); err == nil && li.Size() == info.Size() {
-					drift := li.ModTime().Sub(info.ModTime())
-					if drift < 0 {
-						drift = -drift
-					}
-					if drift <= archive.MTimeToleranceSeconds*time.Second {
-						read = local
-					}
+				if li, err := os.Stat(local); err == nil && li.Size() == info.Size() && archive.SameMTime(li.ModTime(), info.ModTime()) {
+					read = local
 				}
 			}
 
@@ -166,8 +186,9 @@ func Archive(dest string, opts Options) (Result, error) {
 			if ps, ok := prev.Pages[key]; ok && !opts.Force && prev.Version == templateVersion && ps.Size == info.Size() {
 				known = &ps
 			}
-			page, err := renderOne(read, project, id, known, out, info)
-			if err == nil {
+			mayRender := opts.Budget <= 0 || time.Since(start) < opts.Budget
+			page, err := renderOne(read, project, id, known, out, info, mayRender)
+			if err == nil && !page.deferred {
 				next.Pages[key] = pageState{Size: info.Size(), Prompt: page.prompt}
 			}
 			switch {
@@ -176,16 +197,27 @@ func Archive(dest string, opts Options) (Result, error) {
 				// is that it survives the tooling.
 				res.Failed++
 				continue
+			case page.deferred:
+				res.Deferred++
+				// Still listed when an older page exists, so the index does not lose it.
+				if _, err := os.Stat(out); err != nil {
+					continue
+				}
+				page.prompt = prev.Pages[key].Prompt
 			case page.upToDate:
 				res.UpToDate++
 			default:
 				res.Rendered++
 				res.Skipped += page.skipped
+				if time.Since(lastSave) >= stateSaveEvery {
+					_ = saveState(res.OutputDir, progress(prev, next))
+					lastSave = time.Now()
+				}
 			}
 
 			entries = append(entries, indexEntry{
 				Project: project, Bucket: bucket, ID: id,
-				Href:    filepath.ToSlash(filepath.Join(bucket, id+".html")),
+				Href:    pageHref(bucket, id),
 				Updated: info.ModTime(), Size: info.Size(), Prompt: page.prompt,
 			})
 		}
@@ -229,8 +261,13 @@ func Archive(dest string, opts Options) (Result, error) {
 	var b strings.Builder
 	b.WriteString(pageHead("Claude sessions"))
 	b.WriteString(`<h1>Claude sessions</h1>`)
-	fmt.Fprintf(&b, `<p class="meta">%d session(s) &middot; updated %s</p>`,
-		len(entries), html.EscapeString(time.Now().Format("2006-01-02 15:04")))
+	// Dated by the newest session rather than by "now", so a pass that changed nothing
+	// writes nothing for the sync client to upload.
+	fmt.Fprintf(&b, `<p class="meta">%d session(s)`, len(entries))
+	if len(entries) > 0 {
+		fmt.Fprintf(&b, ` &middot; newest %s`, html.EscapeString(entries[0].Updated.Format("2006-01-02 15:04")))
+	}
+	b.WriteString(`</p>`)
 
 	for _, bucket := range order {
 		group := byBucket[bucket]
@@ -247,14 +284,14 @@ func Archive(dest string, opts Options) (Result, error) {
 		writeRows(&b, shown, func(e indexEntry) string { return e.Href })
 		if len(group) > len(shown) {
 			fmt.Fprintf(&b, `<p class="meta"><a href="%s">all %d sessions &rarr;</a></p>`,
-				html.EscapeString(bucket+"/index.html"), len(group))
+				html.EscapeString("./"+url.PathEscape(bucket)+"/index.html"), len(group))
 		}
 
 		var p strings.Builder
 		p.WriteString(pageHead(project))
 		p.WriteString(`<p class="back"><a href="../index.html">&larr; all projects</a></p>`)
 		fmt.Fprintf(&p, `<h1>%s</h1><p class="meta">%d session(s)</p>`, html.EscapeString(project), len(group))
-		writeRows(&p, group, func(e indexEntry) string { return e.ID + ".html" })
+		writeRows(&p, group, func(e indexEntry) string { return "./" + url.PathEscape(e.ID) + ".html" })
 		p.WriteString(pageFoot())
 		if err := archive.WriteFileAtomic(filepath.Join(res.OutputDir, bucket, "index.html"), []byte(p.String()), 0o644); err != nil {
 			res.Failed++
@@ -270,7 +307,31 @@ func Archive(dest string, opts Options) (Result, error) {
 
 // templateVersion changes whenever a rendered page would come out differently, so
 // every page is rendered again once. 2: secrets are redacted, times are local.
-const templateVersion = 2
+// 3: a Content-Security-Policy forbids scripts, and more secret formats are redacted.
+const templateVersion = 3
+
+// pageHref links a session's page from the main index.
+//
+// A leading "./" and escaped segments keep a bucket or file named like a URL -
+// "javascript:alert(1)" is a legal folder name outside Windows - a relative path.
+func pageHref(bucket, id string) string {
+	return "./" + url.PathEscape(bucket) + "/" + url.PathEscape(id) + ".html"
+}
+
+// progress is the state to save mid-run: what this pass has done so far, on top of
+// what the last pass left when it was the same template.
+func progress(prev, next renderState) renderState {
+	out := renderState{Version: templateVersion, Pages: map[string]pageState{}}
+	if prev.Version == templateVersion {
+		for k, v := range prev.Pages {
+			out.Pages[k] = v
+		}
+	}
+	for k, v := range next.Pages {
+		out.Pages[k] = v
+	}
+	return out
+}
 
 type pageState struct {
 	Size   int64  `json:"size"`
@@ -305,14 +366,16 @@ func saveState(htmlDir string, s renderState) error {
 
 type pageInfo struct {
 	upToDate           bool
+	deferred           bool // needed rendering, but mayRender was false
 	prompt             string
 	skipped            int
 	unrecordedThinking int
 }
 
 // renderOne writes one page. known is what the page was last rendered from, when that
-// was this template and a transcript of the same size; nil forces a render.
-func renderOne(src, project, id string, known *pageState, out string, srcInfo os.FileInfo) (pageInfo, error) {
+// was this template and a transcript of the same size; nil forces a render. When
+// mayRender is false a page that is not current is left for later.
+func renderOne(src, project, id string, known *pageState, out string, srcInfo os.FileInfo, mayRender bool) (pageInfo, error) {
 	var info pageInfo
 
 	// Pages carry their source's timestamp, so "current" means the two match - not
@@ -321,17 +384,15 @@ func renderOne(src, project, id string, known *pageState, out string, srcInfo os
 	// otherwise leave a stale page that never re-renders. The same tolerance as
 	// everywhere else: a synced filesystem rounds timestamps.
 	if known != nil {
-		if outInfo, err := os.Stat(out); err == nil {
-			drift := outInfo.ModTime().Sub(srcInfo.ModTime())
-			if drift < 0 {
-				drift = -drift
-			}
-			if drift <= archive.MTimeToleranceSeconds*time.Second {
-				info.prompt = known.Prompt
-				info.upToDate = true
-				return info, nil
-			}
+		if outInfo, err := os.Stat(out); err == nil && archive.SameMTime(outInfo.ModTime(), srcInfo.ModTime()) {
+			info.prompt = known.Prompt
+			info.upToDate = true
+			return info, nil
 		}
+	}
+	if !mayRender {
+		info.deferred = true
+		return info, nil
 	}
 
 	var body strings.Builder
@@ -499,6 +560,9 @@ func countUnrecordedThinking(r claude.Record) int {
 // then empty. Only .html files are touched: this must never reach a transcript.
 func removePages(htmlDir, bucket string) (int, error) {
 	dir := filepath.Join(htmlDir, bucket)
+	if !archive.IsRealDir(dir) {
+		return 0, nil // nothing published - or a link, whose target is not ours to empty
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return 0, nil // nothing published for this project

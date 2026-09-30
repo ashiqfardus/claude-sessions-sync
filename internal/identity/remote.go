@@ -23,7 +23,13 @@ import (
 // repository the user has ever cloned - including any they pulled from a stranger.
 //
 // One string is needed. A config parser cannot execute anything.
+//
+// dir is often a path another machine recorded, so it must be Local before it is
+// opened: a network path here would make every push connect to that host.
 func Remote(dir string) string {
+	if !Local(dir) {
+		return ""
+	}
 	f, err := os.Open(filepath.Join(dir, ".git", "config"))
 	if err != nil {
 		// A worktree or submodule has .git as a file pointing elsewhere. Following it
@@ -67,8 +73,12 @@ func Remote(dir string) string {
 }
 
 // RepoRoot returns the nearest folder at or above dir that holds a .git entry, or ""
-// when dir is not inside a repository. Nothing is executed.
+// when dir is not inside a repository. Nothing is executed, and a dir that is not
+// Local - a transcript's cwd is untrusted input - is never looked at.
 func RepoRoot(dir string) string {
+	if !Local(dir) {
+		return ""
+	}
 	d := filepath.Clean(dir)
 	for {
 		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {

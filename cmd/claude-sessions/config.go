@@ -3,9 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 )
@@ -15,7 +12,16 @@ import (
 func cmdConfig(args []string) error {
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
-	if err := fs.Parse(args); err != nil {
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `usage:
+  claude-sessions config [show]                    print the archive destination
+  claude-sessions config set-destination <folder>  choose and save the archive destination
+
+flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := parseFlags(fs, args, true); err != nil {
 		return err
 	}
 
@@ -56,29 +62,9 @@ func cmdConfig(args []string) error {
 		if len(rest) < 2 {
 			return fmt.Errorf("usage: claude-sessions config set-destination <folder>")
 		}
-		dest := archive.TrimSep(strings.TrimSpace(rest[1]))
-		abs, err := filepath.Abs(dest)
+		abs, err := archive.PrepareDestination(root, expandHome(rest[1]))
 		if err != nil {
 			return err
-		}
-
-		// Create the archive folder, but never its parent: if the sync client is not
-		// mounted, silently creating a plain local folder where G:\ should be is how
-		// people end up believing they have a cloud backup that does not exist.
-		parent := filepath.Dir(abs)
-		if st, err := os.Stat(parent); err != nil || !st.IsDir() {
-			return fmt.Errorf("%s does not exist - is the sync client mounted?", parent)
-		}
-		// Validate before creating anything: refusing after having made the directory
-		// leaves litter behind for a request that was rejected.
-		if err := archive.ValidateDestination(root, abs); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(abs, 0o755); err != nil {
-			return err
-		}
-		if err := archive.Writable(abs); err != nil {
-			return fmt.Errorf("%s is not writable: %w", abs, err)
 		}
 		if err := archive.SaveConfig(root, archive.Config{Destination: abs}); err != nil {
 			return err

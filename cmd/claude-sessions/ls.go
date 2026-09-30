@@ -39,7 +39,7 @@ func cmdLs(args []string) error {
 	until := fs.String("until", "", "only sessions updated on or before this date (YYYY-MM-DD)")
 	limit := fs.Int("limit", 0, "show at most this many sessions (0 = all)")
 	asJSON := fs.Bool("json", false, "machine-readable output")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
 
@@ -140,15 +140,17 @@ func cmdLs(args []string) error {
 		return nil
 	}
 
+	// The full session ID: `claude --resume` needs all of it, and a shortened one
+	// could only be copied to find it does not work.
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "UPDATED\tSIZE\tPROJECT\tSESSION\tFIRST PROMPT")
 	for _, r := range rows {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			r.Updated.Format("2006-01-02 15:04"),
 			humanSize(r.SizeBytes),
-			shorten(r.Project, 34),
-			shortID(r.SessionID),
-			r.FirstPrompt,
+			shorten(printable(r.Project), 34),
+			r.SessionID,
+			printable(r.FirstPrompt),
 		)
 	}
 	if err := w.Flush(); err != nil {
@@ -178,13 +180,6 @@ func humanSize(n int64) string {
 	default:
 		return fmt.Sprintf("%dB", n)
 	}
-}
-
-func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
 }
 
 // shorten keeps the tail of a path, which is the part that identifies it.

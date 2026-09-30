@@ -62,19 +62,23 @@ func Install(j Job, everyMinutes int) (Status, error) {
 	return s, nil
 }
 
-// Uninstall unloads and removes this profile's launchd agent.
-func Uninstall(j Job) error {
+// Uninstall unloads and removes this profile's launchd agent, reporting whether
+// there was one.
+func Uninstall(j Job) (bool, error) {
 	path, err := plistPath(j)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	uid := strconv.Itoa(os.Getuid())
 	_ = exec.Command(systemBinary("launchctl"), "bootout", "gui/"+uid+"/"+j.LaunchdLabel()).Run()
 	_ = exec.Command(systemBinary("launchctl"), "unload", path).Run()
 
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
 	}
-	return nil
+	return true, nil
 }

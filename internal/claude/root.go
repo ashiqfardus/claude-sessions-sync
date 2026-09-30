@@ -54,17 +54,31 @@ func SettingsPath(root string) string { return filepath.Join(root, "settings.jso
 // not a file inside it. Joining it onto the config root looks obviously right and
 // silently finds nothing, which is exactly how it was wrong until it was tried
 // against a real profile. Under CLAUDE_CONFIG_DIR it does sit inside the configured
-// directory, so both are checked, in that order.
+// directory, so both are checked, in that order - the sibling only for the default
+// profile. Another profile falling back to ~/.claude.json read the default profile's
+// project paths as its own.
 func StatePath(root string) string {
 	inRoot := filepath.Join(root, ".claude.json")
 	if _, err := os.Stat(inRoot); err == nil {
 		return inRoot
 	}
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := os.UserHomeDir(); err == nil && isDefaultRoot(root, home) {
 		beside := filepath.Join(home, ".claude.json")
 		if _, err := os.Stat(beside); err == nil {
 			return beside
 		}
 	}
 	return inRoot
+}
+
+// isDefaultRoot reports whether root is ~/.claude, compared as a folder so that an
+// 8.3 short path or a symlink to it counts.
+func isDefaultRoot(root, home string) bool {
+	def := filepath.Join(home, ".claude")
+	if strings.EqualFold(filepath.Clean(root), def) {
+		return true
+	}
+	a, err1 := os.Stat(root)
+	b, err2 := os.Stat(def)
+	return err1 == nil && err2 == nil && os.SameFile(a, b)
 }

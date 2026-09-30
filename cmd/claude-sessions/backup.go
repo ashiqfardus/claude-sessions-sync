@@ -33,7 +33,7 @@ func cmdBackup(args []string) error {
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	out := fs.String("out", "", "folder to write the zip into (default ~/claude-backups)")
 	dryRun := fs.Bool("dry-run", false, "report what would be backed up without writing")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
 
@@ -89,7 +89,11 @@ func cmdBackup(args []string) error {
 	if info, err := os.Stat(target); err == nil {
 		fmt.Printf("\nWrote %s (%s)\n", target, humanSize(info.Size()))
 	}
-	fmt.Println("Restore sessions with `claude-sessions restore --source <unzipped>/projects/<bucket> --project-path <path>`.")
+	// The zip has the archive's layout (projects/<bucket>/...), and import reads a
+	// project's path from its transcripts when there is no manifest - so it takes the
+	// whole backup at once, on any machine, rather than one project by hand.
+	fmt.Println("To bring it back, unzip it anywhere and run:")
+	fmt.Println("  claude-sessions import --archive <unzipped folder>")
 	return nil
 }
 

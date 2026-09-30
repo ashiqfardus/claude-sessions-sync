@@ -1,6 +1,9 @@
 # claude-sessions — design
 
-**Status:** design agreed, no code written. Written 2026-09-01 on LAP-100203.
+**Status:** implemented. Written 2026-09-01, before any code, as the design for the
+port. The layouts (§3, §5), the manifest's merge rule and schema (§4) and the per-OS
+install (§7) have since been corrected to match the code; the rest is the design as
+agreed. Where it disagrees with the code or the README, they win.
 **Supersedes:** the six PowerShell scripts in `%USERPROFILE%\.claude\tools\`, which are
 live and working on this machine and serve as the reference implementation.
 
@@ -66,8 +69,9 @@ and cached in a manifest.
 
 ## 2. Command surface
 
-Single binary, subcommands. Global flags: `--archive <path>`, `--claude-dir <path>`,
-`--quiet`, `--json`, `--dry-run`, `--verbose`.
+Single binary, subcommands. Common flags: `--archive <path>`, `--claude-dir <path>`,
+`--json`; `--quiet` and `--dry-run` where they apply. Each command parses its own, and
+accepts them before or after its other arguments.
 
 | Command | Replaces | Purpose |
 |---|---|---|
@@ -77,14 +81,14 @@ Single binary, subcommands. Global flags: `--archive <path>`, `--claude-dir <pat
 | `restore` | `restore-claude-history.ps1` | Place a folder of `.jsonl` into the right bucket, rewriting an old project path to a new one. The primitive `import` calls. |
 | `render` | `render-sessions-html.ps1` | Transcripts → mobile-readable HTML + `index.html`. |
 | `install` / `uninstall` | `install-claude-sync.ps1` | Per-OS: merge the SessionEnd hook, register the periodic sweep, persist config, first push. |
-| `backup` | `backup-claude.ps1` | Whole-profile snapshot to a folder or zip, with a manifest and a loud warning at zero transcripts. |
-| `doctor` | *(new)* | Diagnose: archive reachable, hook installed and parseable, sweep registered and last result, `cleanupPeriodDays`, bucket/manifest drift, clock skew against the archive. |
+| `backup` | `backup-claude.ps1` | Whole-profile snapshot to a zip, with a manifest and a loud warning at zero transcripts. |
+| `doctor` | *(new)* | Diagnose: archive reachable and writable, hook installed and its program present, sweep registered and last result, `cleanupPeriodDays`, bucket/manifest drift, sessions that ended but never reached the archive, the last successful push, credentials in the archive. |
 | `ls` | *(new, cheap)* | List sessions with project, date, size, first prompt — the `INDEX.md` content on the terminal. |
 
 Notes on the surface:
 
-- `push` is the default when the binary is invoked with no subcommand, because that is
-  what the hook and the sweep run.
+- The hook and the sweep run `push --quiet` explicitly. With no subcommand the binary
+  prints its usage and exits 2.
 - `--dry-run` is honoured everywhere that writes, replacing PowerShell's `-WhatIf`.
 - `--json` on `doctor`, `ls`, and `import` so the tool is scriptable — this is the main
   thing the PowerShell version cannot do well.
@@ -101,14 +105,22 @@ Notes on the surface:
 ```
 <archive>/
   projects/<bucket>/<session-id>.jsonl
+  projects/<bucket>/<session-id>/subagents/...     subagent transcripts
+  projects/<bucket>/<session-id>/tool-results/...  oversized tool output
   projects/<bucket>/memory/*.md
   manifest/<machine>.json        <- CHANGED: was a single projects.json
+  index/<machine>.json           <- each machine's INDEX.md rows
   projects.json                  <- kept, generated, read-only compatibility view
-  html/<bucket>/<session-id>.html
+  render-exclude.txt             <- projects no machine publishes as pages
   html/index.html
+  html/<bucket>/index.html
+  html/<bucket>/<session-id>.html
+  html/.render-state.json        <- what each page was rendered from
   INDEX.md
-  README.md
 ```
+
+`<machine>` is the host name and user name, so two accounts on one computer each own a
+file.
 
 ### Local
 
@@ -117,8 +129,10 @@ Notes on the surface:
   operate on the wrong profile.
 - Config: `<claude-root>/session-sync.json` (keep the existing filename and the
   `destination` key, so an existing install keeps working).
-- Log: `<claude-root>/session-sync.log`, one line per run.
-- Tools/binary: `<claude-root>/bin/claude-sessions` (+`.exe`). The hook and the sweep
+- Log: `<claude-root>/session-sync.log`, a few lines per run, rotated to
+  `session-sync.log.1` at 1 MB.
+- Tools/binary: `<claude-root>/bin/claude-sessions` (+`.exe`), and on Windows
+  `claude-sessionsw.exe` beside it for the sweep (see §7). The hook and the sweep
   point at this **local** copy on purpose — pointing them into the synced folder would
   make the end of every session depend on the drive being mounted.
 
@@ -143,13 +157,17 @@ it. Drive's own conflict handling does not help, because both writes are well-fo
 Instead: **each machine owns exactly one file it alone writes.**
 
 ```
-manifest/LAP-100203.json
-manifest/macbook-pro.json
+manifest/LAP-1-you.json
+manifest/macbook-pro-you.json
 ```
 
-Readers glob `manifest/*.json` and merge in memory. Conflicts on the same bucket are
-resolved by the newest `seen` date, with the local machine's entry preferred on a tie.
-No machine ever writes another machine's file, so concurrent pushes cannot lose data.
+Readers glob `manifest/*.json` and merge in memory, taking only files whose name
+matches the machine recorded inside: a sync client's conflict copy (`LAP-1 (1).json`)
+carries the same machine name and would otherwise replace the real file, so it is
+skipped and `doctor` reports it. Conflicts on the same bucket are resolved by the
+newest `seen` value; an exact tie goes to the machine whose name sorts first, so every
+machine agrees. No machine ever writes another machine's file, so concurrent pushes
+cannot lose data.
 `projects.json` at the root is still written on every push as a merged, read-only
 compatibility view for the existing PowerShell scripts and for anyone browsing the
 folder by hand.
@@ -159,20 +177,26 @@ folder by hand.
 ```jsonc
 {
   "schemaVersion": 1,
-  "machine": "LAP-100203",
+  "machine": "LAP-1-you",
   "projects": {
-    "e--airos-frontend": {
-      "path":     "E:\\airos-frontend",   // recovered from the transcript's cwd
-      "leaf":     "airos-frontend",
-      "remote":   "https://github.com/savoyit/airos-frontend",
+    "E--work-api": {
+      "path":     "E:\\work\\api",        // recovered from the transcript's cwd
+      "leaf":     "api",
+      "remote":   "https://github.com/you/api",
       "os":       "windows",              // NEW: disambiguates path separators
-      "seen":     "2026-09-01",
+      "seen":     "2026-09-01T09:30:00Z", // newest transcript's mtime, RFC 3339 UTC
       "sessions": 12,                     // NEW: cheap drift check for doctor
-      "source":   "transcript"            // NEW: transcript | claude-json | manual
+      "source":   "transcript",           // NEW: transcript | claude-json | manual
+      "related":  [{ "path": "E:\\work\\web", "remote": "https://github.com/you/web" }]
     }
   }
 }
 ```
+
+`related` lists the other git repositories the project's sessions worked in — a
+multi-folder workspace — so `import` can repoint paths into them too, found by remote
+only. Older shards hold `seen` as a bare date, which still compares correctly as a
+string against the longer form.
 
 `schemaVersion` is mandatory from v1 — the reference implementation has no version
 field and would need a guess-the-shape migration later.
@@ -211,33 +235,52 @@ findable without any rewrite.
 ## 5. Package layout
 
 ```
-claude-sessions/
-  cmd/claude-sessions/main.go        thin: flag parsing, exit codes
+claude-sessions-sync/
+  cmd/claude-sessions/               one file per command, plus:
+      main.go         dispatch, exit codes, printable() for archive text
+      flags.go        flags anywhere on the line, ~ expansion
+      project.go      --archived: read the archive instead of ~/.claude
+      push.go         also INDEX.md, the log, machine names
+      restore.go      also --update and memory filing, shared with import and pull
+      backup.go completion.go config.go doctor.go import.go install.go
+      ls.go machines.go render.go search.go stats.go
+      *_test.go       e2e_test.go builds the real binary and runs it on a fixture
   internal/claude/                   Claude Code's own layout
       root.go         resolve CLAUDE_CONFIG_DIR / ~/.claude
-      bucket.go       slug computation, case-insensitive bucket lookup
-      settings.go     settings.json read/merge/write, hook shapes
+      bucket.go       buckets, slug computation, case-insensitive lookup
+      settings.go     settings.json read-only view: retention, hooks
+      hooks.go        install/remove our SessionEnd hook, settings backups
+      jsonorder.go    key-order-preserving JSON round trip for settings.json
+      state.go        project paths from ~/.claude.json (read, never copied)
       transcript.go   streaming JSONL reader (tolerant)
-  internal/archive/
-      config.go       destination resolution, session-sync.json
-      manifest.go     sharded read/merge/write
-      copy.go         change detection, atomic writes
-      index.go        INDEX.md
+      testdata/       BOM + CRLF fixture
+  internal/archive/                  the synced folder
+      config.go       destination resolution, session-sync.json, render-exclude.txt
+      manifest.go     sharded manifest and index read/merge/write, name validation
+      copy.go         copy with preserved mtime, symlink checks
+      atomic.go       atomic writes, mtime tolerance
+      lock.go         single-instance lock, orphaned .tmp-* cleanup
+      drives_windows.go / drives_other.go     drive letters for auto-detection
+      process_windows.go / process_other.go   is a lock holder still alive
   internal/identity/
-      resolve.go      the 4-step matching ladder
-      remote.go       git remote normalisation
-      scan.go         bounded folder scan with the skip-list
+      resolve.go      the 4-step matching ladder, one-pass folder scan
+      remote.go       git remote from .git/config, normalisation
+      local.go        which recorded paths are safe to open
   internal/rewrite/
-      rules.go        the 4 path forms
-      apply.go        stream rewrite + JSON re-validation
+      rewrite.go      the path forms, stream rewrite + JSON re-validation
   internal/render/
-      html.go         templates
-      assets/         embedded CSS via embed.FS
-  internal/hostagent/                per-OS install
-      windows.go      Task Scheduler (schtasks / COM)
-      darwin.go       launchd plist
-      linux.go        systemd user timer, cron fallback
-  testdata/           golden transcripts + fixture trees
+      render.go       pages, indexes, render state, time budget
+      page.go         inline CSS, Content-Security-Policy
+      redact.go       credential masking
+  internal/hostagent/                per-OS sweep
+      hostagent.go    job names, per-profile Job
+      spec.go         plist, systemd units, cron line, task XML (no build tag)
+      exec.go         system binaries by absolute path
+      windowless.go   the GUI-subsystem copy the Windows task runs
+      install_windows.go sweep_windows.go   Task Scheduler via schtasks /XML
+      install_darwin.go  sweep_darwin.go    launchd user agent
+      install_linux.go   sweep_linux.go     systemd user timer, cron fallback
+      legacy_other.go the PowerShell predecessor's task exists only on Windows
 ```
 
 `internal/claude` is the only package that knows Claude Code's on-disk shape. When a
@@ -277,8 +320,10 @@ not suggestions, and each gets a named test.
 8. **Bucket casing follows the string Claude saw, not the disk.** `E:\` has been
    recorded as `e--`. Always match an existing bucket case-insensitively before
    computing a new slug.
-9. **The archive is append-and-update only.** Never delete from the destination; a
-   session that ages out locally must survive in the archive.
+9. **The archive is append-and-update only.** Never delete a transcript from the
+   destination; a session that ages out locally must survive in the archive. (Generated
+   files are another matter: `render --exclude` withdraws pages, `machines --forget`
+   removes a manifest and index file, and orphaned `.tmp-*` files are cleaned up.)
 10. **Idempotent install.** Re-running replaces our own hook rather than adding a
     second, preserves unrelated settings and other people's hooks, and backs up
     `settings.json` before touching it. (Verified in PowerShell against a seeded
@@ -293,7 +338,9 @@ not suggestions, and each gets a named test.
     writes in place.
 12. **Single-instance lock.** The 30-minute sweep and a SessionEnd hook can fire
     together. Take an advisory lock (an `O_EXCL` lockfile with a stale-PID check) in
-    `<claude-root>`; a second instance logs and exits 0.
+    `<claude-root>`. An unattended second instance waits up to 45 seconds
+    (`--lock-wait`) and then logs and exits 0; one run at a terminal is told at once.
+    Skipping straight away left a session unarchived until the next sweep, or overnight.
 13. **UTF-8, no BOM, LF endings** on every file written, on every OS.
 
 ---
@@ -305,15 +352,33 @@ admin/root anywhere.
 
 | | Windows | macOS | Linux |
 |---|---|---|---|
-| Sweep | Task Scheduler, `Claude Session Sync`, 30 min | launchd user agent, `StartInterval` | systemd user timer; cron fallback if no systemd |
-| Registration | `schtasks` or the COM API | `~/Library/LaunchAgents/*.plist` + `launchctl bootstrap` | `~/.config/systemd/user/*.timer` + `systemctl --user enable --now` |
-| Gotcha | PS 5.1 cannot express indefinite repetition — the current script uses a daily 00:05 trigger with a 30-min repetition over 1 day. Go calling `schtasks` directly can set this cleanly. | `launchctl bootstrap gui/$UID` (not the deprecated `load`); needs a real login session. | `systemctl --user enable --now` needs lingering (`loginctl enable-linger`) to run when logged out — detect and say so rather than silently not running. |
+| Sweep | Task Scheduler task `claude-sessions-sync`, 30 min, running `claude-sessionsw.exe push --quiet` | launchd user agent, `StartInterval` | systemd user timer; cron fallback if no systemd |
+| Registration | `schtasks /Create /XML` (not the COM API: no dependency, no elevation) | `~/Library/LaunchAgents/*.plist` + `launchctl bootstrap` | `~/.config/systemd/user/*.timer` + `systemctl --user enable --now` |
+| Gotcha | `schtasks /SC MINUTE` cannot turn off "don't start on battery" or "stop when unplugged", so the task is defined in XML (read as UTF-16). Task Scheduler opens a console window for every console program, so it runs a GUI-subsystem copy of the binary. | `launchctl bootstrap gui/$UID` (not the deprecated `load`); needs a real login session. | `systemctl --user enable --now` needs lingering (`loginctl enable-linger`) to run when logged out — detect and say so rather than silently not running. |
 
-**Hook form.** Use the `args` exec form (`"command": "powershell.exe", "args": [...]`)
-rather than a shell string. There is **no `pwsh` and no Git Bash on LAP-100203**, so
-`"shell": "powershell"` — which invokes pwsh — would fail. With a Go binary the hook
-becomes `"command": "<claude-root>/bin/claude-sessions", "args": ["push", "--quiet"]`
-on every OS, which removes this whole class of problem.
+**Names.** The task, agent and timer names are per profile. The default `~/.claude`
+gets the plain names (`claude-sessions-sync` on Windows); any other profile gets the
+same names with a suffix hashed from its path, and its job passes `--claude-dir`,
+because a scheduler does not inherit `CLAUDE_CONFIG_DIR` from a shell. `Claude Session
+Sync` is the PowerShell predecessor's task: `install` reports it, and only removes it
+with `--replace-powershell-sweep`. Uninstall deletes a task only when the program it
+runs is `claude-sessions.exe` or `claude-sessionsw.exe` — a shared name once cost a
+working sweep that this tool had not created.
+
+**The windowless copy.** `claude-sessionsw.exe` is the installed binary with the two-byte
+PE Subsystem field changed from console to GUI, written by `install` beside
+`claude-sessions.exe`. Windows starts it with no console, and its exit code still
+reaches the task's last result. (`conhost --headless` also hid the window, but
+swallowed the exit code and is a launch pattern endpoint security flags.) `doctor`
+fails a task still running the console build, which an install from an older version
+registered; running `install` again moves it over.
+
+**Hook form.** Use the `args` exec form rather than a shell string. The hook is
+`"command": "<claude-root>/bin/claude-sessions", "args": ["push", "--quiet"]` with a
+120-second timeout on every OS, so no shell — pwsh, Windows PowerShell or Git Bash —
+has to exist for it to run. Claude Code kills the hook at the timeout, which is why an
+unattended push renders pages for at most 45 seconds and leaves the rest for the next
+run.
 
 `install` must also handle the binary itself: copy the running executable to
 `<claude-root>/bin/` (`os.Executable()` + copy, not a symlink, so an upgrade of the

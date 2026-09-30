@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 )
 
 func TestRoundTripPreservesEverything(t *testing.T) {
@@ -127,17 +129,20 @@ func TestImportBringsBackMemoryAndTimestamps(t *testing.T) {
 		t.Errorf("memory content wrong: %q", body)
 	}
 
-	// Timestamps on both.
-	for _, p := range []string{
-		filepath.Join(bucket, "11111111-1111-1111-1111-111111111111.jsonl"),
-		restoredMemory,
+	// Timestamps on both. The transcript was rewritten (D:\work\api moved), so it is
+	// dated just before its archived source on purpose: otherwise this machine's next
+	// push would count its rewritten copy as newer and replace the original.
+	shift := -(archive.MTimeToleranceSeconds + 1) * time.Second
+	for p, at := range map[string]time.Time{
+		filepath.Join(bucket, "11111111-1111-1111-1111-111111111111.jsonl"): want.Add(shift),
+		restoredMemory: want,
 	} {
 		info, err := os.Stat(p)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if diff := info.ModTime().Sub(want); diff > time.Second || diff < -time.Second {
-			t.Errorf("%s: mtime %v, want %v", filepath.Base(p), info.ModTime(), want)
+		if diff := info.ModTime().Sub(at); diff > time.Second || diff < -time.Second {
+			t.Errorf("%s: mtime %v, want %v", filepath.Base(p), info.ModTime(), at)
 		}
 	}
 }

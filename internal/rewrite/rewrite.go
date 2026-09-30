@@ -86,7 +86,10 @@ func RulesForMoves(moves []Move) []Rule {
 	var sorted []Move
 	seen := map[string]bool{}
 	for _, m := range moves {
-		if key := strings.ToLower(strings.TrimRight(m.From, `\/`)); key != "" && !seen[key] {
+		if !AbsoluteAnywhere(m.From) {
+			continue
+		}
+		if key := strings.ToLower(strings.TrimRight(m.From, `\/`)); !seen[key] {
 			seen[key] = true
 			sorted = append(sorted, m)
 		}
@@ -97,6 +100,23 @@ func RulesForMoves(moves []Move) []Rule {
 		rules = append(rules, Rules(m.From, m.To, false)...)
 	}
 	return rules
+}
+
+// AbsoluteAnywhere reports whether p is an absolute path on Windows or on a Unix,
+// with at least one folder below the root.
+//
+// A move's From is a path another machine recorded, taken from the archive. "e" or
+// "/" there would rewrite every occurrence of that text in every transcript, and the
+// damaged lines still parse, so nothing would catch it.
+func AbsoluteAnywhere(p string) bool {
+	p = strings.TrimRight(p, `\/`)
+	switch {
+	case len(p) > 1 && p[0] == '/' && p[1] != '/':
+		return true
+	case len(p) > 3 && p[1] == ':' && unicode.IsLetter(rune(p[0])) && (p[2] == '\\' || p[2] == '/'):
+		return true
+	}
+	return false
 }
 
 // msysPath returns the Git Bash form of a Windows drive path, or "" for any other.

@@ -84,9 +84,13 @@ func LaunchdPlist(j Job, everyMinutes int) string {
 }
 
 // SystemdService is the oneshot unit that runs a push.
+//
+// A oneshot has no start timeout by default, and the timer never starts a unit that
+// is still active - so one push hung on a dead network mount stopped every later
+// sweep until reboot. Task Scheduler's one-hour limit is matched here.
 func SystemdService(j Job) string {
 	return "[Unit]\nDescription=Archive Claude Code sessions\n\n" +
-		"[Service]\nType=oneshot\n" +
+		"[Service]\nType=oneshot\nTimeoutStartSec=1h\n" +
 		"ExecStart=" + systemdCommand(append([]string{j.Binary}, j.Args()...)) + "\n"
 }
 
@@ -138,6 +142,8 @@ func ownsCronLine(j Job, line string) bool {
 // Registered from XML rather than `schtasks /SC MINUTE` because the flags cannot turn
 // off Task Scheduler's defaults of not starting on battery and stopping when the
 // charger is pulled - on a laptop, the sweep silently skipped every unplugged hour.
+//
+// j.Binary is the windowless copy (see WindowlessName), so no terminal opens per run.
 func TaskXML(j Job, everyMinutes int, now time.Time) string {
 	return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -168,6 +174,22 @@ func TaskXML(j Job, everyMinutes int, now time.Time) string {
 `
 }
 
+// taskProgram is the file name a task runs, whatever OS parses the definition.
+func taskProgram(def taskDefinition) string {
+	cmd := strings.Trim(strings.TrimSpace(def.Command), `"`)
+	return cmd[strings.LastIndexAny(cmd, `\/`)+1:]
+}
+
+// ownsTask reports whether a scheduled task runs this tool.
+//
+// The program's file name must be ours exactly. A substring match on the whole
+// command line would claim a foreign task that merely passes a path containing
+// "claude-sessions" as an argument, and uninstall deletes what it claims.
+func ownsTask(def taskDefinition) bool {
+	p := taskProgram(def)
+	return strings.EqualFold(p, "claude-sessions.exe") || strings.EqualFold(p, WindowlessName)
+}
+
 // taskDefinition is the part of `schtasks /query /xml` this tool reads. XML rather
 // than the LIST or CSV forms because their field names and states are translated on
 // non-English Windows.
@@ -187,12 +209,14 @@ func parseTaskXML(data []byte) (taskDefinition, error) {
 }
 
 // windowsArgs joins arguments the way CommandLineToArgvW splits them. Paths cannot
-// contain '"', so quoting anything with whitespace is enough.
+// contain '"', so quoting anything with whitespace is enough - except that
+// backslashes before the closing quote escape it, so trailing ones are doubled
+// (`\\srv\my share\` would otherwise swallow the quote and every later argument).
 func windowsArgs(args []string) string {
 	out := make([]string, len(args))
 	for i, a := range args {
 		if a == "" || strings.ContainsAny(a, " \t") {
-			a = `"` + a + `"`
+			a = `"` + a + a[len(strings.TrimRight(a, `\`)):] + `"`
 		}
 		out[i] = a
 	}
@@ -226,7 +250,7 @@ func xmlEscape(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;").Replace(s)
 }
 
-// ownsAction reports whether a scheduled task's command line is this tool's binary.
+// ownsAction reports whether an unmarked crontab command line is this tool's binary.
 //
 // "sync-claude-sessions.ps1" contains "claude-sessions", so the PowerShell script has
 // to be excluded explicitly - the same substring trap that made doctor report two
@@ -253,10 +277,11 @@ func neverRun(lastRun, lastResult string) bool {
 
 // resultIsHealthy reports whether a Task Scheduler last-result code means the sweep
 // works. push --quiet always exits 0, so anything else is the scheduler failing to
-// start it - typically 2147942402, the binary is gone.
+// start it - typically 2147942402, the binary is gone - or 267014, a run killed
+// before it finished, which is what the one-hour limit does to a hung push.
 func resultIsHealthy(code string) bool {
 	switch strings.TrimSpace(code) {
-	case "", "0", "267009", "267010", "267011", "267014", "2147750687":
+	case "", "0", "267009", "267010", "267011", "2147750687":
 		return true
 	}
 	return false
@@ -273,7 +298,7 @@ func describeResult(code string) string {
 	case "267010", "267011":
 		return "not yet run"
 	case "267014":
-		return "terminated by user"
+		return "terminated before finishing (stopped by hand, or hung past the 1-hour limit)"
 	case "2147750687":
 		return "an instance was already running"
 	case "2147943645":

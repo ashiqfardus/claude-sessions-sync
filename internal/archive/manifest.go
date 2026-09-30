@@ -123,11 +123,8 @@ func AllSessions(dest string) ([]Session, error) {
 				continue // one unreadable listing must not hide the others
 			}
 			var idx SessionIndex
-			if json.Unmarshal(raw, &idx) != nil {
+			if json.Unmarshal(raw, &idx) != nil || !ownFile(e.Name(), &idx.Machine) {
 				continue
-			}
-			if idx.Machine == "" {
-				idx.Machine = strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
 			}
 			byMachine[idx.Machine] = idx.Sessions
 		}
@@ -175,6 +172,8 @@ type MachineInfo struct {
 	Name     string
 	Projects int
 	Sessions int
+	// LastSeen is the newest session this machine has archived - not when it last
+	// pushed, which the archive does not record.
 	LastSeen string
 }
 
@@ -211,39 +210,25 @@ func Machines(dest string) ([]MachineInfo, error) {
 	return out, nil
 }
 
-// ForgetMachine removes one machine's shard, index and rendered pages.
+// ForgetMachine removes one machine's shard and index, so it drops out of INDEX.md
+// and stops routing imports.
 //
 // Its transcripts are left untouched under projects/ - they are the irreplaceable
-// part, and dropping them because a machine name changed would be catastrophic. The
-// HTML pages are removed, because leaving them behind means a retired machine's
-// sessions stay browsable while being absent from every listing.
-//
-// Returns how many pages were removed.
-func ForgetMachine(dest, machine string) (int, error) {
+// part, and dropping them because a machine name changed would be catastrophic. So
+// are their pages: rendering covers every transcript in the archive, so deleting them
+// here only meant the next push rendered them straight back. Withholding a project's
+// pages is what render-exclude.txt is for.
+func ForgetMachine(dest, machine string) error {
 	if !ValidName(machine) {
-		return 0, fmt.Errorf("%q is not a machine name", machine)
+		return fmt.Errorf("%q is not a machine name", machine)
 	}
 	shard := filepath.Join(ManifestDir(dest), machine+".json")
 	if _, err := os.Stat(shard); err != nil {
-		return 0, fmt.Errorf("no machine named %q in this archive", machine)
-	}
-
-	// Read the sessions before deleting the index that names them.
-	var pages []string
-	if raw, err := os.ReadFile(filepath.Join(IndexDir(dest), machine+".json")); err == nil {
-		var idx SessionIndex
-		if json.Unmarshal(raw, &idx) == nil {
-			for _, s := range idx.Sessions {
-				if !ValidName(s.Bucket) || !ValidName(s.ID) {
-					continue
-				}
-				pages = append(pages, filepath.Join(dest, "html", s.Bucket, s.ID+".html"))
-			}
-		}
+		return fmt.Errorf("no machine named %q in this archive", machine)
 	}
 
 	if err := os.Remove(shard); err != nil {
-		return 0, err
+		return err
 	}
 	os.Remove(filepath.Join(IndexDir(dest), machine+".json"))
 
@@ -259,35 +244,7 @@ func ForgetMachine(dest, machine string) (int, error) {
 			_ = WriteFileAtomic(LegacyManifestPath(dest), append(data, '\n'), 0o644)
 		}
 	}
-
-	// Build the set of sessions the remaining machines still claim, once.
-	//
-	// Asking that question per page meant re-reading and re-parsing every shard and
-	// index file for each one: retiring a machine with 500 sessions was 500 full
-	// manifest reads across a cloud filesystem.
-	claimed := map[string]bool{}
-	remaining, err := AllSessions(dest)
-	if err != nil {
-		// Unsure which sessions survive: keep every page rather than delete one that
-		// is still in use.
-		return 0, nil
-	}
-	for _, s := range remaining {
-		claimed[s.ID] = true
-	}
-
-	removed := 0
-	for _, p := range pages {
-		// A bucket shared with another machine keeps its pages.
-		id := strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
-		if claimed[id] {
-			continue
-		}
-		if err := os.Remove(p); err == nil {
-			removed++
-		}
-	}
-	return removed, nil
+	return nil
 }
 
 // ReadShards loads every manifest shard in the archive.
@@ -322,8 +279,9 @@ func ReadShards(dest string) (map[string]Shard, []string, error) {
 			bad = append(bad, e.Name())
 			continue
 		}
-		if s.Machine == "" {
-			s.Machine = strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+		if !ownFile(e.Name(), &s.Machine) {
+			bad = append(bad, e.Name())
+			continue
 		}
 		for name := range s.Projects {
 			if !ValidName(name) {
@@ -333,6 +291,22 @@ func ReadShards(dest string) (map[string]Shard, []string, error) {
 		shards[s.Machine] = s
 	}
 	return shards, bad, nil
+}
+
+// ownFile reports whether a manifest or index file is the one its machine writes:
+// <machine>.json. A missing machine field is filled in from the name.
+//
+// A sync client that sees two machines write the same file keeps both, as
+// "LAP-1 (1).json" or "LAP-1.sync-conflict-20260930-101500-ABC.json" - carrying the
+// same machine name inside. Read after the real file, such a copy replaced it: an
+// INDEX.md dropped from 3,000 sessions to 5, and stayed that way, because nothing
+// ever removes the copy.
+func ownFile(fileName string, machine *string) bool {
+	name := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	if *machine == "" {
+		*machine = name
+	}
+	return strings.EqualFold(*machine, name)
 }
 
 // ValidName reports whether a bucket or session name read from the archive is a

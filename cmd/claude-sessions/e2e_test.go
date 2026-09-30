@@ -80,6 +80,12 @@ func newFixture(t *testing.T) fixture {
 
 	mustWrite(t, filepath.Join(f.claudeDir, "settings.json"), `{"cleanupPeriodDays":3650}`)
 
+	// The fixture's own archive, saved as this profile's destination. Without it a
+	// command run without --archive falls back to auto-detection - which, on a
+	// developer's machine, finds their real Google Drive archive and writes to it.
+	cfg, _ := json.Marshal(map[string]string{"destination": f.archive})
+	mustWrite(t, filepath.Join(f.claudeDir, "session-sync.json"), string(cfg))
+
 	mustMkdir(t, filepath.Join(f.archive, "projects", "e--work-airos-frontend"))
 	mustMkdir(t, filepath.Join(f.archive, "projects", "e--work-legacy-app"))
 	mustWrite(t, filepath.Join(f.archive, "projects.json"), `{

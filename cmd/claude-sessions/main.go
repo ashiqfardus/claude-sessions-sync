@@ -10,9 +10,21 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
+	"strings"
+	"unicode"
 )
 
 var version = "dev" // overwritten at release time by -X main.version
+
+func init() {
+	// `go install ...@v0.2.3` builds without the release ldflags, but does record the
+	// module version, so `version` and doctor --json can still say which build it is.
+	if info, ok := debug.ReadBuildInfo(); ok && version == "dev" &&
+		info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = info.Main.Version
+	}
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -79,6 +91,22 @@ func main() {
 	}
 }
 
+// printable drops control characters from text read out of the archive before it is
+// printed. Project names, prompts and machine names are written by other machines,
+// and an escape sequence among them could retitle the terminal, rewrite what is on
+// screen or, through OSC 52, set the clipboard.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return ' '
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `claude-sessions - archive Claude Code sessions and file them by project identity
 
@@ -100,7 +128,7 @@ commands:
   stats       session counts and sizes per project
   doctor      check the archive, hook, retention and manifest drift
   config      show or set the archive destination
-  completion  print a shell completion script (bash|zsh|fish)
+  completion  print a shell completion script (bash|zsh|fish|powershell)
   version     print the version
 
 common flags:

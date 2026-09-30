@@ -97,4 +97,14 @@ func TestStatePathFindsFileBesideConfigDir(t *testing.T) {
 	if got := StatePath(root); got != inside {
 		t.Errorf("StatePath = %q, want the file inside the config dir %q", got, inside)
 	}
+
+	// Another profile never falls back to the default profile's file: it would read
+	// that profile's project paths as its own.
+	other := filepath.Join(home, "work-profile")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := StatePath(other); got == beside {
+		t.Errorf("StatePath(%q) fell back to the default profile's %q", other, beside)
+	}
 }

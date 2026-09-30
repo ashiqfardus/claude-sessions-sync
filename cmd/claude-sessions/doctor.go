@@ -45,7 +45,7 @@ func cmdDoctor(args []string) error {
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	noProbe := fs.Bool("no-write-probe", false, "skip the archive write test (which creates and deletes one file)")
 	exclude := fs.String("exclude", "", "additional render exclusions to take into account, on top of the config")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
 
@@ -154,7 +154,8 @@ func cmdDoctor(args []string) error {
 		add(check{"manifest", levelWarn, err.Error(), ""})
 	}
 	for _, b := range badShards {
-		add(check{"manifest", levelWarn, "unreadable shard: " + b, "It is being ignored; other shards still merged."})
+		add(check{"manifest", levelWarn, "ignored manifest file: " + b,
+			"It is unreadable, or a sync client's conflict copy of another machine's file. Other machines' files are still merged; delete this one once you have checked it."})
 	}
 
 	archived, err := archive.BucketNames(dest)
@@ -243,6 +244,14 @@ func cmdDoctor(args []string) error {
 		if len(h.Args) > 0 {
 			cmd += " " + strings.Join(h.Args, " ")
 		}
+		// A hook whose program is gone fails at every session end, silently.
+		if len(goHooks) == 1 && filepath.IsAbs(h.Command) {
+			if _, err := os.Stat(h.Command); err != nil {
+				add(check{"session hook", levelFail, "the hook's program is missing: " + h.Command,
+					"Re-run `claude-sessions install`."})
+				break
+			}
+		}
 		add(check{"session hook", levelOK, shorten(cmd, 96), ""})
 	default:
 		add(check{"session hook", levelWarn, "no SessionEnd hook installed",
@@ -262,6 +271,13 @@ func cmdDoctor(args []string) error {
 			"A session killed abruptly will not be archived until the next manual push."})
 	}
 
+	// --- is anything actually being archived? ---------------------------------
+	// The hook and the sweep both exit 0 by design, so a scheduler's "last result"
+	// only ever proves that something started. Ask the question directly.
+	for _, c := range liveness(root, dest, buckets) {
+		add(c)
+	}
+
 	// --- secrets --------------------------------------------------------------
 	// Auth material inside a cloud-synced folder is a stop-everything finding. Walk
 	// the tree: a naive recursive copy puts these inside a bucket, not at the root,
@@ -278,6 +294,84 @@ func cmdDoctor(args []string) error {
 	return report(checks, *asJSON)
 }
 
+// archiveLag is how long a finished session may go unarchived before doctor fails:
+// the default 30-minute sweep plus ten minutes' grace.
+const archiveLag = 40 * time.Minute
+
+// quietPushAge is how long since the last successful push before doctor warns. The
+// sweep pushes every 30 minutes whether or not anything changed, so this is several
+// missed runs - or a machine that was switched off.
+const quietPushAge = 3 * time.Hour
+
+// liveness checks the two things that show the archive is really being kept up to
+// date: sessions that ended a while ago are in it, and pushes are succeeding.
+func liveness(root, dest string, buckets []claude.Bucket) []check {
+	var out []check
+
+	var pending []string
+	cutoff := time.Now().Add(-archiveLag)
+	for _, b := range buckets {
+		for _, t := range b.Transcripts {
+			if t.ModTime.After(cutoff) {
+				continue // may still be live, or the sweep has not come round yet
+			}
+			src, err := os.Stat(t.Path)
+			if err != nil {
+				continue
+			}
+			dst := archive.StatOrNil(filepath.Join(archive.ProjectsDir(dest), b.Name, filepath.Base(t.Path)))
+			// A shorter local copy is a session forked across machines, which push
+			// deliberately leaves alone; it is not a failure to archive.
+			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) {
+				pending = append(pending, b.Name+"/"+t.ID)
+			}
+		}
+	}
+	if len(pending) > 0 {
+		out = append(out, check{"archived", levelFail,
+			fmt.Sprintf("%d session(s) that ended over %d minutes ago are not in the archive, e.g. %s",
+				len(pending), int(archiveLag.Minutes()), pending[0]),
+			"Neither the hook nor the sweep has copied them. Run `claude-sessions push` and read ~/.claude/session-sync.log for why."})
+	} else {
+		out = append(out, check{"archived", levelOK, fmt.Sprintf("every session that ended over %d minutes ago is in the archive", int(archiveLag.Minutes())), ""})
+	}
+
+	last, ok := lastPush(root)
+	switch {
+	case !ok:
+		out = append(out, check{"last push", levelWarn, "no successful push recorded in session-sync.log",
+			"Run `claude-sessions push` once, then check the hook and the sweep."})
+	case time.Since(last) > quietPushAge:
+		out = append(out, check{"last push", levelWarn,
+			fmt.Sprintf("the last successful push was %s ago (%s)", time.Since(last).Round(time.Minute), last.Format("2006-01-02 15:04")),
+			"Expected every 30 minutes while this machine is on. If it has been on, the sweep is not running or is failing: see session-sync.log."})
+	default:
+		out = append(out, check{"last push", levelOK, last.Format("2006-01-02 15:04"), ""})
+	}
+	return out
+}
+
+// lastPush is the time of the newest "PUSH:" line in the log, or its rotated copy.
+func lastPush(root string) (time.Time, bool) {
+	for _, name := range []string{"session-sync.log", "session-sync.log.1"} {
+		raw, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(raw), "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			stamp, rest, ok := strings.Cut(lines[i], "  ")
+			if !ok || !strings.HasPrefix(rest, "PUSH:") {
+				continue
+			}
+			if t, err := time.ParseInLocation("2006-01-02 15:04:05", stamp, time.Local); err == nil {
+				return t, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
 // secretNames are files that must never reach a synced folder.
 //
 //	.credentials.json - auth tokens
@@ -287,14 +381,12 @@ var secretNames = map[string]bool{
 	".claude.json":      true,
 }
 
-// maxSecretScanDepth bounds the walk.
+// findSecrets walks the whole archive except the rendered pages.
 //
-// Everything this tool writes lives at <archive>/, <archive>/projects/<bucket>/ or
-// <archive>/projects/<bucket>/memory/ - depth 3. Walking deeper on a cloud or network
-// filesystem costs real time on every doctor run and cannot find anything the tool
-// itself put there.
-const maxSecretScanDepth = 3
-
+// It used to stop three levels down to save time on a cloud filesystem - which
+// skipped projects/<bucket>/memory, and the session folders where subagent transcripts
+// and saved tool output now live, four and five levels down. A check that does not
+// look where the files are is worse than none: it reports "nothing found".
 func findSecrets(dest string) []string {
 	var found []string
 	// Errors are ignored per-entry so one unreadable subdirectory cannot suppress the
@@ -304,15 +396,8 @@ func findSecrets(dest string) []string {
 			return nil
 		}
 		if d.IsDir() {
-			if path == dest {
-				return nil
-			}
-			if d.Name() == "html" {
+			if path != dest && d.Name() == "html" && filepath.Dir(path) == dest {
 				return filepath.SkipDir // rendered output, never a credential store
-			}
-			rel, relErr := filepath.Rel(dest, path)
-			if relErr == nil && len(strings.Split(rel, string(filepath.Separator))) >= maxSecretScanDepth {
-				return filepath.SkipDir
 			}
 			return nil
 		}
@@ -400,9 +485,14 @@ func report(checks []check, asJSON bool) error {
 	return nil
 }
 
+// resolveRoot finds the Claude profile, always as an absolute path. A relative
+// --claude-dir used to be written into the hook as-is, and Claude Code runs hooks in
+// the project's folder - so a cloned repository could supply the program that ran at
+// the end of every session.
 func resolveRoot(override string) (string, claude.RootSource, error) {
 	if strings.TrimSpace(override) != "" {
-		return filepath.Clean(override), "--claude-dir", nil
+		abs, err := filepath.Abs(override)
+		return abs, "--claude-dir", err
 	}
 	return claude.Root()
 }
@@ -486,15 +576,7 @@ func renderState(dest string, manifest map[string]archive.Project, exclude []str
 	if newestPath != "" {
 		page := filepath.Join(dest, "html", newestBucket, newestPath+".html")
 		info, err := os.Stat(page)
-		if err != nil {
-			newestStale = true
-		} else {
-			drift := info.ModTime().Sub(newestMod)
-			if drift < 0 {
-				drift = -drift
-			}
-			newestStale = drift > archive.MTimeToleranceSeconds*time.Second
-		}
+		newestStale = err != nil || !archive.SameMTime(info.ModTime(), newestMod)
 	}
 	return pages, transcripts, newestStale
 }

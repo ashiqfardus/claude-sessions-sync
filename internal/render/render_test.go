@@ -199,8 +199,12 @@ func TestRenderWritesIndex(t *testing.T) {
 	if !strings.Contains(got, "why is the build failing") {
 		t.Error("the index should show each session's opening message")
 	}
-	if !strings.Contains(got, `href="e--work-api/session-1.html"`) {
+	// "./" keeps a bucket named like a URL scheme ("javascript:...") a relative path.
+	if !strings.Contains(got, `href="./e--work-api/session-1.html"`) {
 		t.Errorf("the index should link to the page, got:\n%s", got)
+	}
+	if !strings.Contains(got, `http-equiv="Content-Security-Policy"`) {
+		t.Error("pages must carry a CSP that forbids scripts")
 	}
 	// Pages are read from a cloud folder on a phone: one self-contained file, no
 	// external stylesheet to fail to resolve and no script to be blocked.

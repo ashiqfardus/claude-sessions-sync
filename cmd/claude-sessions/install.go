@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ func cmdInstall(args []string) error {
 	keepLegacy := fs.Bool("keep-powershell-hook", false, "leave an existing sync-claude-sessions.ps1 hook in place")
 	noSweep := fs.Bool("no-sweep", false, "install the session hook only, without the scheduled sweep")
 	replaceLegacySweep := fs.Bool("replace-powershell-sweep", false, "also remove the scheduled task registered by the PowerShell predecessor")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
 
@@ -38,17 +39,26 @@ func cmdInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	if dest == "" {
+	switch {
+	case dest == "":
 		return fmt.Errorf("no archive destination. Run `claude-sessions config set-destination <folder>` first")
-	}
-	if err := archive.ValidateDestination(root, dest); err != nil {
-		return err
-	}
-	if *archiveDir != "" {
+	case *archiveDir != "":
+		// The same checks as config set-destination: a typo'd or unmounted drive used
+		// to be saved, followed by "Done. Sessions on this machine now archive".
+		if dest, err = archive.PrepareDestination(root, dest); err != nil {
+			return err
+		}
 		if err := archive.SaveConfig(root, archive.Config{Destination: dest}); err != nil {
 			return err
 		}
 		src = archive.SourceConfig
+	default:
+		if err := archive.ValidateDestination(root, dest); err != nil {
+			return err
+		}
+		if st, err := os.Stat(filepath.Dir(dest)); err != nil || !st.IsDir() {
+			return fmt.Errorf("%s is not available - is the sync client mounted?", filepath.Dir(dest))
+		}
 	}
 
 	fmt.Printf("Installing on %s\n\n", runtime.GOOS)
@@ -95,7 +105,14 @@ func cmdInstall(args []string) error {
 			}
 		}
 
-		status, err := hostagent.Install(sweepJob(root, binary), *every)
+		sweepBinary := binary
+		if runtime.GOOS == "windows" {
+			sweepBinary, err = installWindowless(binary)
+		}
+		var status hostagent.Status
+		if err == nil {
+			status, err = hostagent.Install(sweepJob(root, sweepBinary), *every)
+		}
 		if err != nil {
 			// The hook alone still archives every session that ends normally, so this
 			// is a degraded install, not a failed one.
@@ -117,7 +134,7 @@ func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	keepLegacy := fs.Bool("keep-powershell-hook", true, "leave a sync-claude-sessions.ps1 hook alone")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
 
@@ -132,10 +149,14 @@ func cmdUninstall(args []string) error {
 	}
 	fmt.Printf("  hook      removed %d entr(y/ies)\n", removed)
 
-	if err := hostagent.Uninstall(sweepJob(root, "")); err != nil {
+	if removed, err := hostagent.Uninstall(sweepJob(root, "")); err != nil {
 		fmt.Printf("  sweep     FAILED: %v\n", err)
-	} else {
+	} else if removed {
 		fmt.Printf("  sweep     removed\n")
+	} else {
+		// Said "removed" before, which hid a sweep registered under another profile's
+		// name (installed with CLAUDE_CONFIG_DIR set, uninstalled without it).
+		fmt.Printf("  sweep     none registered for %s\n", root)
 	}
 
 	// The archive and the binary are left alone on purpose: the archive is the user's
@@ -176,6 +197,32 @@ func installBinary(root string) (string, error) {
 		}
 	}
 
+	in, err := os.Open(self)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	return target, replaceExecutable(target, in)
+}
+
+// installWindowless writes, next to binary, the GUI-subsystem copy the Windows sweep
+// runs so that Task Scheduler opens no terminal - see hostagent.WindowlessName.
+func installWindowless(binary string) (string, error) {
+	data, err := os.ReadFile(binary)
+	if err != nil {
+		return "", err
+	}
+	patched, err := hostagent.Windowless(data)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", binary, err)
+	}
+	target := filepath.Join(filepath.Dir(binary), hostagent.WindowlessName)
+	return target, replaceExecutable(target, bytes.NewReader(patched))
+}
+
+// replaceExecutable writes src to target via a temporary file, even when target is
+// the program the hook or the sweep is running right now.
+func replaceExecutable(target string, src io.Reader) error {
 	// Copies left by an earlier upgrade that replaced a running binary.
 	if old, _ := filepath.Glob(target + ".old-*"); len(old) > 0 {
 		for _, o := range old {
@@ -183,51 +230,63 @@ func installBinary(root string) (string, error) {
 		}
 	}
 
-	in, err := os.Open(self)
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".tmp-claude-sessions-*")
 	if err != nil {
-		return "", err
-	}
-	defer in.Close()
-
-	tmp, err := os.CreateTemp(binDir, ".tmp-claude-sessions-*")
-	if err != nil {
-		return "", err
+		return err
 	}
 	tmpName := tmp.Name()
-	if _, err := io.Copy(tmp, in); err != nil {
+	if _, err := io.Copy(tmp, src); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return "", err
+		return err
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		return "", err
+		return err
 	}
 	if err := os.Chmod(tmpName, 0o755); err != nil {
 		os.Remove(tmpName)
-		return "", err
+		return err
 	}
 	if err := os.Rename(tmpName, target); err != nil {
 		// Windows refuses to replace an executable that is running - the hook or the
 		// sweep, mid-push - but does allow renaming it. Move it aside and retry; the
 		// leftover is removed by the next install.
 		aside := fmt.Sprintf("%s.old-%d", target, time.Now().UnixNano())
-		if runtime.GOOS != "windows" || os.Rename(target, aside) != nil || os.Rename(tmpName, target) != nil {
+		if runtime.GOOS != "windows" || os.Rename(target, aside) != nil {
 			os.Remove(tmpName)
-			return "", fmt.Errorf("could not install the binary to %s: %w", target, err)
+			return fmt.Errorf("could not install the binary to %s: %w", target, err)
+		}
+		if err2 := os.Rename(tmpName, target); err2 != nil {
+			// Put the old binary back: a missing one breaks the hook and the sweep,
+			// an old one only means the upgrade did not happen.
+			os.Rename(aside, target)
+			os.Remove(tmpName)
+			return fmt.Errorf("could not install the binary to %s: %w", target, err2)
 		}
 		os.Remove(aside)
 	}
-	return target, nil
+	return nil
 }
 
 // sweepJob names the scheduled job for a profile. The default ~/.claude keeps the
 // machine-wide name existing installs registered; any other profile gets its own.
 func sweepJob(root, binary string) hostagent.Job {
 	j := hostagent.Job{Binary: binary, Profile: root}
-	if home, err := os.UserHomeDir(); err == nil &&
-		strings.EqualFold(filepath.Clean(root), filepath.Join(home, ".claude")) {
+	if home, err := os.UserHomeDir(); err == nil && sameDir(root, filepath.Join(home, ".claude")) {
 		j.Profile = ""
 	}
 	return j
+}
+
+// sameDir compares two directories as files, not strings: an 8.3 short path
+// (ADMINI~1) or a symlink names the same folder, and a string mismatch registered a
+// second sweep for the default profile.
+func sameDir(a, b string) bool {
+	if strings.EqualFold(filepath.Clean(a), filepath.Clean(b)) {
+		return true
+	}
+	ai, err1 := os.Stat(a)
+	bi, err2 := os.Stat(b)
+	return err1 == nil && err2 == nil && os.SameFile(ai, bi)
 }

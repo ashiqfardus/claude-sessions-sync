@@ -57,8 +57,14 @@ ul.sessions a:hover { background: var(--user); }
 .size { display: block; font-size: .72rem; color: var(--muted); }
 `
 
+// csp forbids every script and every remote load. Pages carry text from transcripts
+// and from paths other machines recorded; escaping is the first defence, and this
+// makes a missed escape - or a javascript: link - inert anyway.
+const csp = `default-src 'none'; style-src 'unsafe-inline'`
+
 func pageHead(title string) string {
 	return `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+		`<meta http-equiv="Content-Security-Policy" content="` + csp + `">` +
 		`<meta name="viewport" content="width=device-width, initial-scale=1">` +
 		`<title>` + html.EscapeString(title) + `</title><style>` + style + `</style>` +
 		`</head><body><main>`

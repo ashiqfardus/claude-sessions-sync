@@ -26,9 +26,12 @@ func Sweep(j Job) (Status, error) {
 		s.Problem = "the task is disabled, so nothing is being archived"
 	}
 	switch {
-	case !ownsAction(def.Command + " " + def.Arguments):
-		s.Problem = "the task runs " + def.Command + ", not this tool"
-	case def.Command != "":
+	case !ownsTask(def):
+		s.Problem = "the task runs " + def.Command + " " + def.Arguments + ", not this tool"
+	case !strings.EqualFold(taskProgram(def), WindowlessName):
+		// Registered by an older version: it works, but opens a terminal every run.
+		s.Problem = "the task runs the console build, which opens a window every run - re-run `claude-sessions install`"
+	default:
 		if _, err := os.Stat(strings.Trim(def.Command, `"`)); err != nil {
 			s.Problem = "the task's program is missing: " + def.Command
 		}

@@ -279,8 +279,33 @@ func TestPushRefusesWhenLocked(t *testing.T) {
 		t.Errorf("expected a lock message, got:\n%s", out)
 	}
 
-	if out, err := f.push(t, "--quiet"); err != nil {
+	// Unattended, it waits for the other run first - and still exits 0 if it never ends.
+	start := time.Now()
+	if out, err := f.push(t, "--quiet", "--lock-wait=2s"); err != nil {
 		t.Errorf("--quiet must still exit 0 when locked: %v\n%s", err, out)
+	}
+	if waited := time.Since(start); waited < 2*time.Second {
+		t.Errorf("--quiet gave up after %v instead of waiting for the lock", waited)
+	}
+}
+
+// The hook waits for a run that is about to finish instead of skipping its session:
+// the sweep and a session end coinciding is routine.
+func TestQuietPushWaitsForLock(t *testing.T) {
+	f := newFixture(t)
+	lock := filepath.Join(f.claudeDir, "session-sync.lock")
+	mustWrite(t, lock, fmt.Sprintf("%d token 2026-09-01T00:00:00Z\n", os.Getpid()))
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		os.Remove(lock)
+	}()
+
+	if out, err := f.push(t, "--quiet", "--lock-wait=20s"); err != nil {
+		t.Fatalf("push failed: %v\n%s", err, out)
+	}
+	raw, _ := os.ReadFile(filepath.Join(f.claudeDir, "session-sync.log"))
+	if !strings.Contains(string(raw), "PUSH:") || strings.Contains(string(raw), "SKIP") {
+		t.Errorf("expected the push to run once the lock was released:\n%s", raw)
 	}
 }
 

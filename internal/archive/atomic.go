@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"time"
@@ -43,13 +44,30 @@ func NeedsCopy(src, dst os.FileInfo) bool {
 	return src.Size() > dst.Size()
 }
 
+// SameMTime reports whether two timestamps are equal within the tolerance.
+func SameMTime(a, b time.Time) bool {
+	d := a.Sub(b)
+	if d < 0 {
+		d = -d
+	}
+	return d <= MTimeToleranceSeconds*time.Second
+}
+
 // WriteFileAtomic writes data to path via a temporary file in the same directory,
 // then renames it into place.
 //
 // A sync client watches this folder and uploads whatever it sees. Writing in place
 // means it can upload a half-written index or manifest; a rename is atomic on every
 // filesystem this tool targets, so a reader sees either the old file or the new one.
+//
+// A file that already holds exactly data is left alone. Every push used to rewrite
+// every index page, INDEX.md, projects.json and the render state whether or not
+// anything had changed - about a hundred uploads per run per machine, and, with
+// several machines writing the same shared files, a steady source of conflict copies.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
+		return nil
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err

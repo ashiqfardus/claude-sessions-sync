@@ -2,6 +2,7 @@ package archive
 
 import (
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -77,4 +78,15 @@ func StatOrNil(path string) os.FileInfo {
 		return nil
 	}
 	return info
+}
+
+// IsRealDir reports whether path is a directory itself, not a link or junction to
+// one.
+//
+// Folders read from, or written into, the archive are checked with it. The archive is
+// shared, and a symlink planted there makes restore copy - or render delete - files
+// wherever the link points.
+func IsRealDir(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().Type() == fs.ModeDir
 }

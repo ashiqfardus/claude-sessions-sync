@@ -113,7 +113,7 @@ func TestUnsafeNamesAreRejected(t *testing.T) {
 	if _, ok := merged["../../escape"]; ok || len(merged) != 1 {
 		t.Errorf("merged = %v", merged)
 	}
-	if _, err := ForgetMachine(dest, "../manifest/LAP-1"); err == nil {
+	if err := ForgetMachine(dest, "../manifest/LAP-1"); err == nil {
 		t.Error("ForgetMachine accepted a path as a machine name")
 	}
 }

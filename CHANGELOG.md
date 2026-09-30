@@ -5,6 +5,115 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+Upgrading: run `claude-sessions install` again after updating the binary. The hook
+and the sweep run the copy in `~/.claude/bin`, so a new build does nothing until it
+is installed - and on Windows it is what replaces the sweep that flashed a terminal.
+
+### Fixed (review, 2026-09-30)
+- **The Windows sweep flashed a terminal window every run.** `install` now also writes
+  `claude-sessionsw.exe`, a copy marked as a GUI program, and the task runs that, so no
+  console opens and the exit code still reaches the task's last result. `doctor` flags
+  a task still running the console build.
+- **An import could replace another machine's archived transcript, and that machine's
+  new turns were then never archived.** A rewritten transcript kept its source's
+  timestamp but usually grew, so the importing machine's next push counted it as newer
+  and uploaded it over the original; the original machine's own copy was from then on
+  refused as a truncation. Rewritten copies are now dated just before their source.
+- **The hook skipped a session whenever another push held the lock** - the sweep, or
+  a second session ending - and it then waited for the next sweep, or overnight. An
+  unattended push now waits up to 45 seconds (`--lock-wait`).
+- **A render killed part-way kept none of its work.** The first render of a large
+  archive, or every page after a template change, outlasts the hook's 120 seconds, so
+  every session end started again and none finished. Progress is saved every 10
+  seconds, and an unattended push renders for at most 45 seconds, leaving the rest for
+  the next run.
+- **`render --exclude` and `machines --forget` were undone by the next push.** An
+  exclusion given to `render` is now saved, like `renderExclude`; `forget` no longer
+  deletes pages that the next push rendered straight back.
+- **A sync client's conflict copy replaced a machine's manifest or index**
+  (`LAP-1 (1).json`, `LAP-1.sync-conflict-....json`); in one test `INDEX.md` fell from
+  3,000 sessions to 5. Only `<machine>.json` is read; `doctor` lists the others.
+- **Every push rewrote every index page, `INDEX.md`, `projects.json` and the render
+  state**, changed or not. Files whose content is unchanged are no longer written, and
+  the indexes are dated by their newest session rather than by "now".
+- A push hung on a dead network mount stopped the macOS and Linux sweep until reboot.
+  The systemd unit now has a one-hour limit, as Task Scheduler does, and an unattended
+  push ends itself after 55 minutes.
+- `install --archive` saved a relative path as typed (the hook runs in each project's
+  folder, so every session was copied into every repository) and a missing drive
+  still ended with "Done". Destinations are made absolute and checked like
+  `config set-destination`; a relative one saved earlier is reported. `--claude-dir`
+  is made absolute too.
+- Flags after a positional argument were ignored: `search "pool" --archived` searched
+  for "pool --archived". Flags are accepted anywhere, and a command that takes no
+  arguments rejects one instead of ignoring it.
+- A leading `~` is expanded in paths, as a quoted `"~/dev"` and anything under
+  PowerShell reach the program unexpanded.
+- `doctor`'s credential scan stopped three levels down, skipping `memory/` and the
+  session folders where subagent transcripts live.
+- A profile other than the default read the default profile's `~/.claude.json`.
+- `push --quiet` exited without a log line on an unknown flag, so a downgrade archived
+  nothing, silently.
+- `version` printed `dev` for a `go install` build.
+- An upgrade that fails halfway puts the old binary back instead of leaving none.
+- `CLAUDE_CONFIG_DIR` spelled as an 8.3 short path or a symlink to `~/.claude` no
+  longer registers a second sweep for the default profile.
+- A sweep run killed by the one-hour limit is reported as a problem, not as healthy.
+- `uninstall` says when no sweep was registered for the profile instead of "removed".
+- A quoted task argument ending in `\` no longer swallows the arguments after it.
+- On Windows, the hook gave up waiting for the lock at the moment it was being
+  released, which Windows reports as "access denied".
+
+### Added (review, 2026-09-30)
+- **`--update`** on `import`, `pull` and `restore`: brings in sessions that continued
+  on another machine - only when the archived copy strictly extends the local one, so a
+  session that also continued here is kept and reported - and memory files that are
+  newer in the archive.
+- **`import` without a manifest**: a bucket no manifest names - a forgotten machine's,
+  a PowerShell-era archive's, an unzipped `backup` - is placed by the working directory
+  its transcripts record. `backup` now prints that one command as the way back.
+- **`doctor` checks that archiving actually happens**: it fails when a session that
+  ended over 40 minutes ago is not in the archive, and warns when the last successful
+  push is hours old. The hook and the sweep exit 0 by design, so a scheduler's last
+  result never showed this. It also fails a hook whose program is missing, and a cron
+  entry with no cron daemon running (WSL).
+- PowerShell completion: `claude-sessions completion powershell`.
+- `import` warns about a `--search-root` that does not exist.
+- `session-sync.log` is rotated at 1 MB, and `install` keeps the three newest
+  `settings.json` backups instead of one per run.
+- `config --help` lists its actions.
+
+### Changed (review, 2026-09-30)
+- `ls` shows whole session IDs, which `claude --resume` needs; the search hint includes
+  the `cd`, and for `--archived` results says to import first.
+- `machines` labels its date column LAST SESSION, which is what it is.
+- Pages are rendered once more (template 3).
+
+### Security (review, 2026-09-30)
+- **Network and device paths read from the archive or from a transcript are never
+  opened.** On Windows, even checking whether `\\host\share` exists sends the user's
+  NTLM hash to that host, and a path planted in the shared archive made every push do
+  so.
+- **Symlinks in the archive are never followed** by `import`, `pull`, `restore` or
+  `render`: one in place of a memory folder copied local files into memory and out on
+  the next push, and one in place of a page folder let `render` delete files elsewhere.
+- **Memory is not replaced from the archive** unless `--update` is given, and never by
+  a file dated in the future. Memory is loaded into every session as instructions.
+- Path moves read from a manifest must be absolute paths: `"e"` rewrote every `e` in
+  every imported transcript, and the result still parsed.
+- Pages carry a Content-Security-Policy that forbids scripts, and links are relative
+  and escaped, so a folder named `javascript:...` is inert.
+- Text from the archive is stripped of control characters before it reaches the
+  terminal, and of Markdown syntax before it reaches `INDEX.md`.
+- More credentials are masked on pages: PGP and truncated PEM keys, JSON-escaped and
+  quoted values with spaces, `DB_PASS=`/`*_KEY=`/`Cookie:`, `hf_`, `npm_`, `ya29.`,
+  `SG.` tokens, Azure `AccountKey=`, and URL passwords containing `/`.
+- A scheduled task is recognised as this tool's only by the program it runs, not by
+  its command line mentioning the name: uninstall could delete a foreign task.
+- Temporary-file cleanup stays inside the folders this tool writes.
+- GitHub Actions are pinned to commit SHAs, with Dependabot to keep them current, and
+  GoReleaser to an exact version.
+
 ### Fixed (audit, 2026-09-16)
 - **The scheduled sweep could be deleted by a test install.** The job name was
   machine-wide, so `install --claude-dir <scratch>` then `uninstall` replaced and removed
@@ -52,6 +161,11 @@ All notable changes to this project are documented here. This project follows
   longer re-publish an excluded project, and `INDEX.md` withholds its prompts.
 - Bucket, session and machine names read from the shared archive are validated before
   being joined into paths that are written or deleted.
+
+## [0.2.2] - 2026-09-01
+
+The first release with binaries: v0.2.0 and v0.2.1 were withdrawn because their
+release builds failed. Everything since the first commit is listed here.
 
 ### Added
 - `render --exclude` and a `renderExclude` config key: archiving a project and
@@ -188,7 +302,7 @@ All notable changes to this project are documented here. This project follows
   repository root and silently dropped fixtures in nested packages.
 - Minimum Go lowered from 1.27 to **1.21**, which is what the code actually requires.
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-09-01
 
 Initial read-only milestone: `ls` and `doctor`, plus the transcript reader, bucket
 handling and sharded manifest that everything else will build on.

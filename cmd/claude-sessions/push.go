@@ -37,18 +37,25 @@ func cmdPush(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "report what would be copied without writing")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	noHTML := fs.Bool("no-html", false, "skip rendering the mobile HTML pages")
-	if err := fs.Parse(args); err != nil {
+	lockWait := fs.Duration("lock-wait", 45*time.Second, "with --quiet, how long to wait for another run to finish before skipping")
+	if err := parseFlags(fs, args, false); err != nil {
 		// A hook written by a newer version may pass a flag this binary does not know.
-		// That must not break the end of the session any more than a missing drive.
+		// That must not break the end of the session any more than a missing drive -
+		// but it must still leave a trace, or a downgrade silently archives nothing.
 		for _, a := range args {
 			if a == "--quiet" || a == "-quiet" || a == "--quiet=true" || a == "-quiet=true" {
+				if root, _, rerr := resolveRoot(*claudeDir); rerr == nil {
+					newLogger(root, true)("SKIP: %v (a newer version's hook? re-run `claude-sessions install`)", err)
+				}
 				return nil
 			}
 		}
 		return err
 	}
 
-	err := runPush(*claudeDir, *archiveDir, *quiet, *dryRun, *asJSON, *noHTML)
+	err := runPush(*claudeDir, *archiveDir, pushOpts{
+		Quiet: *quiet, DryRun: *dryRun, JSON: *asJSON, NoHTML: *noHTML, LockWait: *lockWait,
+	})
 
 	// A SessionEnd hook that fails breaks the end of the user's session. Missing
 	// drive, offline mount, unexpected error: log it and exit 0. This is the single
@@ -59,13 +66,42 @@ func cmdPush(args []string) error {
 	return err
 }
 
-func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (err error) {
+type pushOpts struct {
+	Quiet, DryRun, JSON, NoHTML bool
+	LockWait                    time.Duration // --quiet only
+}
+
+// quietRenderBudget bounds page rendering in an unattended push.
+//
+// The SessionEnd hook is killed after 120 seconds, and a first render of a large
+// archive - or every page again after a template change - takes longer than that. A
+// run killed mid-render used to keep none of its work, so every session end started
+// over and never finished. Pages left over are rendered by the next run.
+const quietRenderBudget = 45 * time.Second
+
+// quietWatchdog ends an unattended push that has hung, just inside the one-hour
+// limit Task Scheduler and the systemd unit impose, so it logs why.
+const quietWatchdog = 55 * time.Minute
+
+func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
+	quiet, dryRun, asJSON, noHTML := opts.Quiet, opts.DryRun, opts.JSON, opts.NoHTML
 	root, _, err := resolveRoot(claudeDir)
 	if err != nil {
 		return err
 	}
 
 	logf := newLogger(root, quiet)
+
+	// An unattended push that hangs - a dead NFS, SMB or rclone mount blocks forever
+	// in a read - ends itself. launchd has no time limit at all, and the lock it holds
+	// would otherwise keep every later run waiting until the heartbeat cap.
+	if quiet {
+		watchdog := time.AfterFunc(quietWatchdog, func() {
+			logf("ABORT: still running after %s, probably blocked on the archive's filesystem; exiting so the next run can start", quietWatchdog)
+			os.Exit(0) // exit 0: this is a hook, and must never fail the session
+		})
+		defer watchdog.Stop()
+	}
 
 	// Even a panic must not take the session down with it.
 	defer func() {
@@ -99,9 +135,14 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 		return err
 	}
 
-	lock, err := archive.AcquireLock(root)
+	// Unattended runs wait for one another: the sweep and a hook, or two sessions
+	// ending together, are routine. Someone at a terminal is told straight away.
+	wait := time.Duration(0)
+	if quiet {
+		wait = opts.LockWait
+	}
+	lock, err := archive.AcquireLockWait(root, wait)
 	if err != nil {
-		// The sweep and the hook firing together is routine, not a problem.
 		logf("SKIP: %v", err)
 		if quiet {
 			return nil
@@ -274,11 +315,14 @@ func runPush(claudeDir, archiveDir string, quiet, dryRun, asJSON, noHTML bool) (
 	// problem must never fail a sync that has already succeeded, so this is wrapped
 	// and only ever logged.
 	if !dryRun && !noHTML {
-		if r, err := render.Archive(dest, render.Options{
-			Exclude:       excludes,
-			LocalProjects: claude.ProjectsDir(root),
-		}); err != nil {
+		ropts := render.Options{Exclude: excludes, LocalProjects: claude.ProjectsDir(root)}
+		if quiet {
+			ropts.Budget = quietRenderBudget
+		}
+		if r, err := render.Archive(dest, ropts); err != nil {
 			logf("HTML step failed (transcripts are still archived): %v", err)
+		} else if r.Deferred > 0 {
+			logf("HTML: %d rendered, %d up to date, %d left for the next run", r.Rendered, r.UpToDate, r.Deferred)
 		} else {
 			logf("HTML: %d rendered, %d up to date", r.Rendered, r.UpToDate)
 		}
@@ -545,10 +589,18 @@ func writeIndex(dest string, excludes []string) error {
 	}
 	sort.Strings(contributors)
 
+	for i, c := range contributors {
+		contributors[i] = mdText(c)
+	}
+
 	var b strings.Builder
 	b.WriteString("# Claude sessions\n\n")
-	fmt.Fprintf(&b, "Updated %s. %d session(s) from %s.\n\n",
-		time.Now().Format("2006-01-02 15:04"), len(rows), strings.Join(contributors, ", "))
+	// Dated by the newest session, not by "now": a push that changed nothing then
+	// writes nothing, rather than a new INDEX.md for the sync client to upload.
+	if len(rows) > 0 {
+		fmt.Fprintf(&b, "Newest session %s. ", rows[0].Updated.Format("2006-01-02 15:04"))
+	}
+	fmt.Fprintf(&b, "%d session(s) from %s.\n\n", len(rows), strings.Join(contributors, ", "))
 	b.WriteString("Bring these to another machine with `claude-sessions import`.\n\n")
 
 	multiMachine := len(contributors) > 1
@@ -557,7 +609,7 @@ func writeIndex(dest string, excludes []string) error {
 		group := byProject[name]
 		sort.Slice(group, func(i, j int) bool { return group[i].Updated.After(group[j].Updated) })
 
-		fmt.Fprintf(&b, "## %s\n\n", name)
+		fmt.Fprintf(&b, "## %s\n\n", mdText(name))
 
 		// INDEX.md is meant to be browsable on a phone. Listing every session a
 		// long-lived project ever had turns it into a file nothing wants to open, and
@@ -575,13 +627,12 @@ func writeIndex(dest string, excludes []string) error {
 			b.WriteString("| Updated | Size | Session | First prompt |\n|---|---|---|---|\n")
 		}
 		for _, r := range shown {
-			// A pipe in a prompt would break the table.
 			// Rows from another machine may predate an exclusion or redaction, so both
 			// are applied again here rather than trusted from the index file.
-			prompt := strings.ReplaceAll(indexPrompt(r.Prompt, r.Project, r.Bucket, excludes), "|", "\\|")
+			prompt := mdText(indexPrompt(r.Prompt, r.Project, r.Bucket, excludes))
 			if multiMachine {
 				fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s |\n",
-					r.Updated.Format("2006-01-02 15:04"), humanSize(r.Size), r.Machine, r.ID, prompt)
+					r.Updated.Format("2006-01-02 15:04"), humanSize(r.Size), mdText(r.Machine), r.ID, prompt)
 			} else {
 				fmt.Fprintf(&b, "| %s | %s | `%s` | %s |\n",
 					r.Updated.Format("2006-01-02 15:04"), humanSize(r.Size), r.ID, prompt)
@@ -594,6 +645,16 @@ func writeIndex(dest string, excludes []string) error {
 	}
 
 	return archive.WriteFileAtomic(filepath.Join(dest, "INDEX.md"), []byte(b.String()), 0o644)
+}
+
+// mdText makes text from the archive inert inside INDEX.md: one line, no control
+// characters, and Markdown syntax escaped. Project names, prompts and machine names
+// are written by other machines; unescaped, one could break the table or embed a
+// remote image that reports every time the file is previewed.
+func mdText(s string) string {
+	s = strings.Join(strings.Fields(printable(s)), " ")
+	return strings.NewReplacer(`\`, `\\`, "`", "\\`", "*", `\*`, "_", `\_`, "[", `\[`, "]", `\]`,
+		"<", `\<`, ">", `\>`, "!", `\!`, "|", `\|`, "#", `\#`).Replace(s)
 }
 
 // machineName identifies the writer of a manifest shard.
@@ -625,6 +686,9 @@ func machineName() string {
 	return strings.NewReplacer("/", "-", `\`, "-", ":", "-", " ", "-", "*", "-", "?", "-").Replace(name)
 }
 
+// maxLogBytes is when session-sync.log is rotated to session-sync.log.1.
+const maxLogBytes = 1 << 20
+
 // newLogger returns a printf-style logger that appends to session-sync.log.
 //
 // The log is the only record of what an unattended hook or sweep did. It never
@@ -634,6 +698,10 @@ func newLogger(root string, quiet bool) func(string, ...any) {
 	return func(format string, args ...any) {
 		line := fmt.Sprintf("%s  %s\n", time.Now().Format("2006-01-02 15:04:05"),
 			fmt.Sprintf(format, args...))
+		// Two runs an hour, forever: keep one previous log rather than an unbounded one.
+		if info, err := os.Stat(path); err == nil && info.Size() > maxLogBytes {
+			_ = os.Rename(path, path+".1")
+		}
 		if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
 			f.WriteString(line)
 			f.Close()

@@ -3,6 +3,7 @@ package archive
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -61,12 +62,12 @@ func AcquireLock(claudeRoot string) (*Lock, error) {
 	raw, readErr := os.ReadFile(path)
 	info, statErr := os.Stat(path)
 	if readErr != nil || statErr != nil {
-		return nil, fmt.Errorf("lock held by another run")
+		return nil, ErrLockHeld
 	}
 	age := time.Since(info.ModTime())
 	pid, hasPID := parseLockPID(raw)
 	if age < StaleLockAfter && (!hasPID || processAlive(pid)) {
-		return nil, fmt.Errorf("lock held by another run (pid %d, %s old)", pid, age.Round(time.Second))
+		return nil, fmt.Errorf("%w (pid %d, %s old)", ErrLockHeld, pid, age.Round(time.Second))
 	}
 
 	// Break it only if it is still the lock that was judged stale. Another run may
@@ -74,16 +75,39 @@ func AcquireLock(claudeRoot string) (*Lock, error) {
 	// two runs proceed at once.
 	// ponytail: a microsecond window remains between this read and the remove.
 	if again, err := os.ReadFile(path); err != nil || string(again) != string(raw) {
-		return nil, fmt.Errorf("lock taken by another run while breaking a stale one")
+		return nil, fmt.Errorf("%w: taken while breaking a stale one", ErrLockHeld)
 	}
 	if err := os.Remove(path); err != nil {
 		return nil, fmt.Errorf("stale lock could not be removed: %w", err)
 	}
 	l, err = tryLock(path)
 	if err != nil {
-		return nil, fmt.Errorf("lock taken by another run while breaking a stale one")
+		return nil, fmt.Errorf("%w: taken while breaking a stale one", ErrLockHeld)
 	}
 	return l, nil
+}
+
+// ErrLockHeld means another run holds the lock right now.
+var ErrLockHeld = errors.New("lock held by another run")
+
+// AcquireLockWait is AcquireLock, retrying while another run holds the lock, for up
+// to wait.
+//
+// The hook skipped whenever the sweep, or another session's hook, was mid-push -
+// routine at the end of a working day - and the session it was called for then waited
+// for the next sweep, or, on a laptop about to be closed, until the next morning.
+func AcquireLockWait(claudeRoot string, wait time.Duration) (*Lock, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		l, err := AcquireLock(claudeRoot)
+		// Windows reports a lock file that is being deleted - the other run releasing
+		// it, the very moment worth waiting for - as access denied, not as existing.
+		busy := errors.Is(err, ErrLockHeld) || os.IsPermission(err)
+		if err == nil || !busy || !time.Now().Before(deadline) {
+			return l, err
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func tryLock(path string) (*Lock, error) {
@@ -166,24 +190,37 @@ func parseLockPID(raw []byte) (int, bool) {
 // temp file is never touched.
 const OrphanTempAge = time.Hour
 
-// RemoveOrphanTemps deletes ".tmp-*" files that a killed run left in dir, returning
-// how many were removed. They are half-written copies that a sync client would
-// otherwise upload and keep forever.
-func RemoveOrphanTemps(dir string) int {
+// RemoveOrphanTemps deletes ".tmp-*" files that a killed run left in the archive,
+// returning how many were removed. They are half-written copies that a sync client
+// would otherwise upload and keep forever.
+//
+// Only the folders this tool writes are searched, and the archive root itself. An
+// archive pointed at a whole drive ("G:\My Drive") would otherwise have every other
+// program's .tmp- files in it deleted.
+func RemoveOrphanTemps(dest string) int {
 	removed := 0
 	cutoff := time.Now().Add(-OrphanTempAge)
-	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasPrefix(d.Name(), ".tmp-") {
-			return nil
+	remove := func(path string, d fs.DirEntry) {
+		if !d.Type().IsRegular() || !strings.HasPrefix(d.Name(), ".tmp-") {
+			return
 		}
-		info, err := d.Info()
-		if err != nil || info.ModTime().After(cutoff) {
-			return nil
-		}
-		if os.Remove(path) == nil {
+		if info, err := d.Info(); err == nil && info.ModTime().Before(cutoff) && os.Remove(path) == nil {
 			removed++
 		}
-		return nil
-	})
+	}
+
+	if entries, err := os.ReadDir(dest); err == nil {
+		for _, e := range entries {
+			remove(filepath.Join(dest, e.Name()), e)
+		}
+	}
+	for _, sub := range []string{ProjectsDir(dest), ManifestDir(dest), IndexDir(dest), filepath.Join(dest, "html")} {
+		_ = filepath.WalkDir(sub, func(path string, d fs.DirEntry, err error) error {
+			if err == nil {
+				remove(path, d)
+			}
+			return nil
+		})
+	}
 	return removed
 }

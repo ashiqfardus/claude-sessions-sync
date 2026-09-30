@@ -35,7 +35,7 @@ func cmdStats(args []string) error {
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	archived, archiveDir := sourceFlags(fs)
 	asJSON := fs.Bool("json", false, "machine-readable output")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
 
@@ -118,7 +118,7 @@ func cmdStats(args []string) error {
 	fmt.Fprintln(w, "SESSIONS\tSIZE\tLAST USED\tPROJECT")
 	for _, p := range rep.ByProject {
 		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n",
-			p.Sessions, humanSize(p.Bytes), p.Newest.Format("2006-01-02"), shorten(p.Project, 48))
+			p.Sessions, humanSize(p.Bytes), p.Newest.Format("2006-01-02"), shorten(printable(p.Project), 48))
 	}
 	return w.Flush()
 }

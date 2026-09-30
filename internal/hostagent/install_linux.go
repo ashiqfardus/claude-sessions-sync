@@ -50,7 +50,7 @@ func Install(j Job, everyMinutes int) (Status, error) {
 	}
 
 	s.Mechanism = "cron"
-	if err := rewriteCrontab(j, CronLine(j, everyMinutes)); err != nil {
+	if _, err := rewriteCrontab(j, CronLine(j, everyMinutes)); err != nil {
 		return s, err
 	}
 	s.Installed = true
@@ -58,34 +58,40 @@ func Install(j Job, everyMinutes int) (Status, error) {
 	return s, nil
 }
 
-// Uninstall removes this profile's timer and crontab entry.
-func Uninstall(j Job) error {
+// Uninstall removes this profile's timer and crontab entry, reporting whether either
+// existed.
+func Uninstall(j Job) (bool, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return false, err
 	}
 	unitDir := filepath.Join(home, ".config", "systemd", "user")
 
+	removed := false
 	if _, lookErr := exec.LookPath("systemctl"); lookErr == nil {
 		_ = exec.Command(systemBinary("systemctl"), "--user", "disable", "--now", j.SystemdTimerName()).Run()
 		for _, f := range []string{j.SystemdTimerName(), j.SystemdServiceName()} {
-			if err := os.Remove(filepath.Join(unitDir, f)); err != nil && !os.IsNotExist(err) {
-				return err
+			err := os.Remove(filepath.Join(unitDir, f))
+			if err != nil && !os.IsNotExist(err) {
+				return removed, err
 			}
+			removed = removed || err == nil
 		}
 		_ = exec.Command(systemBinary("systemctl"), "--user", "daemon-reload").Run()
 	}
 
 	// Remove our crontab line too, in case it was installed by the fallback.
 	if _, err := exec.LookPath("crontab"); err == nil {
-		return rewriteCrontab(j, "")
+		cron, err := rewriteCrontab(j, "")
+		return removed || cron, err
 	}
-	return nil
+	return removed, nil
 }
 
 // rewriteCrontab drops this job's line, keeps every other line exactly, and appends
-// add when it is not empty. Unchanged crontabs are not rewritten.
-func rewriteCrontab(j Job, add string) error {
+// add when it is not empty. Unchanged crontabs are not rewritten. It reports whether
+// a line of ours was dropped.
+func rewriteCrontab(j Job, add string) (bool, error) {
 	existing, _ := exec.Command(systemBinary("crontab"), "-l").Output()
 
 	var kept []string
@@ -100,7 +106,7 @@ func rewriteCrontab(j Job, add string) error {
 		}
 	}
 	if add == "" && !removed {
-		return nil
+		return false, nil
 	}
 	if add != "" {
 		kept = append(kept, add)
@@ -109,7 +115,7 @@ func rewriteCrontab(j Job, add string) error {
 	cmd := exec.Command(systemBinary("crontab"), "-")
 	cmd.Stdin = strings.NewReader(strings.Join(kept, "\n") + "\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("crontab failed: %s", strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("crontab failed: %s", strings.TrimSpace(string(out)))
 	}
-	return nil
+	return removed, nil
 }

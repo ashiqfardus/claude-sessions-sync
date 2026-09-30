@@ -149,25 +149,46 @@ func TestSaveConfigPreservesUnknownKeys(t *testing.T) {
 
 func TestResolveDestinationPrecedence(t *testing.T) {
 	root := t.TempDir()
+	fromFlag := filepath.Join(t.TempDir(), "from-flag")
+	fromConfig := filepath.Join(t.TempDir(), "from-config")
 
-	if _, src, _ := ResolveDestination(root, "/from/flag"); src != SourceFlag {
+	if _, src, _ := ResolveDestination(root, fromFlag); src != SourceFlag {
 		t.Errorf("flag should win, got %v", src)
 	}
 
-	if err := SaveConfig(root, Config{Destination: "/from/config"}); err != nil {
+	if err := SaveConfig(root, Config{Destination: fromConfig}); err != nil {
 		t.Fatal(err)
 	}
 	dest, src, err := ResolveDestination(root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if src != SourceConfig || dest != "/from/config" {
+	if src != SourceConfig || dest != fromConfig {
 		t.Errorf("config should be used, got %q from %v", dest, src)
 	}
 
 	// The flag still beats a saved config.
-	if dest, src, _ := ResolveDestination(root, "/from/flag"); src != SourceFlag || dest != "/from/flag" {
+	if dest, src, _ := ResolveDestination(root, fromFlag); src != SourceFlag || dest != fromFlag {
 		t.Errorf("flag must override config, got %q from %v", dest, src)
+	}
+}
+
+// The hook runs in each project's folder and the sweep in the system directory, so a
+// relative destination meant a copy of every session inside every repository.
+func TestResolveDestinationIsAbsolute(t *testing.T) {
+	root := t.TempDir()
+	dest, _, err := ResolveDestination(root, "relative-archive")
+	if err != nil || !filepath.IsAbs(dest) {
+		t.Errorf("a relative --archive must come back absolute, got %q (%v)", dest, err)
+	}
+	if err := SaveConfig(root, Config{Destination: "relative-archive"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ResolveDestination(root, ""); err == nil {
+		t.Error("a relative destination saved by an older version must be reported, not used")
+	}
+	if _, err := PrepareDestination(root, filepath.Join(t.TempDir(), "missing-parent", "archive")); err == nil {
+		t.Error("a destination whose parent does not exist must be refused")
 	}
 }
 

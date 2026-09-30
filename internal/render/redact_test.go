@@ -16,6 +16,10 @@ func TestRedactMasksCredentials(t *testing.T) {
 		"AIzaSyA1234567890abcdefghijklmnopqrstuv",
 		"xoxb-123456789012-abcdefghijkl",
 		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N",
+		"hf_abcdefghijklmnopqrstuvwxyzABCDEF12",
+		"npm_abcdefghijklmnopqrstuvwxyz0123456789",
+		"ya29.a0AfH6SMBabcdefghijklmnopqrstuvwxyz",
+		"SG.abcdefghijklmnopqrst.uvwxyzABCDEFGHIJKLMN",
 	} {
 		got := Redact("token here: " + secret + " end")
 		if strings.Contains(got, secret) {
@@ -30,6 +34,16 @@ func TestRedactMasksCredentials(t *testing.T) {
 		{"Authorization: Bearer abcdefghijkl", "Authorization: Bearer [REDACTED]"},
 		{"postgres://app:s3cretpass@db.local/prod", "postgres://app:[REDACTED]@db.local/prod"},
 		{"-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----", "[REDACTED]"},
+		// Formats that used to slip through.
+		{"-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBF\n-----END PGP PRIVATE KEY BLOCK-----", "[REDACTED]"},
+		{"key:\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA (truncated)", "key:\n[REDACTED]"},
+		{`{\"password\":\"hunter2hunter2\"}`, `{\"password\":\"[REDACTED]\"}`},
+		{`password = "correct horse battery staple"`, `password = "[REDACTED]"`},
+		{"DB_PASS=s3cretvalue", "DB_PASS=[REDACTED]"},
+		{"OPENAI_KEY=abcdef123456", "OPENAI_KEY=[REDACTED]"},
+		{"Cookie: session=abc123def456", "Cookie: [REDACTED]"},
+		{"AccountName=x;AccountKey=abcDEF123456==;", "AccountName=x;AccountKey=[REDACTED];"},
+		{"mysql://root:pa/ss@word1@db", "mysql://root:[REDACTED]@word1@db"},
 		// Ordinary prose and code survive.
 		{"the token count is high", "the token count is high"},
 		{"passwords must be hashed", "passwords must be hashed"},

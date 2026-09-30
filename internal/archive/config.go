@@ -44,8 +44,12 @@ const (
 // mount are all just paths. Anything undetected is passed with --archive and saved
 // with `claude-sessions config set-destination`.
 func ResolveDestination(claudeRoot, flagValue string) (string, Source, error) {
+	// Absolute, always. The hook runs in each project's folder and the sweep in the
+	// system directory, so a relative archive became a copy of every session inside
+	// every repository, and a sweep that failed silently.
 	if v := strings.TrimSpace(flagValue); v != "" {
-		return TrimSep(v), SourceFlag, nil
+		abs, err := filepath.Abs(TrimSep(v))
+		return abs, SourceFlag, err
 	}
 
 	cfg, err := LoadConfig(claudeRoot)
@@ -53,6 +57,10 @@ func ResolveDestination(claudeRoot, flagValue string) (string, Source, error) {
 		return "", SourceNone, err
 	}
 	if v := strings.TrimSpace(cfg.Destination); v != "" {
+		if !filepath.IsAbs(v) {
+			return "", SourceNone, fmt.Errorf("%s: destination %q is not an absolute path - run `claude-sessions config set-destination <folder>`",
+				ConfigPath(claudeRoot), v)
+		}
 		return TrimSep(v), SourceConfig, nil
 	}
 
@@ -205,6 +213,34 @@ func detect() string {
 
 // TrimSep removes trailing path separators so that comparisons and joins behave.
 func TrimSep(p string) string { return strings.TrimRight(p, `\/`) }
+
+// PrepareDestination checks a destination the user has just chosen, creates its
+// folder and returns it absolute.
+//
+// The folder is created, but never its parent: if the sync client is not mounted,
+// silently creating a plain local folder where G:\ should be is how people end up
+// believing they have a cloud backup that does not exist.
+func PrepareDestination(claudeRoot, dest string) (string, error) {
+	abs, err := filepath.Abs(TrimSep(strings.TrimSpace(dest)))
+	if err != nil {
+		return "", err
+	}
+	if st, err := os.Stat(filepath.Dir(abs)); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("%s does not exist - is the sync client mounted?", filepath.Dir(abs))
+	}
+	// Validate before creating anything: refusing after having made the directory
+	// leaves litter behind for a request that was rejected.
+	if err := ValidateDestination(claudeRoot, abs); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return "", err
+	}
+	if err := Writable(abs); err != nil {
+		return "", fmt.Errorf("%s is not writable: %w", abs, err)
+	}
+	return abs, nil
+}
 
 // ValidateDestination rejects an archive folder that would make the tool copy into
 // its own source.

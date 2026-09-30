@@ -12,9 +12,10 @@ go build ./...
 go test ./...
 ```
 
-Go 1.27+. No dependencies outside the standard library, and it should stay that way
-unless there is a strong reason — a single binary with nothing to install is the whole
-point.
+Go 1.21 or newer, as `go.mod` says; CI builds and tests with 1.21 as well as the
+current release. No dependencies outside the standard library, and it should stay that
+way unless there is a strong reason — a single binary with nothing to install is the
+whole point.
 
 Run it against a throwaway profile rather than your real one:
 
@@ -22,6 +23,11 @@ Run it against a throwaway profile rather than your real one:
 claude-sessions ls --claude-dir /tmp/fake-claude
 claude-sessions doctor --claude-dir /tmp/fake-claude --archive /tmp/fake-archive
 ```
+
+Pass `--archive` too, or save a destination in the throwaway profile. Without either,
+the destination is auto-detected — which on a machine with Google Drive or Dropbox
+finds your real archive. And do not run `install` or `uninstall` casually even with
+`--claude-dir`: they register and remove a real scheduled job on this machine.
 
 ## Non-negotiables
 
@@ -49,12 +55,20 @@ These are not style preferences. Each one comes from a real failure:
 ## Tests
 
 Every bug fix gets a test that fails without it. Run `go test ./...` before opening a
-PR; `gofmt -l .` must come back empty and `go vet ./...` must be clean.
+PR; `gofmt -l .` must come back empty and `go vet ./...` must be clean on every OS —
+see [Run this before pushing](#run-this-before-pushing).
 
 - `internal/claude` — unit tests for format handling. Add a case here whenever you meet
   a transcript shape that surprises you.
 - `cmd/claude-sessions` — end-to-end tests that build the real binary and run it
   against a synthetic profile. Prefer these for anything user-visible.
+
+**A test must never touch the real `~/.claude` or the real archive.** Give every
+command a temporary `--claude-dir`, and a destination of its own: the e2e fixture
+saves one into its throwaway profile for exactly this reason, because a command run
+without `--archive` otherwise falls back to auto-detection, which on a developer's
+machine finds their real Google Drive archive and writes to it. Clear
+`CLAUDE_CONFIG_DIR` in the child's environment, as `fixture.run` does.
 
 Test fixtures must be **hand-scrubbed**. Never commit a real transcript: they contain
 file contents, paths, and whatever you happened to be discussing.
@@ -86,7 +100,13 @@ for the reasoning:
 10. **Resolve system binaries by absolute path**, via `internal/hostagent.systemBinary`.
     `PATH` lookup is a privilege-escalation vector on Windows.
 11. **`doctor` must fail, not warn, on credentials found in an archive** — and it walks
-    the whole tree, because a recursive copy puts them inside a bucket, not at the root.
+    the whole tree at every depth, skipping only `html/`, because a recursive copy puts
+    them inside a bucket or a session folder, not at the root.
+12. **Treat everything read from the archive as untrusted.** Other machines, and anyone
+    the folder is shared with, write it. Validate names before joining them into paths,
+    never open a recorded path that is not local and absolute (`identity.Local`), never
+    follow a symlink in it (`archive.IsRealDir`, regular files only), and pass text
+    through `printable` before it reaches the terminal. SECURITY.md lists the rest.
 
 ## Gotchas that have already cost time
 
@@ -98,8 +118,12 @@ for the reasoning:
   this in `internal/claude/testdata`.
 - **`.gitignore` negations are anchored.** `!testdata/**/*.jsonl` only matches at the
   repository root; nested fixtures need `!**/testdata/**/*.jsonl`.
-- **Windows will not rename onto an existing file**, so atomic writes need the remove
-  and retry that `archive.WriteFileAtomic` implements.
+- **`os.Rename` does replace an existing file on Windows** (Go uses `MoveFileEx` with
+  `MOVEFILE_REPLACE_EXISTING`). Never delete the destination first to make room: an
+  earlier `archive.WriteFileAtomic` did, and a failed write became the loss of the file
+  already there. What Windows does refuse is replacing a *running* executable, so
+  `install` renames the old binary aside and puts it back if the new one cannot be
+  moved into place.
 
 ## Run this before pushing
 
@@ -117,5 +141,5 @@ already happened once: `ownsAction` lived in `install_windows.go` while its test
 not, and CI failed on two of three platforms while everything looked fine locally.
 
 Anything genuinely platform-independent — the plist, the systemd units, the cron line,
-the schtasks arguments, code-page and result-code handling — belongs in a file with no
+the Task Scheduler XML and its parsing, result-code handling — belongs in a file with no
 build tag, so it can be tested everywhere. See `internal/hostagent/spec.go`.

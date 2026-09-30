@@ -161,7 +161,7 @@ func TestJobNamesArePerProfile(t *testing.T) {
 }
 
 func TestTaskXML(t *testing.T) {
-	j := Job{Binary: `C:\Users\First Last\.claude\bin\claude-sessions.exe`, Profile: `D:\claude profiles\work`}
+	j := Job{Binary: `C:\Users\First Last\.claude\bin\claude-sessionsw.exe`, Profile: `D:\claude profiles\work`}
 	got := TaskXML(j, 30, time.Date(2026, 9, 16, 10, 0, 0, 0, time.Local))
 
 	def, err := parseTaskXML([]byte(got))
@@ -175,7 +175,7 @@ func TestTaskXML(t *testing.T) {
 	if def.Arguments != `push --quiet --claude-dir "D:\claude profiles\work"` {
 		t.Errorf("arguments = %q", def.Arguments)
 	}
-	if def.Enabled != "true" || !ownsAction(def.Command+" "+def.Arguments) {
+	if def.Enabled != "true" || !ownsTask(def) || taskProgram(def) != WindowlessName {
 		t.Errorf("parsed definition = %+v", def)
 	}
 	for _, want := range []string{

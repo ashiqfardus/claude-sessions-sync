@@ -50,8 +50,9 @@ func Resolve(recordedPath, leaf, remote string, scanner *Scanner) Match {
 	// The recorded path only counts when it is absolute for THIS operating system - a
 	// Linux "/home/me/api" on Windows would otherwise be looked up on the current
 	// drive - and when it is not demonstrably a different repository. The same path
-	// on two machines holding different repos used to be filed silently.
-	if recordedPath != "" && filepath.IsAbs(recordedPath) {
+	// on two machines holding different repos used to be filed silently. A network or
+	// device path from the archive is never touched at all - see Local.
+	if recordedPath != "" && Local(recordedPath) {
 		if st, err := os.Stat(recordedPath); err == nil && st.IsDir() {
 			local := Remote(recordedPath)
 			if remote == "" || local == "" || SameRemote(local, remote) {

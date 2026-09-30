@@ -37,7 +37,7 @@ func cmdSearch(args []string) error {
 	all := fs.Bool("all", false, "also search tool input, tool output and thinking")
 	limit := fs.Int("limit", 50, "stop after this many matches (0 = all)")
 	asJSON := fs.Bool("json", false, "machine-readable output")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args, true); err != nil {
 		return err
 	}
 
@@ -174,14 +174,14 @@ func cmdSearch(args []string) error {
 	lastSession := ""
 	for _, h := range hits {
 		if h.SessionID != lastSession {
-			fmt.Printf("\n%s  %s\n", h.Project, h.SessionID)
+			fmt.Printf("\n%s  %s\n", printable(h.Project), h.SessionID)
 			lastSession = h.SessionID
 		}
 		when := ""
 		if !h.When.IsZero() {
 			when = h.When.Local().Format("2006-01-02 15:04")
 		}
-		fmt.Printf("  %-16s %-9s %s\n", when, h.Role, h.Snippet)
+		fmt.Printf("  %-16s %-9s %s\n", when, h.Role, printable(h.Snippet))
 	}
 
 	fmt.Printf("\n%d match(es); %d session(s) searched, newest first.\n", len(hits), scanned)
@@ -191,8 +191,21 @@ func cmdSearch(args []string) error {
 	if unreadable > 0 {
 		fmt.Printf("%d transcript(s) could not be read.\n", unreadable)
 	}
-	fmt.Printf("Resume one with:  claude --resume %s\n", hits[0].SessionID)
+	if *archived {
+		fmt.Println("Archived sessions are resumable once filed here: claude-sessions import")
+	}
+	// Two steps rather than `&&`, which Windows PowerShell 5.1 does not parse.
+	fmt.Printf("Resume one with:  cd %s  then  claude --resume %s\n", shellPath(printable(hits[0].Project)), hits[0].SessionID)
 	return nil
+}
+
+// shellPath quotes a path for a cd the user will type. Go's %q escapes backslashes,
+// which turned E:\work\api into "E:\\work\\api" - not a path on Windows.
+func shellPath(p string) string {
+	if strings.ContainsAny(p, " '\"&;()$`") {
+		return `"` + p + `"`
+	}
+	return p
 }
 
 // snippet returns the match with a little context, on one line.
