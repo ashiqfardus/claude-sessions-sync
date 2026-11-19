@@ -22,7 +22,9 @@ Understanding the blast radius helps when judging severity:
   where they may be shared, indexed, or retained beyond your control.
 - `import` **scans directories across the machine** looking for project folders, and
   `import`, `pull` and `restore` **write files into `~/.claude/`** — transcripts and
-  memory read from the archive, which other machines write.
+  memory read from the archive, which other machines write. `import` and `pull` also
+  write global rules (`CLAUDE.md`), skills, agents and commands from the archive's
+  `profile/`, and **run `claude plugin install`** for plugins another machine enabled.
 - `install` **modifies `settings.json`** and **registers a scheduled job** that runs
   the copy of this binary in `~/.claude/bin` automatically. On Windows the job runs
   `claude-sessionsw.exe`, a copy of the same binary with its PE subsystem set to GUI so
@@ -74,6 +76,12 @@ though it needs write access to the archive. Enforced in code:
   elsewhere.
 - **Memory is only added, never replaced** unless `--update` is given, and never by a
   file dated in the future. Memory is loaded into every session as instructions.
+- **Rules, skills, agents and commands follow the same rule**, and are regular files
+  only: dot-files, `node_modules` and links are neither archived nor restored.
+- **Plugins from the archive are installed by id and source, validated first**: plugin
+  and marketplace names must be plain names, sources a GitHub `owner/repo` or an
+  `https://` URL, nothing that starts with `-`, and no shell is involved. Anyone who can
+  write the archive can still name a plugin to install; `--no-plugins` turns this off.
 - **Path moves read from a manifest must be absolute paths.** A move from `"e"` would
   otherwise rewrite every `e` in every imported transcript, and the result would still
   parse.

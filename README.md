@@ -453,6 +453,20 @@ works in `backend` too records both paths. `push` notes the other git repositori
 project's sessions touched, and `import` finds them on this machine **by git remote**
 and repoints those paths as well — including Git Bash forms like `/e/work/backend`.
 
+**Your rules, skills and plugins come too.** `push` also archives, under `profile/`:
+
+| What | From `~/.claude` | On import |
+|---|---|---|
+| Global rules | `CLAUDE.md` and every other top-level `.md` (the files it `@`-includes) | Added if missing; replaced only with `--update` and a newer copy |
+| Personal skills, agents, commands, output styles | `skills/`, `agents/`, `commands/`, `output-styles/` | Same rule |
+| Plugins | which plugins are enabled, and their marketplaces | Each one missing here is installed with `claude plugin install`; `--no-plugins` skips this |
+
+Left behind on purpose: `skills/synced/` (claude.ai account skills — Claude Code
+downloads them on login), dot-files such as `.env` and `.trash/`, `node_modules/`,
+`settings.json` (its hooks run tools at paths only the original machine has) and
+credentials. Transcripts that name the other machine's `~/.claude` — saved tool
+output, `CLAUDE.md`, a skill — are repointed to this machine's.
+
 **8c. Do it for real:**
 
 ```sh
@@ -667,7 +681,7 @@ Git remotes are read by **parsing `.git/config`, never by running git** — see
 |---|---|
 | `doctor` | Check everything. Exits non-zero on a real problem, so you can monitor it |
 | `config` | Show or set the archive folder |
-| `push` | Copy new and changed sessions to the archive, then render the pages |
+| `push` | Copy new and changed sessions, global rules, skills and the plugin list to the archive, then render the pages |
 | `install` / `uninstall` | Turn automatic archiving on or off |
 | `render` | Rebuild the HTML pages |
 | `ls` | List sessions (`--project`, `--since`, `--until`, `--limit`, `--archived`) |
@@ -703,6 +717,7 @@ Useful flags worth knowing:
 | `--archived` | `ls`, `search`, `stats` | Read the archive, which keeps sessions deleted locally |
 | `--all` | `search` | Also search tool commands, tool output and thinking |
 | `--update` | `import`, `pull`, `restore` | Also bring in sessions that continued on another machine, and newer memory |
+| `--no-plugins` | `import`, `pull` | Do not install plugins enabled on another machine |
 | `--quiet` | `push` | Hook mode: logs instead of printing, and **never fails** |
 | `--lock-wait` | `push` | With `--quiet`, how long to wait for another run (default 45s) |
 | `--no-html` | `push` | Archive without rendering readable pages |

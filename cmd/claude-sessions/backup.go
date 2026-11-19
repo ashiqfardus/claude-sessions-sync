@@ -24,7 +24,7 @@ import (
 // it over a working profile does more harm than good). Caches, downloads and plugin
 // installs are left out because Claude Code rebuilds them.
 var (
-	backupDirs  = []string{"projects", "agents", "commands", "skills", "output-styles"}
+	backupDirs  = append([]string{"projects"}, profileDirs...)
 	backupFiles = []string{"settings.json", "settings.local.json", "history.jsonl", "session-sync.json", "keybindings.json"}
 )
 

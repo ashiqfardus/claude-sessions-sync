@@ -9,6 +9,23 @@ Upgrading: run `claude-sessions install` again after updating the binary. The ho
 and the sweep run the copy in `~/.claude/bin`, so a new build does nothing until it
 is installed - and on Windows it is what replaces the sweep that flashed a terminal.
 
+### Added (2026-11-17)
+- **Global rules, skills and plugins travel with the sessions.** `push` archives
+  `CLAUDE.md` and the other top-level `.md` files beside it, `skills/`, `agents/`,
+  `commands/` and `output-styles/` under `profile/`, plus each machine's enabled plugins
+  and their marketplaces. `import` and `pull` restore them - added if missing, replaced
+  only with `--update` and a newer copy - and install each missing plugin with
+  `claude plugin install` (`--no-plugins` to skip). claude.ai account skills
+  (`skills/synced/`), dot-files, `node_modules` and `settings.json` stay behind.
+- `doctor` reports whether the profile is archived.
+
+### Fixed (2026-11-17)
+- **Saved tool output pointed at the other machine after an import.** A large tool
+  result is saved under `~/.claude/projects/...` and the transcript names it by absolute
+  path; import rewrote the project path but not the `~/.claude` in front of it, so on a
+  machine with a different home the path led nowhere. Each machine now records its
+  `~/.claude` in its manifest, and import repoints it.
+
 ### Fixed (review, 2026-09-30)
 - **The Windows sweep flashed a terminal window every run.** `install` now also writes
   `claude-sessionsw.exe`, a copy marked as a GUI program, and the task runs that, so no

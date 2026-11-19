@@ -212,6 +212,16 @@ func cmdDoctor(args []string) error {
 		}
 	}
 
+	// Global rules and skills: without them another machine resumes the sessions but
+	// not the way Claude was told to work.
+	if len(profileFiles(root)) > 0 {
+		if n := len(profileFiles(profileDir(dest))); n == 0 {
+			add(check{"profile", levelWarn, "global rules and skills are not archived yet", "Run `claude-sessions push`."})
+		} else {
+			add(check{"profile", levelOK, fmt.Sprintf("%d rule/skill file(s) archived", n), ""})
+		}
+	}
+
 	if memoryOnly > 0 {
 		add(check{"local buckets", levelInfo,
 			fmt.Sprintf("%d local bucket(s) hold memory but no transcripts", memoryOnly), ""})

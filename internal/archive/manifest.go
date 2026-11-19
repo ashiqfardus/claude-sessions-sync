@@ -73,6 +73,10 @@ type Shard struct {
 	Machine       string             `json:"machine"`
 	Projects      map[string]Project `json:"projects"`
 
+	// ClaudeRoot is the writer's ~/.claude. Transcripts name files under it - saved
+	// tool output, CLAUDE.md, skills - and import repoints those to its own.
+	ClaudeRoot string `json:"claudeRoot,omitempty"`
+
 	// RelatedIndexed records that every transcript has been scanned for related
 	// repositories once, so later pushes only scan the transcripts that changed.
 	RelatedIndexed bool `json:"relatedIndexed,omitempty"`

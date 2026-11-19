@@ -313,12 +313,8 @@ func restoreMemory(srcDir, dstDir string, dryRun, update bool) int {
 		dst := filepath.Join(dstDir, e.Name())
 		src := filepath.Join(srcDir, e.Name())
 
-		if dstInfo := archive.StatOrNil(dst); dstInfo != nil {
-			srcInfo, err := e.Info()
-			if !update || err != nil || srcInfo.ModTime().After(time.Now().Add(time.Hour)) ||
-				!archive.NeedsCopy(srcInfo, dstInfo) {
-				continue
-			}
+		if srcInfo, err := e.Info(); err != nil || !shouldRestore(srcInfo, dst, update) {
+			continue
 		}
 		if !dryRun {
 			if err := archive.CopyFile(src, dst); err != nil {

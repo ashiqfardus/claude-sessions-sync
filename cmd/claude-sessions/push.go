@@ -174,6 +174,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	shard := archive.Shard{
 		SchemaVersion: archive.SchemaVersion,
 		Machine:       machineName(),
+		ClaudeRoot:    root,
 		Projects:      map[string]archive.Project{},
 	}
 	var sessions []archive.Session
@@ -290,6 +291,11 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 			res.Projects++
 		}
 	}
+
+	// Global rules, skills and the plugin list, so another machine behaves the same.
+	pc, pu := pushProfile(root, dest, dryRun, logf)
+	res.Copied += pc
+	res.Unchanged += pu
 
 	if !dryRun {
 		sessions = keepArchivedHistory(dest, &shard, sessions)

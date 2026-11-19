@@ -38,6 +38,7 @@ func cmdImport(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "report what would happen without writing")
 	bareName := fs.Bool("include-bare-name", false, "also replace the bare folder name inside transcripts")
 	update := fs.Bool("update", false, updateHelp)
+	noPlugins := fs.Bool("no-plugins", false, noPluginsHelp)
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
@@ -134,6 +135,14 @@ func cmdImport(args []string) error {
 			if m.How == identity.ByGitRemote && !samePath(r.Path, m.Path) {
 				moves = append(moves, rewrite.Move{From: r.Path, To: m.Path})
 			}
+		}
+	}
+	// Each machine's own ~/.claude, named by saved tool output and by references to
+	// CLAUDE.md and skills, becomes this one's - those files are restored here too.
+	shards, _, _ := archive.ReadShards(dest)
+	for _, s := range shards {
+		if s.ClaudeRoot != "" && !samePath(s.ClaudeRoot, root) {
+			moves = append(moves, rewrite.Move{From: s.ClaudeRoot, To: root})
 		}
 	}
 
@@ -269,6 +278,8 @@ func cmdImport(args []string) error {
 		}
 	}
 
+	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
+
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -283,6 +294,7 @@ func cmdImport(args []string) error {
 		fmt.Printf(", %d updated", updated)
 	}
 	fmt.Printf(". %d same layout, %d not found, %d ambiguous.\n", sameLayout, notFound, ambiguous)
+	printProfile(profile, *dryRun)
 	if !*update && sameLayout+filed > 0 {
 		fmt.Println("Sessions already here are never replaced; --update refreshes ones that continued elsewhere.")
 	}
@@ -387,6 +399,7 @@ func cmdPull(args []string) error {
 	archiveDir := fs.String("archive", "", "override the synced destination folder")
 	dryRun := fs.Bool("dry-run", false, "report what would be copied without writing")
 	update := fs.Bool("update", false, updateHelp)
+	noPlugins := fs.Bool("no-plugins", false, noPluginsHelp)
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
@@ -475,12 +488,15 @@ func cmdPull(args []string) error {
 			filepath.Join(projectsDir, targetName, "memory"), *dryRun, *update)
 	}
 
+	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
+
 	fmt.Printf("\n%s %d transcript(s) and %d memory file(s), %d already present.\n",
 		verbFor(*dryRun), pulled, memory, already)
 	if updated > 0 {
 		fmt.Printf("updated %d session(s) that continued on another machine\n", updated)
 	}
 	printDiverged(forked)
+	printProfile(profile, *dryRun)
 	fmt.Println("pull files by bucket name only. If a project lives at a different path here,")
 	fmt.Println("use `claude-sessions import`, which matches by identity and rewrites paths.")
 	return nil

@@ -71,6 +71,12 @@ func StatePath(root string) string {
 	return inRoot
 }
 
+// IsDefaultRoot reports whether root is the default profile, ~/.claude.
+func IsDefaultRoot(root string) bool {
+	home, err := os.UserHomeDir()
+	return err == nil && isDefaultRoot(root, home)
+}
+
 // isDefaultRoot reports whether root is ~/.claude, compared as a folder so that an
 // 8.3 short path or a symlink to it counts.
 func isDefaultRoot(root, home string) bool {
