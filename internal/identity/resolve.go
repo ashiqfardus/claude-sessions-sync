@@ -25,6 +25,8 @@ const (
 	ByRecordedPath How = "recorded path"
 	ByGitRemote    How = "git remote"
 	ByFolderName   How = "folder name"
+	ByHomeFolder   How = "home folder" // another machine's home is this one's, by definition
+	ByManual       How = "manual map"  // the user said where it lives: `config map`
 	NotFound       How = "not found"
 	Ambiguous      How = "ambiguous"
 )
