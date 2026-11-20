@@ -51,6 +51,30 @@ func TestRemoveOrphanTempsCoversForksAndProfile(t *testing.T) {
 	}
 }
 
+// A run reading the lock file while the holder releases it - routine for a waiting
+// run - left the file behind on Windows, where an open file cannot be deleted: the
+// waiter then timed out on a lock nobody held (TestAcquireLockWait, flaky there).
+// On macOS and Linux an open file can be deleted, so this only bites on Windows.
+func TestReleaseRemovesTheLockWhileAnotherRunHasItOpen(t *testing.T) {
+	root := t.TempDir()
+	l, err := AcquireLock(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(filepath.Join(root, "session-sync.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		f.Close()
+	}()
+	l.Release()
+	if _, err := os.Stat(filepath.Join(root, "session-sync.lock")); err == nil {
+		t.Fatal("the lock file outlived its release")
+	}
+}
+
 // 11. An entry from the PowerShell tool's projects.json keeps the machine it names,
 // which is who wrote its sessions.
 func TestLegacyEntryKeepsItsMachine(t *testing.T) {

@@ -163,7 +163,16 @@ func (l *Lock) Release() {
 	}
 	l.once.Do(func() { close(l.stop) })
 	if l.owned() {
-		os.Remove(l.path)
+		// Windows refuses to delete a file another process has open at that instant
+		// - a waiting run reading who holds the lock - and the refusal used to be
+		// dropped: the lock stayed, held in name by a run that had finished, and the
+		// waiter timed out. So the delete is retried for a moment.
+		for i := 0; i < 20; i++ {
+			if err := os.Remove(l.path); err == nil || os.IsNotExist(err) {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
 	}
 }
 
