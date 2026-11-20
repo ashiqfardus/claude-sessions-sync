@@ -75,10 +75,13 @@ type Result struct {
 // that is killed - the SessionEnd hook's timeout - keeps what it finished.
 const stateSaveEvery = 10 * time.Second
 
+// now is the clock the render budget is measured with; a test replaces it.
+var now = time.Now
+
 // Archive renders every transcript in the archive.
 func Archive(dest string, opts Options) (Result, error) {
 	res := Result{OutputDir: filepath.Join(dest, "html")}
-	start := time.Now()
+	start := now()
 
 	// Pages are written into, and withdrawn from, html/<bucket>. If html - or a bucket
 	// folder in it - is a symlink planted in the shared archive, those writes and
@@ -186,7 +189,7 @@ func Archive(dest string, opts Options) (Result, error) {
 			if ps, ok := prev.Pages[key]; ok && !opts.Force && prev.Version == templateVersion && ps.Size == info.Size() {
 				known = &ps
 			}
-			mayRender := opts.Budget <= 0 || time.Since(start) < opts.Budget
+			mayRender := opts.Budget <= 0 || now().Sub(start) < opts.Budget
 			page, err := renderOne(read, project, id, known, out, info, mayRender)
 			if err == nil && !page.deferred {
 				next.Pages[key] = pageState{Size: info.Size(), Prompt: page.prompt}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // The SessionEnd hook is killed after 120 seconds. A first render of a large archive
@@ -24,8 +25,14 @@ func TestRenderBudgetDefersAndResumes(t *testing.T) {
 		}
 	}
 
-	// A budget that is already spent: nothing new is rendered.
-	res, err := Archive(dest, Options{Budget: 1})
+	// A budget that is already spent: nothing new is rendered. The clock jumps an hour
+	// at every reading: a 1ns budget was not always spent on Windows, whose clock can
+	// report no time passing at all.
+	real := now
+	t.Cleanup(func() { now = real })
+	at := real()
+	now = func() time.Time { at = at.Add(time.Hour); return at }
+	res, err := Archive(dest, Options{Budget: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +47,7 @@ func TestRenderBudgetDefersAndResumes(t *testing.T) {
 	if res.Rendered != 3 || res.Deferred != 0 {
 		t.Fatalf("the next pass did not render what was deferred: %+v", res)
 	}
-	if res, _ := Archive(dest, Options{Budget: 1}); res.UpToDate != 3 || res.Deferred != 0 {
+	if res, _ := Archive(dest, Options{Budget: time.Second}); res.UpToDate != 3 || res.Deferred != 0 {
 		t.Errorf("current pages were deferred instead of listed: %+v", res)
 	}
 }
