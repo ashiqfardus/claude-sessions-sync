@@ -145,19 +145,20 @@ would be a "backup" that never leaves the computer.
 
 It runs on Windows 10 or later, macOS and Linux.
 
-**The latest release, v0.2.2, is older than this guide.** It lacks per-reply backup,
-forks, `config map`, memory merging, `backup`, `--archived` and more. Until the next
-release is tagged, build it with Go 1.21 or newer ([download Go](https://go.dev/dl/)):
+**Download** the file for your system from the
+[Releases page](https://github.com/ashiqfardus/claude-sessions-sync/releases): a `.zip`
+for Windows, a `.tar.gz` for macOS and Linux, for amd64 (Intel and AMD) or arm64
+(Apple silicon, ARM). Unpack it and put `claude-sessions` (`claude-sessions.exe` on
+Windows) in a folder on your `PATH`. No other software is needed. This guide describes
+**v0.3.0** and later; older releases lack most of it.
+
+**Or build it** with Go 1.21 or newer ([download Go](https://go.dev/dl/)):
 
 ```sh
-go install github.com/ashiqfardus/claude-sessions-sync/cmd/claude-sessions@main
+go install github.com/ashiqfardus/claude-sessions-sync/cmd/claude-sessions@latest
 ```
 
 or, from a clone of this repository, `go install ./cmd/claude-sessions`.
-
-Once a newer release is tagged, you can instead download the binary for your system
-from the [Releases page](https://github.com/ashiqfardus/claude-sessions-sync/releases)
-and put `claude-sessions` (`claude-sessions.exe` on Windows) on your `PATH`.
 
 Check it:
 

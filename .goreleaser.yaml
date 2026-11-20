@@ -46,5 +46,8 @@ release:
   footer: |
     ## Platform support
 
-    Windows is the only platform used day to day by the author. macOS and Linux
-    builds pass CI but have had little real-world exercise - reports welcome.
+    Used day to day on Windows and macOS. Linux builds pass CI, including a real
+    install, but have had less real-world use - reports welcome.
+
+    After installing a new version, run `claude-sessions install` again on every
+    machine, and use the same version on all of them.

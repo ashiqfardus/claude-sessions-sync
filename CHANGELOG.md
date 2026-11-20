@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20
+
 Upgrading: run `claude-sessions install` again after updating the binary. The hook
 and the sweep run the copy in `~/.claude/bin`, so a new build does nothing until it
 is installed - and on Windows it is what replaces the sweep that flashed a terminal.
