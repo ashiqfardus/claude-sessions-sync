@@ -30,6 +30,11 @@ type Config struct {
 	// Machine pins the name this machine is known by in the archive. Saved here, not
 	// in the environment: the sweep, launched by the system, sees no shell profile.
 	Machine string `json:"machine,omitempty"`
+
+	// FormerMachines are names this machine went by before. Its own files in the
+	// archive still carry them; taken for another machine's, they came back to it as
+	// forks, and its memory was merged as a stranger's.
+	FormerMachines []string `json:"formerMachines,omitempty"`
 }
 
 // Mapped is the local folder the user mapped an archived bucket to, if any. Bucket
@@ -126,6 +131,9 @@ func SaveConfig(claudeRoot string, c Config) error {
 	}
 	if c.Machine != "" {
 		merged["machine"] = c.Machine
+	}
+	if c.FormerMachines != nil {
+		merged["formerMachines"] = c.FormerMachines
 	}
 
 	data, err := json.MarshalIndent(merged, "", "  ")

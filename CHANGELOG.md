@@ -14,7 +14,7 @@ Do it on every machine: mixed versions file forks as ordinary sessions. To go ba
 to an older version, run `uninstall` with this one first - an older `uninstall`
 leaves the per-reply Stop hook in place. The first `import --update` after upgrading
 has no record of what each machine already took, so a memory entry or file deleted
-before the upgrade can come back once. Home folders match only once both machines
+before the upgrade can come back once (the same for a rule or skill file). Home folders match only once both machines
 have pushed with this version.
 
 ### Added (2026-11-20)
@@ -130,6 +130,37 @@ have pushed with this version.
 - A per-reply push that gave up was not logged (now at most once an hour), and
   half-written files under `forks/`, `profile/` and `memory/` were never cleaned up.
 - With archives in two accounts, macOS detection still fell back to the Google one.
+
+### Fixed in fourth review (2026-11-20)
+- A memory entry or file deleted here came back from a machine that had taken it from
+  this one, which offered it as its own addition. Every entry and memory file a machine
+  has held is now recorded in `~/.claude/session-sync-base/`, and what is in that
+  record and missing here stays deleted, whoever offers it back.
+- A fork deleted here came back once the sweep had pushed it: it was filed again from
+  this machine's own archived copy. It now comes back only if turns were added to it.
+- A machine whose name changed (`config set-machine`, or a macOS host name that
+  drifted) took its own files in the archive for another machine's: its own
+  conversation came back as a fork, other machines filed its forks a second time, and
+  its old memory copy was merged as a stranger's. The name is now saved by the first
+  push; `set-machine` remembers the old name as this machine's, and records it in the
+  manifest, so other machines keep the forks they filed under it.
+- `import --update` from an unzipped backup wrote `profile/replaced/` into the backup,
+  after which a second import from it restored no rules. Nothing is written into a
+  backup now; a replaced local file is kept in
+  `~/.claude/session-sync-base/replaced/<time>/`.
+- Importing a backup now repoints paths under the old `~/.claude` and matches the old
+  home folder, from the backup's `MANIFEST.txt` (which now records the home folder).
+- `doctor` missed a background sweep that macOS had refused from its very first run.
+  Every log line of a sweep is now marked, not only its PUSH line.
+- A sync app's conflict copy of a transcript (`<id> (conflicted copy).jsonl`) was filed
+  as a session of its own. Only files named by a session id are filed.
+- Machine names read from file names in the archive are printed without control
+  characters.
+- A rule or skill file deleted here after this machine had it is no longer brought
+  back by another machine's copy (a backup still restores everything in it). A plugin
+  turned off here is no longer installed because another machine has it on.
+- Windows: releasing the lock while a waiting run was reading it left the lock file
+  behind, and the waiting run timed out.
 
 ### Fixed (2026-11-20, after the README fact-check)
 - Importing an unzipped `backup` brought back sessions and memory but not rules,

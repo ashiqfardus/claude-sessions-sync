@@ -62,7 +62,8 @@ Three things go wrong with that:
   added arrives, and what either deleted stays deleted. Other memory files take the
   newer copy.
 - Rules, skills and plugins come too. Plugins enabled on the other computer are
-  installed for you.
+  installed for you. A rule or skill you delete, or a plugin you turn off, on this
+  computer stays that way here.
 
 **Lets you read and find old conversations**
 - Writes readable HTML pages and an `INDEX.md`, with common credentials masked. You
@@ -387,19 +388,21 @@ archived.)
     it. That record is kept in `~/.claude/session-sync-base/`.
   - Any other memory file is replaced only by a newer copy, and the old one is kept in
     `memory/.replaced/<time>/`.
-  - A memory file you deleted here is not brought back, and a file dated in the future
-    is always refused.
+  - A memory entry or file you deleted here is not brought back, even by a computer
+    that took it from this one. A file dated in the future is always refused.
 - **Your home folder matches your home folder.** `C:\Users\you` and `/Users/you` are
   matched as the same place, whatever the usernames, once the other computer has
   pushed with this version.
 - **Other repositories a session worked in** (a multi-folder workspace) are repointed
   too, but only to a same-named folder whose git remote matches.
-- **Rules and skills:** a file missing here is added. One that exists is replaced only
-  with `--update` and a newer copy, and the output says so. This computer's version is
-  saved first in the archive under `profile/replaced/<computer>/<time>/`.
-- **Plugins** enabled on the other computer and missing here are installed with
-  `claude plugin install`, which needs `claude` on your `PATH`; plugins from a
-  marketplace on a local path are skipped. Use `--no-plugins` to skip all of it.
+- **Rules and skills:** a file missing here is added, unless you deleted it here after
+  this computer had it. One that exists is replaced only with `--update` and a newer
+  copy, and the output says so. This computer's version is saved first in the archive
+  under `profile/replaced/<computer>/<time>/`.
+- **Plugins** enabled on the other computer and not listed here are installed with
+  `claude plugin install`, which needs `claude` on your `PATH`. A plugin turned off
+  here is left off. Plugins from a marketplace on a local path are skipped. Use
+  `--no-plugins` to skip all of it.
 
 ---
 
@@ -445,17 +448,18 @@ rewrote still counts as the same conversation.
 - **Run the same version everywhere.** An older version files another computer's fork
   copies as ordinary sessions, and on a shared path still overwrites the other
   computer's archived copy. `doctor` names any computer on a different version.
-- **Each computer has a name** in the archive: its host name and user name. A macOS
-  host name can change with the network (a `-2` added after a clash), and a computer
-  under a new name looks like another computer. To pin it:
+- **Each computer has a name** in the archive: its host name and user name, saved in
+  `session-sync.json` by its first push. A macOS host name can change with the network
+  (a `-2` added after a clash); the saved name does not. To choose another:
 
   ```sh
   claude-sessions config set-machine my-macbook
   ```
 
-  This is saved in `session-sync.json`, so the hooks and the sweep all use it. If you
-  rename a computer that has already pushed, run `claude-sessions push`, then
-  `claude-sessions machines --forget <old name>`.
+  The hooks and the sweep use it too. The old name is remembered as this computer's,
+  so its files in the archive are still its own, and other computers keep the forks
+  they filed under it. Then run `claude-sessions push`, and
+  `claude-sessions machines --forget <old name>` so the list stops showing it.
 - `claude-sessions machines` lists every computer that has pushed, with its newest
   session. `machines --forget <name>` removes a retired one's manifest and index; its
   sessions stay.
@@ -485,9 +489,11 @@ claude-sessions import --archive "E:\claude-backup" --search-root "E:\work"
 ```
 
 That brings back the sessions and memory, your rules, skills, agents, commands and
-output styles (by the same rules as any import: added if missing, replaced only with
-`--update` and a newer copy), and installs the plugins that were enabled, unless you
-pass `--no-plugins`. Three things stay in the zip on purpose, for you to copy if you
+output styles (added if missing, even if you deleted them since; replaced only with
+`--update` and a newer copy, keeping this computer's version in
+`~/.claude/session-sync-base/replaced/<time>/`), and installs the plugins that were
+enabled, unless you pass `--no-plugins`. Nothing is written into the backup folder,
+and paths under the old `~/.claude` and home folder are repointed. Three things stay in the zip on purpose, for you to copy if you
 want them:
 - `settings.json`, whose hooks run programs at paths only the old computer has;
 - `settings.local.json` and `keybindings.json`;
@@ -509,8 +515,8 @@ rather than adding more. Do it on **every** computer.
 
 After upgrading from an older version:
 - **The first `import --update` has no record yet** of what each computer already
-  took. A memory entry or file deleted on one computer before the upgrade can come
-  back once. Delete it again and it stays deleted.
+  took. A memory entry or file, rule or skill deleted on one computer before the
+  upgrade can come back once. Delete it again and it stays deleted.
 - **Home folders are matched** only after the other computer has pushed with this
   version.
 

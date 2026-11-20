@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"regexp"
 )
 
 // Relation is how two copies of one session relate to each other.
@@ -92,6 +93,27 @@ func appendedTo(a, b string) bool {
 
 // lastUUID is the uuid of the newest entry that has one, read from the file's end,
 // and how many entries without one follow it.
+// LastUUID is the uuid of a transcript's last entry, "" when it has none.
+func LastUUID(path string) string {
+	u, _ := lastUUID(path)
+	return u
+}
+
+// sessionIDRe is the form of every session id Claude Code writes.
+var sessionIDRe = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+
+// IsSessionID reports whether id is a session id: a sync client's conflict copy,
+// "<id> (conflicted copy).jsonl", is not one.
+func IsSessionID(id string) bool { return sessionIDRe.MatchString(id) }
+
+// legacyAgentRe names a subagent transcript as older Claude Code versions kept it,
+// beside the sessions: agent-<id>.jsonl.
+var legacyAgentRe = regexp.MustCompile(`^agent-[0-9A-Fa-f]{4,}$`)
+
+// IsTranscriptID reports whether a .jsonl file named id at the top of a project
+// folder is one Claude Code wrote: a session, or an older version's subagent.
+func IsTranscriptID(id string) bool { return IsSessionID(id) || legacyAgentRe.MatchString(id) }
+
 func lastUUID(path string) (uuid string, trailing int) {
 	const tail = 4 << 20 // one entry can hold a large tool result
 	f, err := os.Open(path)

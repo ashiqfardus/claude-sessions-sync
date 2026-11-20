@@ -207,8 +207,8 @@ func addToZip(zw *zip.Writer, root, rel string) error {
 
 func manifestText(root string, buckets []claude.Bucket, transcripts int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, backupMarker+"\ncreated   %s\nmachine   %s\nsource    %s\n",
-		time.Now().Format("2006-01-02 15:04:05"), machineName(), root)
+	fmt.Fprintf(&b, backupMarker+"\ncreated   %s\nmachine   %s\nsource    %s\nhome      %s\n",
+		time.Now().Format("2006-01-02 15:04:05"), machineName(), root, userHome())
 	b.WriteString("excluded  .credentials.json, .claude.json (by design)\n\ntranscripts per project bucket:\n")
 	for _, bk := range buckets {
 		fmt.Fprintf(&b, "  %-50s %d\n", bk.Name, len(bk.Transcripts))

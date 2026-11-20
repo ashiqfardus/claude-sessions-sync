@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -168,6 +169,14 @@ flags:
 		}
 		previous := machineName()
 		cfg.Machine = name
+		// The old name stays this machine's: its files in the archive carry it.
+		var former []string
+		for _, f := range append(cfg.FormerMachines, previous) {
+			if !strings.EqualFold(f, name) && !slices.ContainsFunc(former, func(x string) bool { return strings.EqualFold(x, f) }) {
+				former = append(former, f)
+			}
+		}
+		cfg.FormerMachines = former
 		if err := archive.SaveConfig(root, cfg); err != nil {
 			return err
 		}

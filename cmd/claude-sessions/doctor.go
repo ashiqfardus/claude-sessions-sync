@@ -440,9 +440,11 @@ func deniedSincePush(root string) (string, bool) {
 	}
 	mark := strings.TrimSpace(sweepMark)
 	lines := strings.Split(string(raw), "\n")
+	// Any line a sweep marked shows a marking sweep is installed - its PUSH, or the
+	// refusal of one that has never once been allowed.
 	sweeps := false
 	for _, l := range lines {
-		if _, rest, _ := strings.Cut(l, "  "); strings.HasPrefix(rest, "PUSH:") && strings.HasSuffix(strings.TrimSpace(rest), mark) {
+		if strings.HasSuffix(strings.TrimSpace(l), mark) {
 			sweeps = true
 			break
 		}
@@ -607,7 +609,7 @@ func resolveRoot(override string) (string, claude.RootSource, error) {
 	// its profile, so every name it writes agrees.
 	if err == nil {
 		if cfg, cerr := archive.LoadConfig(root); cerr == nil {
-			savedMachine = cfg.Machine
+			savedMachine, formerMachines = cfg.Machine, cfg.FormerMachines
 		}
 	}
 	return root, src, err

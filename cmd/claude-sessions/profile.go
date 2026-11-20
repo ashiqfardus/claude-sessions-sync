@@ -25,6 +25,7 @@ import (
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 )
 
 var profileDirs = []string{"skills", "agents", "commands", "output-styles"}
@@ -117,7 +118,11 @@ func replacedDir(dest, machine string) string {
 // through.
 func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (copied, unchanged int) {
 	own := machineProfileDir(dest, machineName())
-	for _, rel := range profileFiles(root) {
+	files := profileFiles(root)
+	if !dryRun {
+		noteHeldProfile(root, files)
+	}
+	for _, rel := range files {
 		src := filepath.Join(root, filepath.FromSlash(rel))
 		dst := filepath.Join(profileDir(dest), filepath.FromSlash(rel))
 		info, err := os.Stat(src)
@@ -160,6 +165,8 @@ func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (cop
 type profileResult struct {
 	Files    []string    // profile files filed here
 	Replaced []string    // of those, local files that differed and were replaced
+	From     string      // whose copies replaced them, for the report
+	KeptIn   string      // where the replaced local files are kept
 	Plugins  []pluginRun // plugins enabled on another machine and missing here
 }
 
@@ -182,25 +189,39 @@ func (p pluginRun) Command() string { return "claude " + strings.Join(p.Args, " 
 // settings.json names the plugins that were enabled. That settings.json itself is
 // never restored: its hooks run programs at paths only the old machine has.
 func restoreProfile(root, dest string, dryRun, update, installPlugins bool) profileResult {
-	var res profileResult
+	res := profileResult{From: "another machine's newer copy", KeptIn: replacedDir(dest, machineName())}
 	src := profileDir(dest)
 	pluginLists := archivedPluginLists(src)
-	if !archive.IsRealDir(src) && isBackup(dest) {
+	// Checked first, and nothing is written into a backup: a profile/replaced/ folder
+	// written there made it look like an archive with an empty profile, so the next
+	// import from it restored no rules at all. Replaced files are kept here instead.
+	backup := isBackup(dest)
+	if backup {
 		src = dest
 		pluginLists = nil
 		if st, err := os.Lstat(filepath.Join(dest, "settings.json")); err == nil && st.Mode().IsRegular() {
 			pluginLists = []string{filepath.Join(dest, "settings.json")}
 		}
+		res.From = "the backup's newer copy"
+		res.KeptIn = filepath.Join(root, "session-sync-base", "replaced", time.Now().Format("20060102-150405"))
 	}
 	if !archive.IsRealDir(src) {
 		return res
 	}
-	keep := replacedDir(dest, machineName())
+	// A file deleted here after this machine had it is not brought back by another
+	// machine's copy. A backup is restored whole: bringing files back is its purpose.
+	held := map[string]bool{}
+	if !backup {
+		held = loadHeldProfile(root)
+	}
 	for _, rel := range profileFiles(src) {
 		from := filepath.Join(src, filepath.FromSlash(rel))
 		to := filepath.Join(root, filepath.FromSlash(rel))
 		info, err := os.Stat(from)
 		if err != nil || !shouldRestore(info, to, update) {
+			continue
+		}
+		if held[rel] && archive.StatOrNil(to) == nil {
 			continue
 		}
 		// A local file that differs is another machine's version winning over this
@@ -216,7 +237,7 @@ func restoreProfile(root, dest string, dryRun, update, installPlugins bool) prof
 		}
 		if !dryRun {
 			if replacing {
-				if err := archive.CopyFile(to, filepath.Join(keep, filepath.FromSlash(rel))); err != nil {
+				if err := archive.CopyFile(to, filepath.Join(res.KeptIn, filepath.FromSlash(rel))); err != nil {
 					continue // never replace what could not be kept
 				}
 			}
@@ -228,6 +249,9 @@ func restoreProfile(root, dest string, dryRun, update, installPlugins bool) prof
 			res.Replaced = append(res.Replaced, rel)
 		}
 		res.Files = append(res.Files, rel)
+	}
+	if !dryRun {
+		noteHeldProfile(root, profileFiles(root))
 	}
 
 	if !installPlugins {
@@ -278,11 +302,11 @@ var (
 // missingPlugins combines every machine's plugin list and returns the plugins enabled
 // somewhere and not enabled locally, each with the arguments that install it.
 func missingPlugins(lists []string, local pluginList) []pluginRun {
+	// Listed here at all, enabled or not, is settled here: a plugin turned off on this
+	// machine is not installed again because another machine has it on.
 	seen := map[string]bool{}
-	for id, v := range local.EnabledPlugins {
-		if v != false {
-			seen[strings.ToLower(id)] = true
-		}
+	for id := range local.EnabledPlugins {
+		seen[strings.ToLower(id)] = true
 	}
 	var out []pluginRun
 	for _, path := range lists {
@@ -323,6 +347,59 @@ func archivedPluginLists(profile string) []string {
 		}
 	}
 	return out
+}
+
+// heldProfilePath records every rule and skill file this machine has had, by path
+// relative to ~/.claude: what is in it and missing here was deleted here.
+func heldProfilePath(root string) string {
+	return filepath.Join(root, "session-sync-base", "profile-held.json")
+}
+
+func loadHeldProfile(root string) map[string]bool {
+	m := map[string]bool{}
+	if raw, err := os.ReadFile(heldProfilePath(root)); err == nil {
+		_ = json.Unmarshal(raw, &m)
+	}
+	return m
+}
+
+// noteHeldProfile adds files, the profile here now, to the record.
+func noteHeldProfile(root string, files []string) {
+	m := loadHeldProfile(root)
+	changed := false
+	for _, f := range files {
+		if !m[f] {
+			m[f], changed = true, true
+		}
+	}
+	if changed {
+		if data, err := json.MarshalIndent(m, "", "  "); err == nil {
+			_ = archive.WriteFileAtomic(heldProfilePath(root), append(data, '\n'), 0o644)
+		}
+	}
+}
+
+// backupOrigin is the profile and home folder an unzipped backup was made from, as
+// its MANIFEST.txt records them: a backup has no shard to say so. "" for what it
+// does not record, or records as anything but a full path.
+func backupOrigin(dest string) (claudeRoot, home string) {
+	if !isBackup(dest) {
+		return "", ""
+	}
+	raw, _ := os.ReadFile(filepath.Join(dest, "MANIFEST.txt"))
+	for _, l := range strings.Split(string(raw), "\n") {
+		k, v, _ := strings.Cut(strings.TrimRight(l, "\r"), " ")
+		if v = strings.TrimSpace(v); !rewrite.AbsoluteAnywhere(v) {
+			continue
+		}
+		switch k {
+		case "source":
+			claudeRoot = v
+		case "home":
+			home = v
+		}
+	}
+	return claudeRoot, home
 }
 
 // isBackup reports whether dest is an unzipped `claude-sessions backup`, by the first
@@ -420,8 +497,7 @@ func printProfile(res profileResult, dryRun bool) {
 	}
 	fmt.Println()
 	for _, rel := range res.Replaced {
-		fmt.Printf("  ! %s replaced: it differed from another machine's newer copy (this machine's is kept in the archive under profile/replaced/%s/)\n",
-			rel, machineName())
+		fmt.Printf("  ! %s replaced: it differed from %s (this machine's is kept in %s)\n", rel, res.From, res.KeptIn)
 	}
 	for _, p := range res.Plugins {
 		marker := "+"
