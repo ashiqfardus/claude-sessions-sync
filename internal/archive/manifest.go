@@ -47,6 +47,19 @@ type Project struct {
 	// sibling folders of a multi-folder workspace. import repoints paths into them
 	// too, which it can only do if it knows where they were and what they are.
 	Related []Related `json:"related,omitempty"`
+
+	// recordedBy is the machine a projects.json entry names, kept when Machine is set
+	// to legacyMachine to rank it below every shard.
+	recordedBy string
+}
+
+// Owner is the machine whose sessions the entry describes: for an entry from the
+// PowerShell tool's projects.json, the machine it names.
+func (p Project) Owner() string {
+	if p.Machine == legacyMachine {
+		return p.recordedBy
+	}
+	return p.Machine
 }
 
 // Related is one other repository a project's sessions touched. Only git
@@ -77,9 +90,18 @@ type Shard struct {
 	// tool output, CLAUDE.md, skills - and import repoints those to its own.
 	ClaudeRoot string `json:"claudeRoot,omitempty"`
 
+	// Home is the writer's home folder, which import files as this machine's. It is
+	// recorded, not inferred from ClaudeRoot: a profile named .claude can sit anywhere.
+	Home string `json:"home,omitempty"`
+
 	// RelatedIndexed records that every transcript has been scanned for related
 	// repositories once, so later pushes only scan the transcripts that changed.
 	RelatedIndexed bool `json:"relatedIndexed,omitempty"`
+
+	// ToolVersion is the claude-sessions build that wrote the shard. Mixed versions
+	// fail silently - an older machine pushes no profile - so doctor names them. A
+	// shard without it was written by a build older than the field.
+	ToolVersion string `json:"toolVersion,omitempty"`
 
 	// Sessions is only read from shards written before the index was split out into
 	// its own file. New pushes write index/<machine>.json instead: session rows grow
@@ -385,7 +407,7 @@ func Merged(dest string) (map[string]Project, []string, error) {
 		if _, hasShard := shards[p.Machine]; hasShard {
 			continue
 		}
-		p.Machine = legacyMachine
+		p.recordedBy, p.Machine = p.Machine, legacyMachine
 		out[bucket] = p
 	}
 
