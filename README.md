@@ -1,8 +1,8 @@
 # claude-sessions-sync
 
 Back up your [Claude Code](https://claude.com/claude-code) conversations to any synced
-folder, read them as web pages, and put them back on any machine — **matched by
-project identity, not by file path**.
+folder, read them as web pages, and carry on with them on another computer, even when
+the project lives at a different path there.
 
 ---
 
@@ -16,335 +16,283 @@ Claude Code keeps every conversation as a file on your computer:
 
 Three things go wrong with that:
 
-1. **They only exist on that one computer.** No cloud copy, nothing on your phone.
+1. **They exist only on that one computer.** No cloud copy, nothing on your phone.
 2. **They get deleted.** Claude Code removes transcripts after `cleanupPeriodDays`,
-   which defaults to **30**. Most people never change it.
-3. **They are tied to a folder path.** The same project at `D:\work\api` on your
-   desktop and `~/dev/api` on your laptop counts as two different projects, so
-   `claude --resume` on one machine cannot see the other's conversations — even if you
-   copy the files across by hand.
+   which defaults to **30** days.
+3. **They are tied to a folder path.** The same project at `D:\work\api` on one
+   computer and `~/dev/api` on another counts as two projects, so `claude --resume` on
+   one cannot see the other's conversations, even if you copy the files by hand.
 
-> **Status: verified on Windows, macOS and Linux.**
->
-> Every push runs the full test suite on all three, and separately performs a **real
-> install** on each: it seeds a `settings.json` containing another tool's hook,
-> installs, runs the installed binary exactly as the session hook would, checks the
-> session was archived and rendered, checks the hook still exits 0 when the archive is
-> unreachable, uninstalls, and asserts the other tool's hook and every unrelated
-> setting survived.
->
-> **The 30-minute sweep registers on all three** — launchd on macOS, a systemd user
-> timer on Linux, Task Scheduler on Windows — and CI reports per-OS whether it did, so
-> a regression there cannot hide.
->
-> Day-to-day use is still mostly Windows, so
-> [reports from real macOS and Linux desktops](.github/ISSUE_TEMPLATE/platform_report.yml)
-> remain the most useful thing you can contribute — particularly whether the sweep
-> survives a logout, which no CI runner can tell us.
+> **Status: tested on Windows, macOS and Linux.** CI runs the full test suite on all
+> three, and on each does a real install, a hooked push, a push with the archive
+> unreachable, and an uninstall that must leave every other setting alone. It also
+> reports, without failing the build, whether the scheduled sweep registered on that
+> runner. What CI cannot tell is whether the sweep
+> survives a logout or a reboot on a real desktop, so
+> [reports from real macOS and Linux machines](.github/ISSUE_TEMPLATE/platform_report.yml)
+> are very welcome.
+
+---
+
+## What it does
+
+**Backs up, automatically**
+- Copies every session, its subagent conversations, saved tool output and the
+  project's memory files to a folder you choose. Google Drive, OneDrive, Dropbox,
+  iCloud, Syncthing, a NAS or a USB drive all work, because it only writes files.
+- Also backs up your global rules (`CLAUDE.md` and the `.md` files beside it), personal
+  skills, agents, commands, output styles, and which plugins are enabled.
+- Runs by itself once installed: when a session ends, **after every reply**, and on a
+  sweep every 30 minutes.
+- Copies only what changed. It never deletes a transcript from the archive, and never
+  copies credentials.
+
+**Brings history to another computer**
+- `import` finds each project on the new computer even where paths differ: by a folder
+  of the same name (told apart by **git remote** when there are several), or the home
+  folder. Anything it cannot place for certain, a renamed folder for one, is reported,
+  never guessed, and one command (`config map`) settles it.
+- Rewrites the paths inside the conversations to the new computer's, including other
+  repositories the session worked in, Git Bash paths, and `~/.claude`.
+- `import --update` brings in sessions you continued on the other computer.
+- **A session continued on both computers is kept twice, never merged or lost**: the
+  other computer's copy arrives as a session of its own, and you resume whichever you
+  want.
+- The memory index (`MEMORY.md`) is merged entry by entry: what either computer
+  added arrives, and what either deleted stays deleted. Other memory files take the
+  newer copy.
+- Rules, skills and plugins come too. Plugins enabled on the other computer are
+  installed for you.
+
+**Lets you read and find old conversations**
+- Writes readable HTML pages and an `INDEX.md`, with common credentials masked. You
+  can withhold any project from being published.
+- `search`, `ls` and `stats`, also over sessions Claude Code has already deleted
+  locally (`--archived`).
+
+**Tells you when something is wrong**
+- `doctor` checks retention, the archive, the hooks, the sweep, sessions that never
+  reached the archive, macOS privacy refusals, computers on other versions, and
+  credentials that ended up in the archive. Most warnings say what to do.
+
+**Other tools**
+- `backup` writes the whole profile to one zip, for a move with no synced folder.
+- `pull` is a plain copy for computers with identical paths. `restore` files one folder
+  of transcripts by hand.
+- `machines` lists, and forgets, the computers that push to the archive.
+
+---
+
+## Quick start
+
+On your **first computer**:
+
+```sh
+claude-sessions config set-destination "<your synced folder>/claude-sessions"
+claude-sessions doctor     # see what needs fixing
+claude-sessions push       # back up everything once
+claude-sessions install    # from now on, automatically
+```
+
+and stop Claude Code deleting old sessions: add `"cleanupPeriodDays": 3650` to
+`~/.claude/settings.json` (Step 3).
+
+On **each further computer**:
+
+```sh
+claude-sessions config set-destination "<the same synced folder>/claude-sessions"
+claude-sessions import --search-root ~/dev --dry-run    # see where each project goes
+claude-sessions import --search-root ~/dev --update     # then do it
+claude-sessions push                                    # back up this computer too
+claude-sessions install
+```
+
+Then `cd` into a project and run `claude --resume`. The rest of this page explains
+each step.
 
 ---
 
 # Step-by-step guide
 
-## Before you start
-
-### Do I need Google Drive, Dropbox or OneDrive installed?
-
-**Only if you want your history off this computer** — which is usually the whole
-point.
+## Before you start: a synced folder
 
 This tool does not talk to any cloud service. It copies files into **a folder on your
-own disk**, and nothing more. Getting that folder to the cloud is somebody else's job:
+own disk**; a sync app you already have gets that folder to the cloud.
 
-| What you want | What you need installed |
+| What you want | What you need |
 |---|---|
-| History in the cloud, or on another computer | **Yes** — the desktop sync app for whichever service you use, signed in, with a folder synced to this machine |
-| A copy on an external drive or a NAS share | No — just point it at that path |
-| Only a second copy on this same machine | No — point it at any folder you like |
+| History in the cloud, or on another computer | The **desktop** sync app for your service, signed in, with a folder synced to this computer |
+| A copy on an external drive or a NAS | Nothing: just use that path |
+| A second copy on this computer only | Nothing: use any folder |
 
-The desktop app is the part that matters. A web browser tab of Drive or Dropbox is not
-enough: the tool needs a **real folder it can write to**.
+A browser tab of Drive or Dropbox is not enough; the tool needs a real folder.
 
-- **Google Drive** — install [Drive for desktop](https://www.google.com/drive/download/).
-  On Windows it appears as a drive letter, usually `G:\My Drive`. On macOS it is
-  `~/Library/CloudStorage/GoogleDrive-<you>/My Drive`.
-- **OneDrive** — already built into Windows 11; sign in and you get `%USERPROFILE%\OneDrive`.
-  On macOS, install it from the App Store.
-- **Dropbox** — install the desktop app; you get `~/Dropbox`.
-- **iCloud Drive** (macOS) — already there:
-  `~/Library/Mobile Documents/com~apple~CloudDocs`.
-- **Syncthing / NAS / USB drive** — anything that gives you a path works.
-
-> If you skip this entirely, everything still works — your history is just backed up to
-> another folder on the same computer, which protects you from Claude Code's 30-day
-> deletion but not from losing the machine.
-
-### Pick your folder
-
-Decide where the archive should live and note the path. It does not have to exist yet,
-but its **parent must** — the tool refuses to create a folder where an unmounted cloud
-drive should be, because that would give you a "backup" that never leaves the machine.
-
-Examples:
-
-| Service | Typical path |
+| Service | Typical archive path |
 |---|---|
 | Google Drive (Windows) | `G:\My Drive\claude-sessions` |
 | Google Drive (macOS) | `~/Library/CloudStorage/GoogleDrive-you@gmail.com/My Drive/claude-sessions` |
 | OneDrive (Windows) | `C:\Users\you\OneDrive\claude-sessions` |
 | Dropbox | `~/Dropbox/claude-sessions` |
 | iCloud Drive (macOS) | `~/Library/Mobile Documents/com~apple~CloudDocs/claude-sessions` |
-| No cloud, external disk | `D:\backups\claude-sessions` |
+| External disk | `D:\backups\claude-sessions` |
 
-The tool can often find Drive, OneDrive, Dropbox or iCloud on its own — but setting it
-explicitly in Step 2 means every run agrees on where your history goes.
+The archive folder does not have to exist yet, but **its parent must**: the tool
+refuses to create a folder where an unmounted cloud drive should be, because that
+would be a "backup" that never leaves the computer.
 
----
-
-## Step 1 — Install the tool
+## Step 1: Install the tool
 
 It runs on Windows 10 or later, macOS and Linux.
 
-**Download a release binary** from the
-[Releases page](https://github.com/ashiqfardus/claude-sessions-sync/releases) — a zip
-for Windows, a `.tar.gz` for macOS and Linux, for amd64 and arm64 — and put
-`claude-sessions` (`claude-sessions.exe` on Windows) in a folder on your `PATH`. No Go
-toolchain is needed.
-
-**Until the next release is tagged**, the newest one (v0.2.2) predates much of this
-guide: `backup`, `--archived`, `search --all`, `--update` and a large batch of fixes.
-`go install ...@latest` resolves to the same tag. To get what is documented here now,
-build from `main` with Go 1.21 or newer ([download](https://go.dev/dl/)):
+**The latest release, v0.2.2, is older than this guide.** It lacks per-reply backup,
+forks, `config map`, memory merging, `backup`, `--archived` and more. Until the next
+release is tagged, build it with Go 1.21 or newer ([download Go](https://go.dev/dl/)):
 
 ```sh
 go install github.com/ashiqfardus/claude-sessions-sync/cmd/claude-sessions@main
 ```
 
-Check it worked:
+or, from a clone of this repository, `go install ./cmd/claude-sessions`.
+
+Once a newer release is tagged, you can instead download the binary for your system
+from the [Releases page](https://github.com/ashiqfardus/claude-sessions-sync/releases)
+and put `claude-sessions` (`claude-sessions.exe` on Windows) on your `PATH`.
+
+Check it:
 
 ```sh
 claude-sessions version
 ```
 
-If you used `go install` and that says "command not found", add Go's bin folder to
-your `PATH`:
+If that says "command not found" after `go install`, add Go's `bin` folder to your
+`PATH` (`go env GOPATH` prints where it is; add `/bin` to that).
 
-```sh
-go env GOPATH        # then add /bin to what it prints
-```
+**Use the same version on every computer.** See [Several computers](#several-computers).
 
----
-
-## Step 2 — Tell it where to save your history
+## Step 2: Tell it where to save your history
 
 ```sh
 claude-sessions config set-destination "G:\My Drive\claude-sessions"
 ```
 
-Use your own folder from *Before you start*. It creates that folder if the parent
-exists. A leading `~` is expanded even inside quotes or under PowerShell, and a
-relative path is saved as an absolute one — the hook runs in whichever project folder
-a session was in, so a relative archive would land inside every repository.
+Use your own path. A leading `~` works even inside quotes, and the path is saved as an
+absolute one. If it says the parent does not exist, your cloud drive is not mounted.
+`claude-sessions config` shows what is saved.
 
-**If it says the parent does not exist**, your cloud drive is not mounted. That is
-deliberate — creating an ordinary local folder where your cloud drive should be would
-give you a backup that never leaves the machine.
+If you skip this step, the tool looks for an existing `claude-sessions` folder by
+itself: in `<drive>:\My Drive` on Windows, in `~/Google Drive`, `~/OneDrive`,
+`~/Dropbox`, iCloud Drive and `~/Sync`, and on macOS under `~/Library/CloudStorage`,
+where it uses one only when exactly one account holds it. With none yet, it picks the
+only Google Drive it can see. Setting it yourself is better: every run then agrees.
 
-Confirm it stuck:
-
-```sh
-claude-sessions config
-```
-
----
-
-## Step 3 — See what state you are in
+## Step 3: See what state you are in
 
 ```sh
 claude-sessions doctor
 ```
 
-This is the most useful command in the tool. It tells you, in plain terms, whether
-your conversations are protected:
+It reports each check with `+` (fine), `!` (warning), `x` (failure) or a blank
+(information), and for most problems a line on what to do. For example:
 
 ```
-  + claude root      C:\Users\you\.claude (default)
-  + projects         5 bucket(s), 12 transcript(s)
   ! retention        cleanupPeriodDays unset, so Claude Code applies its 30-day default
   + archive          G:\My Drive\claude-sessions (session-sync.json)
-    manifest         the archive holds no projects yet
   ! session hook     no SessionEnd hook installed
-  ! sweep            Task Scheduler: claude-sessions-sync not registered
-  x archived         12 session(s) that ended over 40 minutes ago are not in the archive, e.g. C--Users-you-dev-api/9ee16efa-4c1d-4a9e-9f3a-2b8e5d7c1a44
+  x archived         12 session(s) that ended over 40 minutes ago are not in the archive, e.g. ...
   ! last push        no successful push recorded in session-sync.log
-
-  retention: Local transcripts are deleted a month after they are written. Raise it in settings.json.
-  session hook: Sessions are only archived by the periodic sweep, so the most recent one can be missed.
-  sweep: A session killed abruptly will not be archived until the next manual push.
-  archived: Neither the hook nor the sweep has copied them. Run `claude-sessions push` and read ~/.claude/session-sync.log for why.
-  last push: Run `claude-sessions push` once, then check the hook and the sweep.
-
-4 warning(s), 1 failure(s).
 ```
 
-Every warning comes with a line telling you what to do about it. Step 4 clears
-`archived` and `last push`; Step 5 clears the hook and the sweep.
-
-The last two checks are the ones to watch from then on. The hook and the sweep exit 0
-even when they fail — a failing hook would break the end of your session — so a
-scheduler that reports success proves only that something started. `archived` fails
-when a session that ended over 40 minutes ago is still not in the archive, and
-`last push` warns when the last successful push is more than three hours old.
-
-**Fix the retention warning now**, because it is the one actively deleting your
-history. Open `~/.claude/settings.json` and add:
+**Fix the retention warning now**, because it is the one deleting your history. Add
+this to `~/.claude/settings.json`:
 
 ```json
 { "cleanupPeriodDays": 3650 }
 ```
 
----
+From then on, watch `archived` (a session that ended over 40 minutes ago is still not
+in the archive) and `last push` (nothing pushed for three hours). The hooks and the
+sweep never fail, by design, so these two checks are how you notice a problem.
 
-## Step 4 — Save your sessions for the first time
+## Step 4: Save your sessions once
 
 ```sh
 claude-sessions push
 ```
 
-You will see something like:
-
 ```
+2026-11-20 10:00:01  PUSH: 24 copied, 0 unchanged, 12 session(s), 4 project(s) -> G:\My Drive\claude-sessions
+2026-11-20 10:00:03  HTML: 12 rendered, 0 up to date
 copied 24 file(s), 0 unchanged.
 12 session(s) across 4 project(s) -> G:\My Drive\claude-sessions (session-sync.json)
 ```
 
-Run it again and it should copy **0** — it only ever copies what changed. It never
-deletes a transcript from the archive, and it never modifies your local transcripts.
+The two timestamped lines are what it also writes to `~/.claude/session-sync.log`.
 
----
+Run it again and it copies nothing: only changes are copied. `push` never changes
+your local files.
 
-## Step 5 — Make it automatic
+## Step 5: Make it automatic
 
 ```sh
 claude-sessions install
 ```
 
-This sets up two things:
+This copies the program to `~/.claude/bin/` and sets up three things:
 
-- a **hook** that runs `push --quiet` when a session ends, and
-- a **sweep** every 30 minutes, which catches sessions that ended abruptly (a closed
-  terminal, a crash, a laptop going to sleep).
+| What | When it runs | What it does |
+|---|---|---|
+| Session-end hook | When a session ends | A full push of everything that changed |
+| Per-reply hook | After every reply (Claude Code's `Stop` event) | Copies **just that session** |
+| Sweep | Every 30 minutes (`--every <minutes>`) | A full push: catches sessions that ended abruptly, and updates the index and pages |
 
-Only one push runs at a time. When a session ends while another is running — the sweep,
-or a second session ending at the same moment — the hook waits up to 45 seconds for it
-(`--lock-wait`); if it is still busy after that, the session is left for the next sweep.
-An unattended push also spends at most 45 seconds rendering pages, so the first render
-of a large archive is spread over several runs rather than starting again each time.
+The per-reply hook means a laptop that dies or is shut mid-session loses minutes
+rather than half an hour. To keep it light:
+- it copies one transcript only; memory, the index and the pages wait for the next
+  full push;
+- it never waits for another push that is running;
+- it gives up after 5 seconds if the drive is slow;
+- it copies a transcript over 5 MB at most every 5 minutes, because the sync app
+  re-uploads the whole file each time.
 
-What the sweep is, per OS:
+Only one push runs at a time. A session ending while another push runs waits up to
+45 seconds (`--lock-wait`), then leaves it to the sweep.
 
-- **Windows**: a Task Scheduler task named `claude-sessions-sync` that runs
-  `~\.claude\bin\claude-sessionsw.exe push --quiet`. That file is a copy of the binary
-  marked as a GUI program. Task Scheduler opens a console window for every console
-  program it starts, so without it a terminal would flash up every 30 minutes; the exit
-  code still reaches the task's last result.
-- **macOS**: a launchd user agent.
-- **Linux**: a systemd user timer, or a crontab line where there is no systemd.
+The sweep is a Task Scheduler task on Windows (it runs `claude-sessionsw.exe`, a copy
+that opens no console window), a launchd agent on macOS, and a systemd user timer
+(or a crontab line) on Linux. A profile other than `~/.claude` gets its own sweep.
 
-A profile other than `~/.claude` (`--claude-dir`, or `CLAUDE_CONFIG_DIR`) gets its own
-sweep, with a suffix on the name, so installing one never replaces another's.
+`install` backs up `settings.json` first (keeping the three newest backups) and leaves
+every other setting and every other tool's hooks alone. `install --archive <folder>`
+sets the destination at the same time; `install --no-sweep` skips the sweep.
 
-Then **restart Claude Code**, or run `/hooks` inside it, so a session that is already
-running picks up the change.
+**Then restart Claude Code**, or run `/hooks` inside it, so open sessions pick up the
+hooks. Run `doctor` again: the hook and sweep lines should now be `+`.
 
-Check it:
+## Step 6: Read your history in a browser
 
-```sh
-claude-sessions doctor
-```
+Every full push writes pages. Open `<your folder>/html/index.html`. Each project lists
+its recent sessions with their opening messages; tool calls, results and thinking are
+folded away. The pages are plain files with no scripts.
 
-The hook and sweep warnings should now be `+`:
+The front page shows each project's 20 newest sessions and links to the full list;
+`INDEX.md` lists up to 200 per project. A hook or the sweep spends at most 45 seconds
+on pages per run and leaves the rest for the next. To rebuild them by hand:
+`claude-sessions render` (`--force` rebuilds pages that are current).
 
-```
-  + session hook     C:\Users\you\.claude\bin\claude-sessions.exe push --quiet
-  + sweep            Task Scheduler: claude-sessions-sync, not yet run
-```
-
-> `install` copies the binary into `~/.claude/bin/` and points the hook there, so
-> archiving does not depend on where you ran the command from. It backs up your
-> `settings.json` first (keeping the three newest backups) and leaves every other
-> setting and every other tool's hooks exactly as they were.
->
-> `install --archive <folder>` sets the destination at the same time, with the same
-> checks as `config set-destination`: a folder whose parent does not exist is refused.
-
----
-
-## Step 6 — Read your history in a browser
-
-Already done: `push` writes HTML pages automatically. Open this file in a browser:
-
-```
-<your folder>/html/index.html
-```
-
-You get each project's most recent sessions with their opening messages, and a link to
-the project's full list; open one to read the whole conversation. Tool calls, results
-and thinking are folded away so the conversation reads as a conversation. The pages are
-plain files with no scripts and nothing loaded from elsewhere, laid out for a narrow
-screen — but whether your cloud provider's phone app will open them is up to that app,
-and has not been tested on a real device.
-
-To rebuild the pages by hand:
-
-```sh
-claude-sessions render
-```
-
-**If some projects should not be readable that way** — client work, anything sensitive
-— exclude them:
+**To keep a project out of the pages** (client work, anything sensitive):
 
 ```sh
 claude-sessions render --exclude "client-acme,secret-project"
 ```
 
-It saves the exclusion and reports what it withdrew:
+Each name matches, ignoring case, any project whose path or archive name contains it
+(so `api` would withhold every project with "api" in its path). This removes pages
+already published for those projects, and the exclusion holds on every computer that
+pushes to the archive. It is saved in `session-sync.json`
+(`renderExclude`) and in the archive's `render-exclude.txt`. To publish one again,
+remove it from both. The transcripts themselves stay in the archive.
 
-```
-Excluding client-acme, secret-project from now on (saved to C:\Users\you\.claude\session-sync.json and G:\My Drive\claude-sessions\render-exclude.txt).
-To publish again, remove it from renderExclude there and from render-exclude.txt.
-
-Rendered 0, 40 already up to date -> G:\My Drive\claude-sessions\html
-2 project(s) excluded; 6 previously published page(s) removed.
-Open G:\My Drive\claude-sessions\html/index.html
-```
-
-Excluding **deletes pages that were already published**, not just future ones — the
-whole point is to stop something being readable. The transcripts stay in the archive,
-untouched; only the generated HTML goes.
-
-The exclusion lasts. It is saved as `renderExclude` in `~/.claude/session-sync.json`,
-and written to `render-exclude.txt` in the archive, so **every machine that pushes
-there honours it** — not only the one you ran it on. Adding patterns to
-`renderExclude` by hand works the same way; the next `push` copies them into
-`render-exclude.txt`:
-
-```json
-{
-  "destination": "G:\\My Drive\\claude-sessions",
-  "renderExclude": ["client-acme", "secret-project"]
-}
-```
-
-To publish a project again, remove it from both: the config's `renderExclude` and its
-line in `render-exclude.txt`. Removing it from only one of them leaves it excluded.
-
-`claude-sessions doctor` then lists what is being withheld, so a typo that matches
-nothing does not quietly publish it anyway. See [Privacy](#privacy) below.
-
----
-
-## Step 7 — Find an old conversation
+## Step 7: Find an old conversation
 
 ```sh
 claude-sessions search "connection pool"
@@ -358,246 +306,256 @@ claude-sessions search "connection pool"
 Resume one with:  cd /home/you/dev/api  then  claude --resume 9ee16efa-4c1d-4a9e-9f3a-2b8e5d7c1a44
 ```
 
-The last line says how to reopen the conversation in Claude Code: change into the
-session's project folder, then resume it by ID.
+- `search --all` also searches commands, tool output and thinking. `--role`,
+  `--project`, `--regexp` and `--case-sensitive` narrow it down. It stops after 50
+  matches; `--limit 0` shows all.
+- `ls` lists sessions newest first, with the full ID `claude --resume` needs.
+  `--since` and `--until` take a date like `2026-08-01` (both days included);
+  `--project` and `--limit` narrow it.
+- `stats` shows how much history you have per project.
+- Add `--archived` to any of the three to read the archive, which still has sessions
+  Claude Code deleted locally. To resume one of those, bring it back with `import`.
 
-By default only the conversation text is searched. To find a command you ran or
-something a tool printed, add `--all`:
+## Step 8: Set up a second computer
 
-```sh
-claude-sessions search --all "psql -c"
-```
+**8a.** Install the tool (Step 1) and point it at the **same** folder (Step 2).
 
-Other ways to look around:
-
-```sh
-claude-sessions ls                          # every session, newest first
-claude-sessions ls --project api --limit 10 # just one project
-claude-sessions stats                       # how much history you have, per project
-```
-
-`ls` prints each session's full ID, which is what `claude --resume` needs.
-
-`ls`, `search` and `stats` read this machine's sessions. Claude Code deletes old ones
-locally, so add **`--archived`** to read the archive instead — it still has them:
-
-```sh
-claude-sessions search --archived "connection pool"
-```
-
-A session found this way is only resumable once it is back on this machine; the output
-says so, and `claude-sessions import` (Step 8) puts it back.
-
----
-
-## Step 8 — Set up a second computer
-
-This is the part other tools cannot do. On the second machine:
-
-**8a. Install the tool as in Step 1, and point it at the same folder:**
-
-```sh
-claude-sessions config set-destination "~/Dropbox/claude-sessions"
-```
-
-**8b. See what it would do, without changing anything:**
+**8b.** Look first, without changing anything:
 
 ```sh
 claude-sessions import --search-root ~/dev --dry-run
 ```
 
-`--search-root` is where you keep your code (several, comma-separated, are fine). Output
-looks like:
+`--search-root` is where your code lives (several, comma-separated, are fine; folders
+like `node_modules`, `vendor`, `build`, `dist` and `Library` are never searched). A dry
+run shows where each project would go and how many new sessions it would add; what
+`--update` would refresh, and copies of sessions continued on both computers, show
+only on the real run. Each line says what happened to one archived project, and why:
 
 ```
-archive      /home/you/Dropbox/claude-sessions (session-sync.json)
-search roots /home/you/dev
-
 = -home-you-dev-notes -> /home/you/dev/notes (matched by recorded path): 3 filed, 0 already present
 + D--work-api -> /home/you/dev/api (matched by git remote): 6 filed, 0 already present
 ! D--work-old-thing: 2 folders named "old-thing" and no git remote settles it
       /home/you/dev/old-thing
       /home/you/dev/attic/old-thing
-+ D--work-scripts -> /home/you/dev/scripts (matched by folder name): 2 filed, 0 already present
+      fix: claude-sessions config map D--work-old-thing '<local folder>'
 - E--scratch: no folder named "scratch" under the search roots
-
-11 transcript(s) filed. 1 same layout, 1 not found, 1 ambiguous.
-Sessions already here are never replaced; --update refreshes ones that continued elsewhere.
+      fix: claude-sessions config map E--scratch '<local folder>'
 ```
 
-followed by the `restore` command to use for anything not placed. Each line starts
-with what happened: `=` the project is at the same path here, `+` it was found
-elsewhere and its paths are rewritten to match, `!` it is ambiguous, `-` it was not
-found. It tells you **why** each project matched. Anything ambiguous is skipped, never
-guessed — filing a conversation under the wrong project would be silent and you would
-never find it again.
+`=` same path here · `+` found elsewhere, paths rewritten · `!` ambiguous, skipped ·
+`-` not found.
 
-**What is already here is kept.** Without `--update`, a session or memory file that
-already exists on this machine is never replaced, however the archived copy differs.
+**8c.** Place anything it could not, once:
 
-**A session you continued on another machine** comes across with `--update`:
+```sh
+claude-sessions config map D--work-old-thing ~/dev/attic/old-thing
+```
+
+The mapping is saved on this computer only, wins over every other rule, and is used by
+every later import. `config map` lists mappings and `config unmap <name>` removes one.
+Project names that start with `-` (all macOS and Linux ones do) work as printed.
+
+**8d.** Do it for real, then back up this computer and turn on archiving here too:
 
 ```sh
 claude-sessions import --search-root ~/dev --update
-```
-
-A local session is replaced only when the archived copy strictly extends it — the same
-conversation with more turns on the end. One that also continued here has turns the
-other lacks, so neither contains the other: the local copy is kept and the output names
-it. Memory files are replaced only with `--update`, only when the archived copy is
-newer, and never by a file dated in the future. `pull` and `restore` take `--update`
-too.
-
-**Multi-folder workspaces are handled.** A session that starts in `frontend` and
-works in `backend` too records both paths. `push` notes the other git repositories each
-project's sessions touched, and `import` finds them on this machine **by git remote**
-and repoints those paths as well — including Git Bash forms like `/e/work/backend`.
-
-**Your rules, skills and plugins come too.** `push` also archives, under `profile/`:
-
-| What | From `~/.claude` | On import |
-|---|---|---|
-| Global rules | `CLAUDE.md` and every other top-level `.md` (the files it `@`-includes) | Added if missing; replaced only with `--update` and a newer copy |
-| Personal skills, agents, commands, output styles | `skills/`, `agents/`, `commands/`, `output-styles/` | Same rule |
-| Plugins | which plugins are enabled, and their marketplaces | Each one missing here is installed with `claude plugin install`; `--no-plugins` skips this |
-
-Left behind on purpose: `skills/synced/` (claude.ai account skills — Claude Code
-downloads them on login), dot-files such as `.env` and `.trash/`, `node_modules/`,
-`settings.json` (its hooks run tools at paths only the original machine has) and
-credentials. Transcripts that name the other machine's `~/.claude` — saved tool
-output, `CLAUDE.md`, a skill — are repointed to this machine's.
-
-**8c. Do it for real:**
-
-```sh
-claude-sessions import --search-root ~/dev
-```
-
-Now `cd` into a project and run `claude --resume`. Your conversations from the other
-machine are there.
-
-**8d. Make this machine archive too:**
-
-```sh
+claude-sessions push
 claude-sessions install
 ```
+
+(Until this computer has pushed, `doctor` reports the imported sessions as not
+archived.)
+
+`cd` into a project and run `claude --resume`.
+
+### What import does, in detail
+
+- **Without `--update`**, a session or memory file that is already here is never
+  touched. New ones are added.
+- **With `--update`**, a session here is replaced by the archived copy only when that
+  copy holds everything this one does and more, for example the same conversation
+  continued on the other computer, or renamed there.
+- **Memory** with `--update` (only `MEMORY.md` is merged; a memory file deleted on the
+  other computer is not deleted here):
+  - `MEMORY.md`, the index Claude loads, is merged entry by entry. What either computer
+    added arrives, what either deleted stays deleted, and where both changed an entry
+    the newer wording wins.
+  - Each other computer's memory is merged separately, against what was last taken from
+    it. That record is kept in `~/.claude/session-sync-base/`.
+  - Any other memory file is replaced only by a newer copy, and the old one is kept in
+    `memory/.replaced/<time>/`.
+  - A memory file you deleted here is not brought back, and a file dated in the future
+    is always refused.
+- **Your home folder matches your home folder.** `C:\Users\you` and `/Users/you` are
+  matched as the same place, whatever the usernames, once the other computer has
+  pushed with this version.
+- **Other repositories a session worked in** (a multi-folder workspace) are repointed
+  too, but only to a same-named folder whose git remote matches.
+- **Rules and skills:** a file missing here is added. One that exists is replaced only
+  with `--update` and a newer copy, and the output says so. This computer's version is
+  saved first in the archive under `profile/replaced/<computer>/<time>/`.
+- **Plugins** enabled on the other computer and missing here are installed with
+  `claude plugin install`, which needs `claude` on your `PATH`; plugins from a
+  marketplace on a local path are skipped. Use `--no-plugins` to skip all of it.
+
+---
+
+## Switching computers mid-session
+
+**The safe way:**
+1. Finish your turn and type `/exit`, so the session is archived.
+2. Wait for your sync app to finish uploading.
+3. On the other computer, run `claude-sessions import --update`, then
+   `claude --resume`.
+4. Commit or stash your code changes first: those are git's business, not this
+   tool's.
+
+**If you forget, or a computer dies**, nothing is lost. Say one laptop last synced at
+5:00, you worked on until 5:29, and then picked the session up elsewhere from the 5:00
+copy. Now each copy has turns the other lacks. Two conversations cannot be merged
+into one, so:
+
+- `import --update` keeps your local copy as it is, files the other computer's copy as
+  **a session of its own** (same history, a new session ID), and prints its ID:
+
+  ```
+  ! continued here and elsewhere - 70e28154-…: the other machine's copy is session 2df28b9d-… (resume either)
+  ```
+
+- Resume whichever you want to carry on with. Importing again updates that copy
+  rather than adding another, and a computer never gets its own copy back as an extra
+  session.
+- **Don't want the extra copy?** Delete it. It comes back only if the other computer
+  adds new turns to it.
+- If both computers keep the project **at the same path**, they push to one archived
+  file. `push` compares the two by content, keeps the archived one, and saves this
+  computer's beside it under `forks/`. The other computer's `import` or `pull` then
+  files it the same way.
+
+Copies are compared by each entry's ID, not by bytes, so a copy whose paths an import
+rewrote still counts as the same conversation.
+
+---
+
+## Several computers
+
+- **Run the same version everywhere.** An older version files another computer's fork
+  copies as ordinary sessions, and on a shared path still overwrites the other
+  computer's archived copy. `doctor` names any computer on a different version.
+- **Each computer has a name** in the archive: its host name and user name. A macOS
+  host name can change with the network (a `-2` added after a clash), and a computer
+  under a new name looks like another computer. To pin it:
+
+  ```sh
+  claude-sessions config set-machine my-macbook
+  ```
+
+  This is saved in `session-sync.json`, so the hooks and the sweep all use it. If you
+  rename a computer that has already pushed, run `claude-sessions push`, then
+  `claude-sessions machines --forget <old name>`.
+- `claude-sessions machines` lists every computer that has pushed, with its newest
+  session. `machines --forget <name>` removes a retired one's manifest and index; its
+  sessions stay.
 
 ---
 
 ## Moving to a new computer without a synced folder
 
-Take the whole profile with you in one file — every session, subagent conversation,
-memory file and hand-written setting:
-
 ```sh
 claude-sessions backup --out D:\
 ```
 
-It writes `claude-backup-<machine>-<date>.zip` with a `MANIFEST.txt` counting the
-transcripts per project, and warns loudly if there are none — a backup with no
-conversations in it is exactly how history gets lost in a move. Credentials are never
-included.
+This writes `claude-backup-<computer>-<date>.zip` with every session, subagent
+conversation and memory file; your rules, skills, agents, commands and output styles;
+and `settings.json`, `settings.local.json`, `history.jsonl` (every prompt you typed),
+`keybindings.json` and `session-sync.json`. A `MANIFEST.txt` counts transcripts per
+project, and it warns loudly if it found none. Without `--out` it writes to
+`~/claude-backups`.
 
-On the new machine, unzip it anywhere and import it like an archive:
+It leaves out `.credentials.json` and `.claude.json`, but **settings files can hold
+tokens** (in `env`, for example), so keep the zip as private as the profile itself.
+
+On the new computer, unzip it and import it like an archive:
 
 ```sh
 claude-sessions import --archive "E:\claude-backup" --search-root "E:\work"
 ```
 
-**`import` does not need a manifest.** A bucket that no machine's manifest names — an
-unzipped backup, a machine you have since forgotten with `machines --forget`, or an
-archive written by the older PowerShell scripts — is placed by the working directory
-its transcripts record, through the same matching as everything else. Only a bucket
-with no transcripts to read that from is reported and left for `restore`.
+That brings back the sessions and memory. Copy `CLAUDE.md`, the other files and the
+folders at the top of the zip into `~/.claude` yourself.
 
 ---
 
 ## Upgrading
 
-Replace the binary the same way you installed it, then run `install` again, with the
-same flags you used the first time (`--every`, `--no-sweep`):
+Replace the program, then run `install` again with the same flags you used before:
 
 ```sh
 claude-sessions install
 ```
 
-The hook and the sweep do not run the binary you just downloaded. They run the copy
-`install` put in `~/.claude/bin`, so a new version does nothing until it is installed
-again. Re-running is safe: it replaces its own hook entry rather than adding a second,
-and registers the sweep again. On Windows it is also what moves the sweep onto the
-windowless `claude-sessionsw.exe`; until then `doctor` fails the sweep check with "the
-task runs the console build, which opens a window every run".
+The hooks and the sweep run the copy in `~/.claude/bin`, so a new version does nothing
+until it is installed again. Installing again is safe: it replaces its own entries
+rather than adding more. Do it on **every** computer.
+
+After upgrading from an older version:
+- **The first `import --update` has no record yet** of what each computer already
+  took. A memory entry or file deleted on one computer before the upgrade can come
+  back once. Delete it again and it stays deleted.
+- **Home folders are matched** only after the other computer has pushed with this
+  version.
+
+**Going back to an older version:** run `claude-sessions uninstall` with **this**
+version first, then install the older one. An older `uninstall` does not know the
+per-reply hook and would leave it running.
 
 ---
 
 ## If something goes wrong
 
-**`doctor` says the archive is not reachable.**
-Your cloud drive is not mounted. Nothing is being backed up until it is.
+**`doctor` says the archive is not reachable.** Your cloud drive is not mounted.
+Nothing is backed up until it is.
 
-**`ls` shows nothing.**
-Claude Code files history by the folder a session *started* in, not your editor's
-workspace — a session that later `cd`s into a sibling folder stays filed under the
-first one. If you use `CLAUDE_CONFIG_DIR`, pass `--claude-dir`. Sessions deleted
-locally are still in the archive: `ls --archived`.
+**`doctor` fails "archive access" on macOS.** macOS privacy settings refused access to
+the archive. The hint says which program to allow: the background sweep needs
+`~/.claude/bin/claude-sessions` added under System Settings › Privacy & Security ›
+Full Disk Access. After you rebuild the program, run `install` again and re-add it.
 
-**`doctor` says the sweep is disabled, failing, runs the console build, or its program
-is missing.**
-Run `claude-sessions install` again; it re-registers the scheduled job.
+**`doctor` says the sweep is disabled, failing, or its program is missing.** Run
+`claude-sessions install` again.
 
-**`doctor` fails `archived`, or warns about `last push`.**
-Sessions are ending but not reaching the archive. Run `claude-sessions push` by hand to
-see the error, and read `~/.claude/session-sync.log`: the hook and the sweep log what
-went wrong there instead of failing.
+**`doctor` fails `archived`, or warns about `last push`.** Sessions are not reaching
+the archive. Run `claude-sessions push` by hand to see the error, and read
+`~/.claude/session-sync.log`: the hooks and the sweep write there instead of failing.
 
-**A session I copied by hand does not show in `claude --resume`.**
-It is in the wrong bucket. Use `claude-sessions import`, or for one folder:
+**`import` says a project is ambiguous or not found.** Use the `config map` command it
+prints (Step 8c).
+
+**`ls` shows nothing.** Claude Code files a session under the folder it *started* in.
+The tool follows `CLAUDE_CONFIG_DIR` if you set it; `--claude-dir` points it at any
+other profile. Sessions deleted locally are still in the archive: `ls --archived`.
+
+**A session I copied by hand does not show in `claude --resume`.** It is under the
+wrong project. Use `import`, or for one folder:
 
 ```sh
 claude-sessions restore --source "/path/to/old/bucket" \
     --project-path "/home/you/dev/api" --rewrite-from "D:\work\api"
 ```
 
-**`import` says a project is ambiguous.**
-Two folders share a name and neither has a matching git remote. Place it yourself with
-`restore`, as above.
+**Project names have a lowercase drive letter (`e--` not `E--`).** Normal: every
+lookup ignores case.
 
-**`doctor` warns that buckets have no usable identity.**
-Those projects have memory files but no conversations, so there is no recorded path to
-match on. They are backed up safely; they just cannot be auto-placed elsewhere.
-
-**Bucket names have a lowercase drive letter (`e--` not `E--`).**
-Normal. Casing follows what Claude recorded, and every lookup here ignores case.
-
-**A machine you no longer use is still listed.**
-`claude-sessions machines` lists every machine that has pushed to the archive, with the
-date of its newest archived session (LAST SESSION). Retire one by the name it prints
-(host name and user name):
-
-```sh
-claude-sessions machines --forget LAP-1-you
-```
-
-This deletes that machine's manifest and index files, so its rows leave `INDEX.md` at
-the next push. Its transcripts stay, and so do their pages: `render` publishes every
-transcript in the archive, whichever machine pushed it. To withdraw a project's pages,
-use `render --exclude`. If the machine is still in use, its next push adds it back.
-
-**I want to stop using it.**
-
-```sh
-claude-sessions uninstall
-```
-
-Removes the hook and the sweep. **Your archive and every transcript in it are left
-completely alone.** So are a few files in `~/.claude`, for you to delete if you want
-them gone:
-
-- `bin/claude-sessions` (`claude-sessions.exe` on Windows), and on Windows
-  `bin/claude-sessionsw.exe`, the copy the sweep ran;
-- `session-sync.json`, the saved destination and exclusions;
-- `session-sync.log`, and `session-sync.log.1` once it has passed 1 MB and been rotated;
-- up to three `settings.json.bak-*` backups written by `install`.
+**I want to stop using it.** `claude-sessions uninstall` removes both hooks and the
+sweep. **Your archive is left completely alone.** These files in `~/.claude` stay for
+you to delete if you want:
+- `bin/` (the program, and `claude-sessionsw.exe` on Windows);
+- `session-sync.json` (destination, exclusions, mappings, computer name);
+- `session-sync.log` (and `.log.1`, once it passes 1 MB), `session-sync.err.log`
+  (macOS), and `session-sync.hook-timeout`;
+- `session-sync-base/` (what import last took from each computer);
+- up to three `settings.json.bak-*` files.
 
 ---
 
@@ -605,163 +563,211 @@ them gone:
 
 Read this before pointing the tool at a shared or cloud folder.
 
-**Your transcripts are not just questions and answers.** They contain the contents of
-files you worked on, absolute paths, command output, and whatever you happened to
-discuss — which for most people includes commercially sensitive work.
-
-- **`push` copies all of that into the folder you choose.** If it is a cloud drive,
-  your conversations are then subject to that provider's storage, retention and
-  sharing — and to anyone the folder is shared with.
-- **`render` turns them into readable web pages** in `html/`. This is a real step up in
-  exposure compared to raw `.jsonl`: anyone who can open the folder can now *read* your
-  conversations in a browser, including through a cloud provider’s own file preview.
-  Use `render --exclude` or the `renderExclude` config key for anything that should not
-  be that legible, or `push --no-html` to stop rendering entirely. Excluding a project
-  also **removes pages already published for it**, and is shared with every machine
-  through `render-exclude.txt`.
-- **Common credentials are masked on the pages** — API keys and tokens in known formats,
-  private keys, `PASSWORD=`/`api_key:` style values, passwords in URLs. The `.jsonl`
-  keeps everything. This is pattern matching, so it is a safety net, not a guarantee:
-  a project that must not be readable belongs in the exclude list.
-- **`INDEX.md` at the top of the archive lists the opening line of every session**
-  (masked the same way, and withheld for excluded projects), so the gist of your
-  history is visible at a glance.
-- **The tool itself never transmits anything.** No network calls, no telemetry, no
-  accounts, no third-party dependencies. It writes files to a local path; a sync client
-  you already installed does the uploading.
-- **Credentials are never copied.** `.credentials.json` and `.claude.json` are excluded
-  by design, and `doctor` fails loudly if it finds either anywhere in your archive —
-  every folder at every depth, except the generated pages in `html/`.
-- **Transcripts are never deleted from your archive** by this tool. What it does delete
-  is its own output: `render --exclude` withdraws that project's pages, and
-  `machines --forget` deletes that machine's manifest and index files.
-- **Access is whatever the folder allows.** The tool adds no access control of its own,
-  so keep the archive in a folder only you can read. What other machines, or anyone the
-  folder is shared with, write into it is treated as untrusted; [SECURITY.md](SECURITY.md)
-  lists what that means.
-
-A per-project exclude for `push` itself (as opposed to `render`) is **not yet built**.
-Until it is, if a project must never leave the machine, do not point `push` at a synced
-folder at all. Encryption at rest is also not implemented — the archive is plain files.
+- **Transcripts contain more than questions and answers**: the contents of files you
+  worked on, paths, command output. `push` copies all of it into the folder you choose,
+  and from there your sync provider's storage and sharing rules apply.
+- **The pages make it readable.** Anyone who can open the folder can read your
+  conversations in a browser, including in the provider's own preview. Use
+  `render --exclude`, or `push --no-html` to write no pages at all.
+- **Common credentials are masked** on the pages and in `INDEX.md`: API keys and tokens
+  in known formats, private keys, `PASSWORD=` style values, and passwords in URLs. The
+  `.jsonl` keeps everything. This is pattern matching, a safety net and not a
+  guarantee.
+- **`INDEX.md` lists the opening line of every session**, except for excluded projects.
+- **The tool makes no network connections of its own.** There is no telemetry, no
+  account, and no third-party code. The one exception is `import` installing a missing
+  plugin by running `claude plugin install`, which downloads it; `--no-plugins` turns
+  that off.
+- **Credentials are never copied.** `.credentials.json` and `.claude.json` are never
+  archived or backed up, and `doctor` fails if it finds either anywhere in the archive
+  outside the generated pages.
+- **Nothing is deleted from your archive** except the tool's own output: pages withdrawn
+  by `render --exclude`, a forgotten computer's manifest and index, and half-written
+  `.tmp-*` files over an hour old.
+- **The archive has no access control or encryption of its own.** Keep it in a folder
+  only you can read. What other computers write into it is treated as untrusted; see
+  [SECURITY.md](SECURITY.md).
+- There is not yet a way to keep a project out of `push` itself. If a project must
+  never leave the computer, do not point `push` at a synced folder.
 
 ---
 
 ## How the matching works
 
-When you bring an archive to a new machine, each project has to be matched to a local
-folder. Other tools make you write a path map by hand. This works it out:
+For each archived project, `import` looks for the folder on this computer in this
+order, and uses the first that answers:
 
 ```
-1. The path recorded in the transcript   -> if that folder exists here, done.
-2. Git remote match                       -> compares origin URLs, normalised, so
-                                             git@github.com:you/api.git
-                                             == https://github.com/you/api
-3. A unique folder-name match             -> exactly one folder called `api`.
-4. Anything else                          -> reported and skipped. Never guessed.
+1. Your mapping (config map)        -> always wins.
+2. The path recorded in the session -> if that folder exists here.
+3. The home folder                  -> another computer's home is this one's.
+4. A folder with the same name      -> one: used, unless its git remote is a
+                                       different repository.
+                                       several: the one whose git remote matches,
+                                       origin URLs compared so
+                                       git@github.com:you/api.git
+                                       == https://github.com/you/api
+5. Anything else                    -> reported and skipped, never guessed.
 ```
 
-**Why not just decode the folder name?** Because you cannot. `E:\Laravel
-Applications\innovix`, `E:\Laravel-Applications\innovix` and
-`E:\Laravel-Applications-innovix` all flatten to the same bucket name. So the real path
-is read from *inside* the transcript and cached in a manifest that travels with the
-archive.
+A checkout with a different folder name is not found this way, even with the same git
+remote: map it with `config map`.
 
-Other repositories a session worked in — the siblings in a multi-folder workspace — are
-recorded with their git remotes and placed **by remote only**; a folder that merely
-shares the name is never enough to rewrite paths into it.
-
-Git remotes are read by **parsing `.git/config`, never by running git** — see
-[SECURITY.md](SECURITY.md) for why that distinction matters.
+The project name in the archive cannot be decoded back into a path (`E:\Laravel
+Applications\x` and `E:\Laravel-Applications\x` flatten to the same name), so the real
+path is read from inside the transcripts and kept in a manifest in the archive. Git
+remotes are read by parsing `.git/config`; git itself is never run (see
+[SECURITY.md](SECURITY.md)).
 
 ---
 
-## Command reference
+## Reference
+
+### Commands
 
 | Command | What it does |
 |---|---|
-| `doctor` | Check everything. Exits non-zero on a real problem, so you can monitor it |
-| `config` | Show or set the archive folder |
-| `push` | Copy new and changed sessions, global rules, skills and the plugin list to the archive, then render the pages |
+| `doctor` | Check everything; exits non-zero on a real problem |
+| `config` | `show` (default), `set-destination <folder>`, `map [<project> <folder>]`, `unmap <project>`, `set-machine <name>` |
+| `push` | Copy new and changed sessions, memory, rules, skills and the plugin list to the archive, then write the pages |
 | `install` / `uninstall` | Turn automatic archiving on or off |
+| `import` | Bring an archive onto this computer, matching projects by identity |
+| `pull` | The same, by project name only, for computers with identical paths |
+| `restore` | File one folder of transcripts into one project |
+| `backup` | Zip the whole profile, without credentials |
 | `render` | Rebuild the HTML pages |
-| `ls` | List sessions (`--project`, `--since`, `--until`, `--limit`, `--archived`) |
-| `search` | Search every session, newest first (`--all`, `--role`, `--regexp`, `--project`, `--archived`) |
-| `stats` | Sessions, sizes and dates per project (`--archived`) |
-| `backup` | Zip the whole profile — sessions, subagents, memory, settings — without credentials |
-| `import` | File an archive onto this machine, matching projects by identity |
-| `pull` | Same-name copy, for machines with identical paths |
-| `restore` | File one folder of transcripts by hand |
-| `machines` | Who has pushed here, and each one's last session; `--forget` retires one |
-| `completion` | Shell completions for bash, zsh, fish or PowerShell |
+| `ls`, `search`, `stats` | List, search and count sessions |
+| `machines` | List the computers that pushed here; `--forget` one |
+| `completion` | Print a shell completion script: `bash`, `zsh`, `fish` or `powershell` |
+| `version` | Print the version |
 
-Every command except `completion` and `version` takes `--claude-dir`, and most take
-`--json`. Flags can go before or after other arguments. Add `--help` to any command.
+Every command except `completion` and `version` takes `--claude-dir <path>`, for a
+profile other than `~/.claude` (the tool already follows `CLAUDE_CONFIG_DIR`).
+`--archive <path>` reads or writes another archive than the saved one on `push`,
+`pull`, `import`, `render`, `doctor`, `machines`, `install`, `ls`, `search` and
+`stats` (on the last three it implies `--archived`). `--json` gives machine-readable
+output on `push`, `import`, `render`, `doctor`, `machines`, `ls`, `search` and
+`stats`. Flags can go before or after other arguments; `--help` on any command lists
+its flags. `grep` is another name for `search`, and `-v` or `--version` for `version`.
 
-To load completions, for example:
+### Flags
+
+| Flag | On | What it does |
+|---|---|---|
+| `--dry-run` | `push`, `import`, `pull`, `restore`, `backup` | Show what would happen; write nothing |
+| `--update` | `import`, `pull`, `restore` | Also bring in sessions continued elsewhere and newer memory; with `import` and `pull`, newer rules and skills too |
+| `--no-plugins` | `import`, `pull` | Do not install plugins enabled on another computer |
+| `--search-root <dirs>` | `import` | Where to look for projects (comma-separated; default: the parents of known projects, and your home) |
+| `--depth <n>` | `import` | How deep to look under each search root (default 3) |
+| `--include-bare-name` | `import`, `restore` | Also replace the bare folder name in transcripts (it can hit package names and prose) |
+| `--source`, `--project-path`, `--rewrite-from` | `restore` | The folder to file, the project here, and the old path to rewrite |
+| `--no-html` | `push` | Do not write pages |
+| `--quiet` | `push` | Hook mode: log instead of printing, and never fail |
+| `--lock-wait <time>` | `push` | With `--quiet`, how long to wait for another push, like `45s` or `2m` (default 45s) |
+| `--from-hook` | `push` | Used by the per-reply hook: copy only the session named on stdin |
+| `--sweep` | `push` | Used by the sweep: marks its log line for `doctor` |
+| `--every <minutes>` | `install` | How often the sweep runs (default 30) |
+| `--no-sweep` | `install` | Install the hooks only |
+| `--archive <folder>` | `install` | Set the destination while installing |
+| `--keep-powershell-hook` | `install`, `uninstall` | Leave the older PowerShell version's hook in place (on by default for `uninstall`) |
+| `--replace-powershell-sweep` | `install` | Also remove the older PowerShell version's scheduled task |
+| `--archived` | `ls`, `search`, `stats` | Read the archive instead of this computer |
+| `--project`, `--since`, `--until`, `--limit` | `ls` | Narrow the list |
+| `--all`, `--role`, `--regexp`, `--case-sensitive`, `--project`, `--limit` | `search` | Narrow the search |
+| `--force`, `--exclude <text>`, `--quiet` | `render` | Rebuild current pages; withhold projects (saved, on every computer); print nothing on success |
+| `--forget <name>` | `machines` | Retire a computer |
+| `--out <folder>` | `backup` | Where to write the zip |
+| `--no-write-probe`, `--exclude <text>` | `doctor` | Skip the write test; count extra exclusions |
+
+### What `doctor` checks
+
+| Check | What it looks at |
+|---|---|
+| `claude root`, `projects` | The profile it found, and how many projects and sessions are in it |
+| `settings.json`, `retention` | Whether `settings.json` parses; whether `cleanupPeriodDays` is unset or under 90 days |
+| `bucket naming` | Information only: `CLAUDE_CODE_PROJECT_DIR_NAME` is set, so project names are not path-based |
+| `local buckets` | Information only: projects here with memory but no sessions |
+| `archive`, `archive writable`, `archive config` | The archive is reachable and writable (`--no-write-probe` skips the test file), and whether its path is saved or only auto-detected |
+| `manifest`, `manifest format` | Archived projects `import` could not place, ignored manifest files (unreadable, or a sync app's conflict copy), and an archive still in the PowerShell tools' format |
+| `html`, `html excluded` | Whether pages are current, and which projects are withheld |
+| `session hook`, `reply hook`, `sweep` | The hooks and the scheduled sweep are installed and run this program; duplicates or the older PowerShell hook |
+| `archived`, `last push` | A session that ended over 40 minutes ago is not in the archive; no push for three hours |
+| `archive access` | A push was refused access, for example by macOS privacy settings, and by which run |
+| `versions` | Other computers run a different version |
+| `profile` | Rule and skill files that differ between computers, or are not archived |
+| `secrets` | `.credentials.json` or `.claude.json` anywhere in the archive outside the pages |
+
+It exits non-zero when any check fails, so it can be monitored. `doctor --json` prints
+`{version, checks, warnings, failures, ok}`.
+
+To load completions:
 
 ```sh
-claude-sessions completion bash > /etc/bash_completion.d/claude-sessions
+claude-sessions completion bash > ~/.local/share/bash-completion/completions/claude-sessions
+claude-sessions completion zsh  > "${fpath[1]}/_claude-sessions"
+claude-sessions completion fish > ~/.config/fish/completions/claude-sessions.fish
 ```
 
 ```powershell
 claude-sessions completion powershell | Out-String | Add-Content $PROFILE
 ```
 
-`claude-sessions completion` with no shell prints the lines for zsh and fish too.
+### What is in the archive
 
-Useful flags worth knowing:
+```
+<archive>/
+  projects/<project>/<session-id>.jsonl     sessions, with <session-id>/ for subagents and tool output
+  projects/<project>/memory/                the project's memory, newest file from any computer
+  memory/<computer>/<project>/              each computer's own copy of its memory
+  forks/<project>/<session-id>/<computer>.jsonl
+                                            a session continued on two computers that share a path
+  profile/                                  rules, skills, agents, commands, output styles (newest)
+  profile/machines/<computer>/              each computer's own copy
+  profile/replaced/<computer>/<time>/       rule files an import replaced on that computer
+  profile/plugins/<computer>.json           each computer's enabled plugins
+  manifest/<computer>.json                  each computer's projects: path, git remote, home, version
+  index/<computer>.json                     each computer's list of sessions
+  projects.json                             a merged view, for the older PowerShell scripts
+  INDEX.md, html/                           the readable index and pages
+  render-exclude.txt                        projects never published as pages
+```
 
-| Flag | On | Why |
-|---|---|---|
-| `--dry-run` | `push`, `import`, `restore`, `pull`, `backup` | See what would happen first |
-| `--archived` | `ls`, `search`, `stats` | Read the archive, which keeps sessions deleted locally |
-| `--all` | `search` | Also search tool commands, tool output and thinking |
-| `--update` | `import`, `pull`, `restore` | Also bring in sessions that continued on another machine, and newer memory |
-| `--no-plugins` | `import`, `pull` | Do not install plugins enabled on another machine |
-| `--quiet` | `push` | Hook mode: logs instead of printing, and **never fails** |
-| `--lock-wait` | `push` | With `--quiet`, how long to wait for another run (default 45s) |
-| `--no-html` | `push` | Archive without rendering readable pages |
-| `--force` | `render` | Rebuild pages that are already current |
-| `--exclude` | `render` | Stop publishing these projects as web pages, on every machine (saved) |
+Each computer writes only its own files under `memory/<computer>/`, `profile/machines/`,
+`manifest/`, `index/` and `forks/…/<computer>.jsonl`, so two computers pushing at once
+cannot overwrite each other's.
 
 ---
 
 ## What it will not do
 
-Each of these is deliberate, and most come from a real failure:
+Each of these is deliberate:
 
-- **It never modifies your local transcripts.** `push` only reads them. The one
-  exception is one you ask for: `--update` replaces a local session with an archived
-  copy that strictly extends it.
+- **It never changes your local transcripts on push.** `import`, `pull` and `restore`
+  add new ones, and with `--update` replace one only by a copy that holds everything it
+  does and more.
 - **It never deletes a transcript from the archive.** A session that ages out locally
-  survives, and keeps its row in `INDEX.md`. What it does remove: pages withdrawn by
-  `render --exclude`, a forgotten machine's manifest and index files, and half-written
-  `.tmp-*` copies an interrupted run left behind, once they are an hour old — looked for
-  only in `projects/`, `manifest/`, `index/`, `html/` and the archive's top folder, so
-  an archive inside a busy synced drive never touches another program's temp files.
-- **An older or shorter copy never replaces a newer one**, in either direction.
-- **It never creates your cloud folder's parent.** An unmounted drive is an error, not
-  something to paper over.
+  survives there.
+- **A copy that holds less never replaces one that holds more**, in either direction.
+- **It never creates your cloud folder's parent.** An unmounted drive is an error.
 - **It never copies credentials.**
 - **It never guesses** which project a session belongs to.
-- **The session hook never fails.** Missing drive, offline mount, unexpected error: it
-  logs and exits 0, because a failing hook would break the end of your session.
-- **It never removes automation it did not install.**
-- **A rewritten transcript is re-validated as JSON before it is kept.** If a rewrite
-  would corrupt a file, nothing is written at all.
+- **The hooks never fail.** Missing drive, offline mount, an error: they log and exit
+  0, because a failing hook would break your session.
+- **It never removes automation it did not install**, with one exception: `install`
+  replaces the SessionEnd hook of its own older PowerShell version, so the two do not
+  both run (`--keep-powershell-hook` leaves it).
+- **A rewritten transcript is checked line by line before it is kept.** If a rewrite
+  would break a file, nothing is written.
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md); [DESIGN.md](DESIGN.md) explains the
-architecture and the constraints each command satisfies. Security policy:
-[SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). [DESIGN.md](DESIGN.md) explains the
+architecture, and [SECURITY.md](SECURITY.md) the security policy.
 
-**Especially wanted: real-desktop macOS and Linux reports.** CI installs, runs and
-uninstalls on all three platforms every push, and the sweep does register on each -
-but a runner cannot tell us whether it survives a logout, a reboot, or a laptop lid
-closing for three days. That is what a person on a real desktop can.
+**Especially wanted: reports from real macOS and Linux desktops**, particularly whether
+the sweep survives a logout, a reboot, or a laptop lid closed for days.
 
 ## License
 

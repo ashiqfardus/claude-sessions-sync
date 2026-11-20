@@ -8,6 +8,126 @@ All notable changes to this project are documented here. This project follows
 Upgrading: run `claude-sessions install` again after updating the binary. The hook
 and the sweep run the copy in `~/.claude/bin`, so a new build does nothing until it
 is installed - and on Windows it is what replaces the sweep that flashed a terminal.
+Do it on every machine: mixed versions file forks as ordinary sessions. To go back
+to an older version, run `uninstall` with this one first - an older `uninstall`
+leaves the per-reply Stop hook in place. The first `import --update` after upgrading
+has no record of what each machine already took, so a memory entry or file deleted
+before the upgrade can come back once. Home folders match only once both machines
+have pushed with this version.
+
+### Added (2026-11-20)
+- **A session continued on two machines is kept twice instead of half-lost.** Copies
+  are compared by entry id rather than by date and size. `import --update` files the
+  other machine's copy as a session of its own (a new, stable id), so either can be
+  resumed; importing again updates it instead of adding a third, and a machine never
+  gets its own copy back. On a shared layout `push` keeps the archived copy and saves
+  this machine's beside it under `forks/`, where it used to overwrite one or silently
+  drop the other.
+- **Per-reply backup.** `install` adds a `Stop` hook running `push --quiet --from-hook`:
+  the session that just replied is archived at once, so a machine that dies mid-session
+  loses minutes rather than up to 30. Transcripts over 5 MB are copied at most every 5
+  minutes, since a sync client re-uploads the whole file. `doctor` says when an older
+  install lacks it.
+- **`config map <bucket> <folder>`** says where an archived project lives on this
+  machine, for projects nothing else identifies (no git remote, a renamed folder, two
+  candidates). Saved per machine, used by every import; `config unmap` removes one.
+  `import` prints the exact command for each project it could not place.
+- **The home folder matches across machines** (#4): `C:\Users\you` and `/Users/you`
+  are filed as each other, with their memory, when that machine's profile was
+  `<home>/.claude`.
+- **Each machine's rules and skills are kept separately** (#5) under
+  `profile/machines/<machine>/`, so a newer copy pushed from elsewhere no longer drops
+  this machine's from the backup. `import --update` reports a rule file it replaced
+  and saves the local version under `profile/replaced/<machine>/<time>/`, which no push
+  writes; `doctor` lists files that differ between machines.
+- **Mixed versions are reported** (#8): each machine records its version in its
+  manifest, and `doctor` names machines running a different one.
+- `doctor` explains a macOS privacy refusal of the background sweep and which setting
+  to grant; the launchd agent now keeps its stderr in `session-sync.err.log` (#6).
+
+### Fixed (2026-11-20)
+- **Google Drive and OneDrive were not found on current macOS** (#7). They mount under
+  `~/Library/CloudStorage`; detection now looks there, and uses a folder only when
+  exactly one account matches.
+- **`import --update` reported a session as continued on two machines when it had only
+  continued here** - the archived copy being older is not a fork.
+- **`import --update` dropped the other machine's memory index.** `MEMORY.md` was
+  replaced newest-wins, so one machine's entries vanished here and, after the next
+  push, from the archive. It is now merged entry by entry (the newer wording wins for an
+  entry both have; a future-dated copy is still refused), and any other memory file it
+  replaces is kept in `memory/.replaced/<time>/`.
+
+### Fixed in review (2026-11-20)
+- A fork kept by one push was overwritten by the next, which saw nothing changed here
+  and fell back to newest-and-largest wins.
+- A fork copy continued on the other machine never came back: the check for a
+  machine's own copy returning skipped it unread. It is now skipped only when it adds
+  nothing.
+- A fork copy continued here while the other machine continued the original dropped
+  the other side and reported it filed. The other side is now filed as a further fork.
+- On a shared layout a fork was tagged with the importing machine. The writer of each
+  archived session is now taken from the machines' index files, and never this one.
+- `pull --update` said it filed the other copy of a forked session and did not. `pull`
+  now files through the same code as `import`, `forks/` included.
+- `config map` and the home-folder rule were ignored when repointing one project's
+  paths inside another project's sessions.
+- The doctor check for a macOS privacy refusal could not fire: the refusal's reason was
+  not logged, and any other successful push, holding a terminal's grant, cleared it.
+  The reason is logged, the sweep now runs `push --sweep` and marks its log line, and
+  only the sweep's own success clears the check.
+- The per-reply hook walked the archive for temporary files after every reply, did not
+  throttle a large forked session's fork copy, and logged a routine skip on every reply
+  while the drive was offline.
+- macOS detection now prefers an existing `~/Google Drive` archive over a CloudStorage
+  one, so a machine that already used it does not switch.
+- Entries from the PowerShell tool's `projects.json` keep the machine they name, so
+  their forks are recognised when that machine returns - including after pushes
+  rewrite the file.
+
+### Fixed in second review (2026-11-20)
+- On a shared layout, a session archived by the per-reply hook - which leaves the
+  index behind - was forked under the wrong machine: filed twice, and its writer got
+  its own conversation back. When no index row matches exactly, the one other machine
+  that recorded the session is taken as its writer.
+- A deleted `MEMORY.md` entry or memory file came back on every round: the merge was
+  a plain union. It is now three-way, against what was last taken from each machine
+  (`~/.claude/session-sync-base/`), and a machine's own archived memory is no longer merged back.
+- A forked session was re-read in full on every push, and logged as forked after every
+  reply. A fork copy that is current is now left alone, and `FORK` is logged once.
+- A `config map` entry could lose, at random, to a related repository with the same old
+  path. Projects are now repointed first, in a fixed order.
+- The per-reply hook gives up after 5 seconds rather than holding up a reply when the
+  archive's filesystem hangs.
+- `import` reported a fork again on every run, and did not count it as filed.
+- A future-dated archived file was taken when there was no local copy yet.
+- The home folder is now what each machine records at push, not guessed from a profile
+  path ending in `.claude`.
+- A session renamed on another machine, with no new turn, kept its old title here:
+  entries after the last turn (title, last prompt, cost) now count.
+- `config set-machine <name>` pins a machine's name, which a macOS hostname does not.
+  It is saved in `session-sync.json`, so the scheduled sweep - which sees no shell
+  environment - uses it too.
+
+### Fixed in third review (2026-11-20)
+- A fork filed before its writer was known was filed a second time once that machine's
+  index caught up, and on a shared layout the writer got its own conversation back.
+  The copy filed without a machine is now kept current, and counted as possibly this
+  machine's own.
+- `config map -Users-...` failed with "flag provided but not defined": every macOS and
+  Linux project name starts with "-", and the command import printed for it did not
+  work as printed. Names after `map`, `unmap` and `set-machine` are never flags.
+- On a shared layout, memory merges read this machine's own earlier push as the other
+  machine's, dropping entries and sometimes skipping another machine's memory
+  entirely. Each machine now also keeps its own copy in `memory/<machine>/<project>/`,
+  and each other machine's is merged on its own.
+- A fork the user deleted was filed again on the next import. It now comes back only
+  once the other machine adds to it.
+- doctor's macOS privacy check could never clear with `--no-sweep` or an older sweep,
+  and blamed the sweep for any refusal. Without a marking sweep any successful push
+  clears it, and the hint names the run that was refused.
+- A per-reply push that gave up was not logged (now at most once an hour), and
+  half-written files under `forks/`, `profile/` and `memory/` were never cleaned up.
+- With archives in two accounts, macOS detection still fell back to the Google one.
 
 ### Added (2026-11-17)
 - **Global rules, skills and plugins travel with the sessions.** `push` archives
