@@ -177,7 +177,9 @@ func TestImportTagsAForkWithTheMachineThatWroteIt(t *testing.T) {
 	bucket := claude.Slug(repo)
 	// A session recorded at this repo. The path goes into JSON, so its backslashes -
 	// all of a Windows path's - are escaped, or every line is unreadable there.
-	here := func(s string) string { return strings.ReplaceAll(s, `E:\\work\\api`, strings.ReplaceAll(repo, `\`, `\\`)) }
+	here := func(s string) string {
+		return strings.ReplaceAll(s, `E:\\work\\api`, strings.ReplaceAll(repo, `\`, `\\`))
+	}
 	mustWrite(t, filepath.Join(f.claudeDir, "projects", bucket, forkSession+".jsonl"), here(uuidLines("u1", "u2", "a1")))
 	arch := filepath.Join(f.archive, "projects", bucket, forkSession+".jsonl")
 	mustWrite(t, arch, here(uuidLines("u1", "u2", "c1")))
