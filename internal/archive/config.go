@@ -21,6 +21,26 @@ type Config struct {
 	// a conversation readable to anyone who can open the synced folder, which is a
 	// different decision from archiving it.
 	RenderExclude []string `json:"renderExclude,omitempty"`
+
+	// ProjectMap says where an archived project lives on this machine, by its bucket
+	// name in the archive, for projects nothing else identifies. It is per machine on
+	// purpose: the local path means nothing anywhere else.
+	ProjectMap map[string]string `json:"projectMap,omitempty"`
+
+	// Machine pins the name this machine is known by in the archive. Saved here, not
+	// in the environment: the sweep, launched by the system, sees no shell profile.
+	Machine string `json:"machine,omitempty"`
+}
+
+// Mapped is the local folder the user mapped an archived bucket to, if any. Bucket
+// names compare case-insensitively, as everywhere else.
+func (c Config) Mapped(bucket string) (string, bool) {
+	for k, v := range c.ProjectMap {
+		if strings.EqualFold(k, bucket) && strings.TrimSpace(v) != "" {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // ConfigPath is where the destination is persisted.
@@ -101,6 +121,12 @@ func SaveConfig(claudeRoot string, c Config) error {
 	if c.RenderExclude != nil {
 		merged["renderExclude"] = c.RenderExclude
 	}
+	if c.ProjectMap != nil {
+		merged["projectMap"] = c.ProjectMap
+	}
+	if c.Machine != "" {
+		merged["machine"] = c.Machine
+	}
 
 	data, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
@@ -180,6 +206,7 @@ func detect() string {
 		candidates = append(candidates, filepath.Join(root, "My Drive", archiveFolderName))
 	}
 
+	var cloudDrives []string
 	if home, err := os.UserHomeDir(); err == nil {
 		for _, rel := range [][]string{
 			{"Google Drive", "My Drive"},
@@ -191,6 +218,19 @@ func detect() string {
 		} {
 			parts := append([]string{home}, rel...)
 			candidates = append(candidates, filepath.Join(append(parts, archiveFolderName)...))
+		}
+
+		// On macOS, Drive for desktop and OneDrive mount one folder per account under
+		// ~/Library/CloudStorage. Choosing between two accounts would be a guess. Looked
+		// at after the folders above, so a machine already using one keeps it.
+		archives, drives := cloudStorage(home)
+		if len(archives) == 1 {
+			candidates = append(candidates, archives[0])
+		}
+		// A first-run fallback only when no account holds an archive yet: with two
+		// holding one, picking the Google one would be the guess refused above.
+		if len(archives) == 0 {
+			cloudDrives = drives
 		}
 	}
 
@@ -208,7 +248,36 @@ func detect() string {
 			return filepath.Join(parent, archiveFolderName)
 		}
 	}
+	if len(cloudDrives) == 1 {
+		return filepath.Join(cloudDrives[0], archiveFolderName)
+	}
 	return ""
+}
+
+// cloudStorage lists what the per-account folders under ~/Library/CloudStorage hold:
+// existing archives (in GoogleDrive-*/My Drive or OneDrive-*), and the Google Drive
+// roots a first push could create one in.
+func cloudStorage(home string) (archives, drives []string) {
+	dir := filepath.Join(home, "Library", "CloudStorage")
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		var root string
+		switch name := e.Name(); {
+		case strings.HasPrefix(name, "GoogleDrive-"):
+			root = filepath.Join(dir, name, "My Drive")
+			if st, err := os.Stat(root); err == nil && st.IsDir() {
+				drives = append(drives, root)
+			}
+		case strings.HasPrefix(name, "OneDrive-"):
+			root = filepath.Join(dir, name)
+		default:
+			continue
+		}
+		if st, err := os.Stat(filepath.Join(root, archiveFolderName)); err == nil && st.IsDir() {
+			archives = append(archives, filepath.Join(root, archiveFolderName))
+		}
+	}
+	return archives, drives
 }
 
 // TrimSep removes trailing path separators so that comparisons and joins behave.
