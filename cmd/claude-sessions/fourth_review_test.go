@@ -277,7 +277,11 @@ func TestFourthReviewMachineNamesFromTheArchiveArePrintedSafely(t *testing.T) {
 	repo := f.makeRepo(t, "api", "git@github.com:example/api.git")
 	bucket := claude.Slug(repo)
 	mustWrite(t, filepath.Join(f.archive, "projects", bucket, forkSession+".jsonl"), uuidLines("u1", "u2", "b1"))
-	mustWrite(t, filepath.Join(f.archive, "forks", bucket, forkSession, "\x1b[2JEVIL.jsonl"), uuidLines("u1", "u2", "e1"))
+	evil := filepath.Join(f.archive, "forks", bucket, forkSession, "\x1b[2JEVIL.jsonl")
+	mustMkdir(t, filepath.Dir(evil))
+	if err := os.WriteFile(evil, []byte(uuidLines("u1", "u2", "e1")), 0o644); err != nil {
+		t.Skipf("this file system refuses control characters in a name, so the attack cannot happen here: %v", err)
+	}
 	f.writeShardAs(t, "OTHER-BOX", map[string]any{bucket: map[string]any{"path": repo, "leaf": "api"}})
 	out, err := f.run(t, "import", "--search-root", f.dev, "--no-plugins")
 	if err != nil {
