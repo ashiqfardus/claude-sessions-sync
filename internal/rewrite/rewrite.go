@@ -73,6 +73,12 @@ func Rules(oldPath, newPath string, includeBareName bool) []Rule {
 	return out
 }
 
+// Literal is one plain substitution - a session id, say - matched case-insensitively
+// at name boundaries like every other rule.
+func Literal(label, find, replace string) Rule {
+	return Rule{Label: label, Find: find, Replace: replace, re: regexp.MustCompile(`(?i)` + regexp.QuoteMeta(find))}
+}
+
 // Move is one project path that changed between machines.
 type Move struct{ From, To string }
 

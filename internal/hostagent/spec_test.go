@@ -35,6 +35,16 @@ func TestLaunchdPlistIsWellFormed(t *testing.T) {
 	}
 }
 
+// A crash or a kill before push opens its own log must still leave a trace (#6):
+// launchd sends the agent's stderr to /dev/null unless told otherwise.
+func TestLaunchdPlistKeepsStderrBesideTheLog(t *testing.T) {
+	got := LaunchdPlist(Job{Binary: "/Users/me/.claude/bin/claude-sessions"}, 30)
+	want := "<key>StandardErrorPath</key><string>/Users/me/.claude/session-sync.err.log</string>"
+	if !strings.Contains(got, want) {
+		t.Fatalf("plist missing %q\n%s", want, got)
+	}
+}
+
 // A path with an ampersand or quotes would otherwise produce invalid XML, and the
 // agent would never load.
 func TestLaunchdPlistEscapesPaths(t *testing.T) {
@@ -82,7 +92,7 @@ func TestSystemdUnits(t *testing.T) {
 func TestCronLine(t *testing.T) {
 	j := Job{Binary: "/home/me/.claude/bin/claude-sessions"}
 	got := CronLine(j, 15)
-	if got != "*/15 * * * * '/home/me/.claude/bin/claude-sessions' 'push' '--quiet' # claude-sessions-sync" {
+	if got != "*/15 * * * * '/home/me/.claude/bin/claude-sessions' 'push' '--quiet' '--sweep' # claude-sessions-sync" {
 		t.Errorf("cron line = %q", got)
 	}
 	if strings.Contains(got, "\n") {
@@ -152,10 +162,10 @@ func TestJobNamesArePerProfile(t *testing.T) {
 	}
 
 	// The scheduler does not inherit CLAUDE_CONFIG_DIR, so the profile is passed.
-	if got := strings.Join(a.Args(), " "); got != `push --quiet --claude-dir C:\Temp\claude` {
+	if got := strings.Join(a.Args(), " "); got != `push --quiet --sweep --claude-dir C:\Temp\claude` {
 		t.Errorf("args = %q", got)
 	}
-	if got := strings.Join(def.Args(), " "); got != "push --quiet" {
+	if got := strings.Join(def.Args(), " "); got != "push --quiet --sweep" {
 		t.Errorf("default args = %q", got)
 	}
 }
@@ -172,7 +182,7 @@ func TestTaskXML(t *testing.T) {
 		t.Errorf("command = %q", def.Command)
 	}
 	// A path with a space must stay one argument.
-	if def.Arguments != `push --quiet --claude-dir "D:\claude profiles\work"` {
+	if def.Arguments != `push --quiet --sweep --claude-dir "D:\claude profiles\work"` {
 		t.Errorf("arguments = %q", def.Arguments)
 	}
 	if def.Enabled != "true" || !ownsTask(def) || taskProgram(def) != WindowlessName {

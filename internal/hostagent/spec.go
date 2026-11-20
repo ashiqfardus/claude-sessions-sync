@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -52,9 +53,10 @@ func (j Job) SystemdServiceName() string {
 // CronMarker tags our crontab line so uninstall removes that line and nothing else.
 func (j Job) CronMarker() string { return "# " + Name + j.suffix() }
 
-// Args is what every platform runs after the binary.
+// Args is what every platform runs after the binary. --sweep marks the run in the log:
+// doctor trusts only the sweep's own success to show the sweep can reach the archive.
 func (j Job) Args() []string {
-	args := []string{"push", "--quiet"}
+	args := []string{"push", "--quiet", "--sweep"}
 	if j.Profile != "" {
 		args = append(args, "--claude-dir", j.Profile)
 	}
@@ -62,11 +64,15 @@ func (j Job) Args() []string {
 }
 
 // LaunchdPlist is the macOS user agent definition.
+//
+// stderr goes beside session-sync.log (the binary lives in <claude-root>/bin): a
+// crash or a kill before push opens its own log would otherwise leave no trace.
 func LaunchdPlist(j Job, everyMinutes int) string {
 	var args strings.Builder
 	for _, a := range append([]string{j.Binary}, j.Args()...) {
 		args.WriteString("    <string>" + xmlEscape(a) + "</string>\n")
 	}
+	errLog := path.Join(path.Dir(path.Dir(filepath.ToSlash(j.Binary))), "session-sync.err.log")
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -78,6 +84,7 @@ func LaunchdPlist(j Job, everyMinutes int) string {
   <key>StartInterval</key><integer>` + strconv.Itoa(everyMinutes*60) + `</integer>
   <key>RunAtLoad</key><false/>
   <key>ProcessType</key><string>Background</string>
+  <key>StandardErrorPath</key><string>` + xmlEscape(errLog) + `</string>
 </dict>
 </plist>
 `
