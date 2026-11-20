@@ -133,6 +133,10 @@ func cmdImport(args []string) error {
 			homes = append(homes, s.Home)
 		}
 	}
+	backupRoot, backupHome := backupOrigin(dest)
+	if backupHome != "" {
+		homes = append(homes, backupHome)
+	}
 	// The user's own mapping beats every inference: it is the answer for a project that
 	// nothing identifies, and it is what they asked for.
 	cfg, _ := archive.LoadConfig(root)
@@ -198,7 +202,11 @@ func cmdImport(args []string) error {
 			moves = append(moves, rewrite.Move{From: s.ClaudeRoot, To: root})
 		}
 	}
+	if backupRoot != "" && !samePath(backupRoot, root) {
+		moves = append(moves, rewrite.Move{From: backupRoot, To: root})
+	}
 	writers := sessionWriters(dest)
+	former := formerNames(dest)
 
 	var rows []importRow
 	var filed, updated, sameLayout, notFound, ambiguous int
@@ -303,7 +311,7 @@ func cmdImport(args []string) error {
 
 		res, err := restoreInto(root, archived, match.Path, rewriteFrom, moves,
 			restoreOpts{BareName: *bareName, DryRun: *dryRun, Update: *update,
-				Owner: p.Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", bucket), Archive: dest})
+				Owner: p.Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", bucket), Archive: dest, FormerNames: former})
 		if err != nil {
 			row.Note = err.Error()
 			rows = append(rows, row)
@@ -526,6 +534,7 @@ func cmdPull(args []string) error {
 		res, err := restoreInto(root, srcDir, "", "", nil, restoreOpts{
 			DryRun: *dryRun, Update: *update, Bucket: targetName,
 			Owner: manifest[name].Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", name), Archive: dest,
+			FormerNames: formerNames(dest),
 		})
 		if err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %v", name, err))
@@ -556,6 +565,19 @@ func cmdPull(args []string) error {
 	return nil
 }
 
+// formerNames maps each machine, lower-cased, to the names it went by before, as its
+// shard records them.
+func formerNames(dest string) map[string][]string {
+	shards, _, _ := archive.ReadShards(dest)
+	out := map[string][]string{}
+	for _, s := range shards {
+		if len(s.FormerNames) > 0 {
+			out[strings.ToLower(s.Machine)] = s.FormerNames
+		}
+	}
+	return out
+}
+
 // sessionWriters answers which machine wrote an archived session: the one whose index
 // records a local copy of the same size and time. On a shared layout that is often not
 // the machine that last pushed the project, which is usually the one importing.
@@ -566,12 +588,11 @@ func sessionWriters(dest string) func(bucket, id string, info os.FileInfo) strin
 		k := strings.ToLower(s.Bucket + "/" + s.ID)
 		byKey[k] = append(byKey[k], s)
 	}
-	me := machineName()
 	return func(bucket, id string, info os.FileInfo) string {
 		rows := byKey[strings.ToLower(bucket+"/"+id)]
 		for _, s := range rows {
 			// Never this machine: a copy that differs from what is here is not its own.
-			if !strings.EqualFold(s.Machine, me) && s.Size == info.Size() && withinTolerance(s.Updated, info.ModTime()) {
+			if !isMe(s.Machine) && s.Size == info.Size() && withinTolerance(s.Updated, info.ModTime()) {
 				return s.Machine
 			}
 		}
@@ -581,7 +602,7 @@ func sessionWriters(dest string) func(bucket, id string, info os.FileInfo) strin
 		other := ""
 		for _, s := range rows {
 			switch {
-			case strings.EqualFold(s.Machine, me):
+			case isMe(s.Machine):
 			case other == "":
 				other = s.Machine
 			case !strings.EqualFold(other, s.Machine):

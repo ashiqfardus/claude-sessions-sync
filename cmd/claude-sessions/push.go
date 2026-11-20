@@ -156,6 +156,13 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	}
 
 	logf := newLogger(root, quiet)
+	if opts.Sweep {
+		// Every line of a sweep run is marked, not only its PUSH line: a sweep refused
+		// from its very first run leaves no PUSH, and doctor must still see that a
+		// sweep exists and was the run refused.
+		plain := logf
+		logf = func(format string, args ...any) { plain(format+sweepMark, args...) }
+	}
 
 	// An unattended push that hangs - a dead NFS, SMB or rclone mount blocks forever
 	// in a read - ends itself. launchd has no time limit at all, and the lock it holds
@@ -203,7 +210,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		if statErr != nil {
 			reason = statErr.Error()
 		}
-		skipf("SKIP: destination parent not available: %s%s", reason, sweepSuffix(opts.Sweep))
+		skipf("SKIP: destination parent not available: %s", reason)
 		return fmt.Errorf("%s is not available - is the sync client mounted?", filepath.Dir(dest))
 	}
 
@@ -241,6 +248,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		if n := archive.RemoveOrphanTemps(dest); n > 0 {
 			logf("CLEAN: removed %d temporary file(s) left by an interrupted run", n)
 		}
+		pinMachineName(root)
 	}
 
 	buckets, err := claude.ListBuckets(claude.ProjectsDir(root))
@@ -259,6 +267,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		ClaudeRoot:    root,
 		Home:          userHome(),
 		ToolVersion:   version,
+		FormerNames:   formerMachines,
 		Projects:      map[string]archive.Project{},
 	}
 	var sessions []archive.Session
@@ -346,6 +355,9 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 				res.Unchanged++
 			}
 		}
+		if !dryRun && len(b.Memory) > 0 {
+			noteHeldMemory(root, b.Name, filepath.Join(b.Dir, "memory"))
+		}
 
 		if entry, ok := projectIdentity(b, newestCwd, statePaths); ok {
 			scan := changed
@@ -383,8 +395,8 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		}
 	}
 
-	logf("PUSH: %d copied, %d unchanged, %d session(s), %d project(s) -> %s%s",
-		res.Copied, res.Unchanged, res.Sessions, res.Projects, dest, sweepSuffix(opts.Sweep))
+	logf("PUSH: %d copied, %d unchanged, %d session(s), %d project(s) -> %s",
+		res.Copied, res.Unchanged, res.Sessions, res.Projects, dest)
 
 	// Readable pages for phones and tablets. Best-effort by design: a rendering
 	// problem must never fail a sync that has already succeeded, so this is wrapped
@@ -730,13 +742,6 @@ func userHome() string {
 // so only the sweep's success says it can reach the archive.
 const sweepMark = " [sweep]"
 
-func sweepSuffix(sweep bool) string {
-	if sweep {
-		return sweepMark
-	}
-	return ""
-}
-
 // pushedBefore is what this machine's last push recorded about each session, keyed
 // "bucket/id": its local size and time then.
 func pushedBefore(dest, machine string) map[string]archive.Session {
@@ -957,9 +962,40 @@ func mdText(s string) string {
 // safeMachine makes a machine name usable as a file name.
 var safeMachine = strings.NewReplacer("/", "-", `\`, "-", ":", "-", " ", "-", "*", "-", "?", "-")
 
-// savedMachine is the name saved in session-sync.json, loaded by resolveRoot: every
-// command finds its profile through it before it names anything.
-var savedMachine string
+// savedMachine is the name saved in session-sync.json, and formerMachines the names
+// this machine went by before it, loaded by resolveRoot: every command finds its
+// profile through it before it names anything.
+var (
+	savedMachine   string
+	formerMachines []string
+)
+
+// isMe reports whether name is this machine's, now or under a name it went by before.
+func isMe(name string) bool {
+	for _, n := range append([]string{machineName()}, formerMachines...) {
+		if strings.EqualFold(name, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// pinMachineName saves the name a machine first pushed under. Computed each time, it
+// changed with the hostname - macOS renames itself after a clash on the network -
+// and the machine then took its own files in the archive for another machine's.
+func pinMachineName(root string) {
+	if savedMachine != "" || strings.TrimSpace(os.Getenv("CLAUDE_SESSIONS_MACHINE")) != "" {
+		return
+	}
+	cfg, err := archive.LoadConfig(root)
+	if err != nil {
+		return // a file it cannot read is not overwritten
+	}
+	cfg.Machine = machineName()
+	if archive.SaveConfig(root, cfg) == nil {
+		savedMachine = cfg.Machine
+	}
+}
 
 // machineName identifies the writer of a manifest shard.
 //

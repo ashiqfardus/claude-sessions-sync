@@ -94,6 +94,10 @@ type Shard struct {
 	// recorded, not inferred from ClaudeRoot: a profile named .claude can sit anywhere.
 	Home string `json:"home,omitempty"`
 
+	// FormerNames are names the writer went by before, so other machines keep its
+	// forks under the name they were first filed by instead of filing them again.
+	FormerNames []string `json:"formerNames,omitempty"`
+
 	// RelatedIndexed records that every transcript has been scanned for related
 	// repositories once, so later pushes only scan the transcripts that changed.
 	RelatedIndexed bool `json:"relatedIndexed,omitempty"`

@@ -45,6 +45,10 @@ type restoreOpts struct {
 	OwnerOf func(bucket, id string, info os.FileInfo) string
 	Forks   string
 
+	// FormerNames maps a machine, lower-cased, to the names it went by before: its
+	// forks filed under an old name are kept current, not filed again.
+	FormerNames map[string][]string
+
 	// Bucket files into this local bucket by name, instead of the one projectPath
 	// slugs to: pull's same-layout case.
 	Bucket string
@@ -137,7 +141,10 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 	for _, e := range entries {
 		// Regular files only: a symlink in the archive would be read through, filing
 		// whatever it points at as a transcript.
-		if e.Type().IsRegular() && strings.EqualFold(filepath.Ext(e.Name()), ".jsonl") {
+		// A transcript is named by its id. Anything else - "<id> (conflicted copy).jsonl",
+		// a sync client's - would be filed as a session of its own and pushed back.
+		id, ok := strings.CutSuffix(e.Name(), filepath.Ext(e.Name()))
+		if ok && e.Type().IsRegular() && strings.EqualFold(filepath.Ext(e.Name()), ".jsonl") && claude.IsTranscriptID(id) {
 			transcripts = append(transcripts, filepath.Join(source, e.Name()))
 		}
 	}
@@ -194,7 +201,10 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		// A copy filed before its writer was known carries the tag with no machine; it
 		// may be this machine's too. Only a copy that adds nothing is skipped, so
 		// counting it is safe.
-		tags := []string{forkTag(filepath.Base(res.Bucket), machineName()), forkTag(filepath.Base(res.Bucket), "")}
+		var tags []string
+		for _, n := range append([]string{machineName(), ""}, formerMachines...) {
+			tags = append(tags, forkTag(filepath.Base(res.Bucket), n))
+		}
 		for _, e := range locals {
 			if id, ok := strings.CutSuffix(e.Name(), ".jsonl"); ok {
 				for _, tag := range tags {
@@ -206,6 +216,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		}
 	}
 
+	filed := loadFiledForks(filedForksPath(root, res.Bucket))
 	for _, src := range transcripts {
 		name := filepath.Base(src)
 		dst := filepath.Join(res.Bucket, name)
@@ -215,6 +226,12 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 				res.Skipped++
 				continue
 			}
+		}
+		// A fork filed here and deleted since is in this machine's own archived bucket
+		// once a push has run. It is not filed again unless turns were added to it.
+		if f, was := filed[strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))]; was && !exists && claude.LastUUID(src) == f.Last {
+			res.Skipped++
+			continue
 		}
 		restoreSessionFiles(source, res.Bucket, strings.TrimSuffix(name, filepath.Ext(name)), opts.DryRun)
 		if exists && !opts.Update {
@@ -259,7 +276,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 			}
 			// This machine's tag names its own copies, and this one differs from what
 			// is here: it is someone else's, even when who is not known.
-			if strings.EqualFold(owner, machineName()) {
+			if isMe(owner) {
 				owner = ""
 			}
 			fid, outcome, err := fileFork(root, src, filepath.Join(source, id), res.Bucket, id,
@@ -283,22 +300,22 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 	if opts.Forks != "" && archive.IsRealDir(opts.Forks) {
 		ids, _ := os.ReadDir(opts.Forks)
 		for _, d := range ids {
-			if !d.IsDir() || !archive.ValidName(d.Name()) {
+			if !d.IsDir() || !claude.IsSessionID(d.Name()) {
 				continue
 			}
 			copies, _ := os.ReadDir(filepath.Join(opts.Forks, d.Name()))
 			for _, c := range copies {
 				machine, ok := strings.CutSuffix(c.Name(), ".jsonl")
-				if !ok || !c.Type().IsRegular() || strings.EqualFold(machine, machineName()) {
+				if !ok || !c.Type().IsRegular() || isMe(machine) {
 					continue
 				}
 				fid, outcome, err := fileFork(root, filepath.Join(opts.Forks, d.Name(), c.Name()), filepath.Join(source, d.Name()),
 					res.Bucket, d.Name(), forkTag(filepath.Base(source), machine), rules, bareLeaf, opts)
 				if err != nil {
-					res.Failed = append(res.Failed, fmt.Sprintf("%s: fork from %s: %v", d.Name(), machine, err))
+					res.Failed = append(res.Failed, fmt.Sprintf("%s: fork from %s: %v", d.Name(), printable(machine), err))
 					continue
 				}
-				res.countFork(outcome, fmt.Sprintf("%s: %s's copy is session %s", d.Name(), machine, fid))
+				res.countFork(outcome, fmt.Sprintf("%s: %s's copy is session %s", d.Name(), printable(machine), fid))
 			}
 		}
 	}
@@ -415,19 +432,28 @@ func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.
 	if err != nil {
 		return "", forkUnchanged, err
 	}
-	// A copy filed before its writer was known has the tag with no machine. Once the
-	// writer is known, that same copy is kept current rather than filed a second time.
-	if alias := tag[:strings.LastIndex(tag, "@")+1]; alias != tag &&
-		archive.StatOrNil(filepath.Join(bucketDir, claude.ForkID(id, tag)+".jsonl")) == nil &&
-		archive.StatOrNil(filepath.Join(bucketDir, claude.ForkID(id, alias)+".jsonl")) != nil {
-		tag = alias
-	}
 	recPath := filedForksPath(root, bucketDir)
 	filed := loadFiledForks(recPath)
-	remember := func(fid string) {
+	remember := func(fid, dst string) {
 		if !opts.DryRun {
-			filed[fid] = info.Size()
+			filed[fid] = filedFork{From: info.Size(), Last: claude.LastUUID(dst)}
 			saveFiledForks(recPath, filed)
+		}
+	}
+	// A copy filed before its writer was known has the tag with no machine, and one
+	// from a machine since renamed has its old name. That same copy is kept current
+	// rather than filed a second time.
+	known := func(t string) bool {
+		fid := claude.ForkID(id, t)
+		_, was := filed[fid]
+		return was || archive.StatOrNil(filepath.Join(bucketDir, fid+".jsonl")) != nil
+	}
+	if at := strings.LastIndex(tag, "@"); at >= 0 && !known(tag) {
+		for _, alt := range append([]string{""}, opts.FormerNames[tag[at+1:]]...) {
+			if t := forkTag(tag[:at], alt); t != tag && known(t) {
+				tag = t
+				break
+			}
 		}
 	}
 
@@ -438,7 +464,7 @@ func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.
 		exists := archive.StatOrNil(dst) != nil
 		// Filed before and deleted here since: the user kept the other copy. It comes
 		// back only once the other machine has gone on with it.
-		if size, was := filed[fid]; was && !exists && info.Size() <= size {
+		if f, was := filed[fid]; was && !exists && info.Size() <= f.From {
 			return fid, forkUnchanged, nil
 		}
 		outcome := forkNew
@@ -471,29 +497,35 @@ func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.
 			}
 		}
 		if outcome != forkUnchanged {
-			remember(fid)
+			remember(fid, dst)
 		}
 		return fid, outcome, nil
 	}
 	return "", forkUnchanged, fmt.Errorf("continued on both machines %d times over; file it by hand with `restore`", maxForkLevels)
 }
 
-// filedForksPath records the forks this machine filed into one local bucket: fork id
-// to the size of the archived copy it came from. Kept beside the memory base, out of
-// Claude Code's projects folder.
+// filedForksPath records the forks this machine filed into one local bucket. Kept
+// beside the memory base, out of Claude Code's projects folder.
 func filedForksPath(root, bucketDir string) string {
 	return filepath.Join(root, "session-sync-base", filepath.Base(bucketDir), "forks.json")
 }
 
-func loadFiledForks(path string) map[string]int64 {
-	m := map[string]int64{}
+// filedFork is one fork filed here: the size of the other machine's copy it came
+// from, and the last entry of the copy filed here.
+type filedFork struct {
+	From int64  `json:"from"`
+	Last string `json:"last"`
+}
+
+func loadFiledForks(path string) map[string]filedFork {
+	m := map[string]filedFork{}
 	if raw, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(raw, &m)
 	}
 	return m
 }
 
-func saveFiledForks(path string, m map[string]int64) {
+func saveFiledForks(path string, m map[string]filedFork) {
 	if data, err := json.MarshalIndent(m, "", "  "); err == nil {
 		_ = archive.WriteFileAtomic(path, append(data, '\n'), 0o644)
 	}
@@ -544,7 +576,6 @@ func forkLevel(tag string, level int) string {
 // older version. This machine's own copy restores a machine with no memory here at
 // all, and is otherwise left alone.
 func restoreProjectMemory(root, dest, bucket, sharedDir, dstDir, owner string, dryRun, update bool) int {
-	me := machineName()
 	var mine, others []string
 	if dest != "" {
 		machines, _ := os.ReadDir(filepath.Join(dest, "memory"))
@@ -552,7 +583,7 @@ func restoreProjectMemory(root, dest, bucket, sharedDir, dstDir, owner string, d
 			if !m.IsDir() || !archive.ValidName(m.Name()) || !archive.IsRealDir(machineMemoryDir(dest, m.Name(), bucket)) {
 				continue
 			}
-			if strings.EqualFold(m.Name(), me) {
+			if isMe(m.Name()) {
 				mine = append(mine, m.Name())
 			} else {
 				others = append(others, m.Name())
@@ -563,10 +594,13 @@ func restoreProjectMemory(root, dest, bucket, sharedDir, dstDir, owner string, d
 	covered := map[string]bool{}
 	for _, m := range append(mine, others...) { // its own first: a restore onto an empty machine
 		covered[strings.ToLower(m)] = true
-		n += restoreMemory(root, machineMemoryDir(dest, m, bucket), dstDir, m+"@"+bucket, dryRun, update, strings.EqualFold(m, me))
+		n += restoreMemory(root, machineMemoryDir(dest, m, bucket), dstDir, m+"@"+bucket, dryRun, update, isMe(m))
 	}
 	if !covered[strings.ToLower(owner)] {
-		n += restoreMemory(root, sharedDir, dstDir, bucket, dryRun, update, strings.EqualFold(owner, me))
+		n += restoreMemory(root, sharedDir, dstDir, bucket, dryRun, update, isMe(owner))
+	}
+	if !dryRun {
+		noteHeldMemory(root, filepath.Base(filepath.Dir(dstDir)), dstDir)
 	}
 	return n
 }
@@ -599,6 +633,13 @@ func restoreMemory(root, srcDir, dstDir, source string, dryRun, update, own bool
 	// how a later import tells "deleted here" from "never seen here". Kept beside
 	// session-sync.json, out of Claude Code's own projects folder.
 	base := filepath.Join(root, "session-sync-base", filepath.Base(filepath.Dir(dstDir)), source)
+	// Everything this machine has held, from any source: what is in it and not here
+	// was deleted here. The base alone missed an entry that went from here to another
+	// machine and was then deleted here - offered back, it read as that machine's own.
+	held := loadHeldMemory(root, filepath.Base(filepath.Dir(dstDir)))
+	if !archive.IsRealDir(dstDir) {
+		held = heldMemory{} // nothing here at all: a restore, not a deletion
+	}
 	stamp := time.Now().Format("20060102-150405")
 	n := 0
 	for _, e := range entries {
@@ -625,14 +666,14 @@ func restoreMemory(root, srcDir, dstDir, source string, dryRun, update, own bool
 		// what was last taken: what either side added arrives, what either deleted
 		// stays deleted.
 		if update && strings.EqualFold(e.Name(), "MEMORY.md") && archive.StatOrNil(dst) != nil {
-			if mergeMemoryIndex(src, dst, baseFile, srcInfo, dryRun) {
+			if mergeMemoryIndex(src, dst, baseFile, srcInfo, dryRun, held.Entries) {
 				n++
 			}
 			continue
 		}
 		// A file this machine deleted after taking it is not brought back, as long as
 		// the archived copy is still the one it took.
-		if archive.StatOrNil(dst) == nil && sameContent(src, baseFile) {
+		if archive.StatOrNil(dst) == nil && (sameContent(src, baseFile) || held.Files[strings.ToLower(e.Name())]) {
 			continue
 		}
 		if !shouldRestore(srcInfo, dst, update) {
@@ -668,7 +709,7 @@ func sameContent(a, b string) bool {
 // mergeMemoryIndex merges the archived MEMORY.md into the local one against baseFile,
 // what was last taken from it, reporting whether the local one changed. A copy dated
 // in the future is refused.
-func mergeMemoryIndex(src, dst, baseFile string, srcInfo os.FileInfo, dryRun bool) bool {
+func mergeMemoryIndex(src, dst, baseFile string, srcInfo os.FileInfo, dryRun bool, held map[string]bool) bool {
 	// A copy dated in the future is refused outright, as for every memory file: it is
 	// how an archive someone else can write would plant an instruction that stays
 	// "newer" than any local edit.
@@ -682,7 +723,7 @@ func mergeMemoryIndex(src, dst, baseFile string, srcInfo os.FileInfo, dryRun boo
 		return false
 	}
 	base, _ := os.ReadFile(baseFile) // none yet: everything is new
-	merged := mergeIndex(string(base), string(theirs), string(mine), srcInfo.ModTime().After(dstInfo.ModTime()))
+	merged := mergeIndex(string(base), string(theirs), string(mine), srcInfo.ModTime().After(dstInfo.ModTime()), held)
 	if dryRun {
 		return merged != string(mine)
 	}
@@ -698,20 +739,85 @@ func mergeMemoryIndex(src, dst, baseFile string, srcInfo os.FileInfo, dryRun boo
 // indexLink is the memory file an index line points at: "- [Title](file.md) - hook".
 var indexLink = regexp.MustCompile(`\]\(([^)\s]+\.md)\)`)
 
+// indexKey is what identifies a MEMORY.md entry: the file its line links to, or the
+// line itself when it links to none.
+func indexKey(line string) string {
+	if m := indexLink.FindStringSubmatch(line); m != nil {
+		return "link:" + strings.ToLower(m[1])
+	}
+	return "line:" + strings.TrimSpace(line)
+}
+
+// heldMemory is every memory entry and memory file this machine has had in one
+// project, recorded at each push and import beside the base.
+type heldMemory struct {
+	Entries map[string]bool `json:"entries"`
+	Files   map[string]bool `json:"files"`
+}
+
+func heldMemoryPath(root, bucket string) string {
+	return filepath.Join(root, "session-sync-base", bucket, "held.json")
+}
+
+func loadHeldMemory(root, bucket string) heldMemory {
+	var h heldMemory
+	if raw, err := os.ReadFile(heldMemoryPath(root, bucket)); err == nil {
+		_ = json.Unmarshal(raw, &h)
+	}
+	if h.Entries == nil {
+		h.Entries = map[string]bool{}
+	}
+	if h.Files == nil {
+		h.Files = map[string]bool{}
+	}
+	return h
+}
+
+// noteHeldMemory adds what memDir holds now to the project's record.
+func noteHeldMemory(root, bucket, memDir string) {
+	entries, err := os.ReadDir(memDir)
+	if err != nil {
+		return
+	}
+	h := loadHeldMemory(root, bucket)
+	changed := false
+	add := func(m map[string]bool, k string) {
+		if !m[k] {
+			m[k], changed = true, true
+		}
+	}
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
+			continue
+		}
+		add(h.Files, strings.ToLower(e.Name()))
+		if !strings.EqualFold(e.Name(), "MEMORY.md") {
+			continue
+		}
+		if raw, err := os.ReadFile(filepath.Join(memDir, e.Name())); err == nil {
+			for _, l := range strings.Split(string(raw), "\n") {
+				if strings.TrimSpace(l) != "" {
+					add(h.Entries, indexKey(l))
+				}
+			}
+		}
+	}
+	if changed {
+		if data, err := json.MarshalIndent(h, "", "  "); err == nil {
+			_ = archive.WriteFileAtomic(heldMemoryPath(root, bucket), append(data, '\n'), 0o644)
+		}
+	}
+}
+
 // mergeIndex merges two MEMORY.md indexes three ways. An entry is the file a line links
 // to, or the line itself when it links to none; base is what was last taken from
 // theirs. The result is mine, in its order, with what changed there since base:
 // entries they deleted dropped, entries only they changed taken, and entries they
 // added appended - and nothing this side deleted after taking it brought back. With
-// no base, nothing counts as deleted. An entry both sides changed gets the newer
-// file's wording.
-func mergeIndex(base, theirs, mine string, theirsNewer bool) string {
-	key := func(line string) string {
-		if m := indexLink.FindStringSubmatch(line); m != nil {
-			return "link:" + strings.ToLower(m[1])
-		}
-		return "line:" + strings.TrimSpace(line)
-	}
+// no base, nothing counts as deleted, except what held - every entry this machine has
+// had - names. An entry both sides changed gets the newer file's wording.
+func mergeIndex(base, theirs, mine string, theirsNewer bool, held map[string]bool) string {
+	key := indexKey
 	lines := func(s string) []string {
 		if strings.TrimSpace(s) == "" {
 			return nil
@@ -756,8 +862,8 @@ func mergeIndex(base, theirs, mine string, theirsNewer bool) string {
 			continue
 		}
 		seen[k] = true
-		if _, inBase := b[k]; inBase {
-			continue // deleted here after it was taken
+		if _, inBase := b[k]; inBase || held[k] {
+			continue // deleted here after it was taken, or after it went from here
 		}
 		out = append(out, l)
 	}

@@ -121,3 +121,17 @@ func TestForkIDIsStableAndAUUID(t *testing.T) {
 		t.Fatalf("ForkID %q is not a version-4 UUID", a)
 	}
 }
+
+func TestIsTranscriptID(t *testing.T) {
+	for id, want := range map[string]bool{
+		"11111111-2222-3333-4444-555555555555":                   true,
+		"agent-a1b2c3d4":                                         true,
+		"11111111-2222-3333-4444-555555555555 (conflicted copy)": false,
+		"11111111-2222-3333-4444-555555555555 (1)":               false,
+		"notes": false,
+	} {
+		if got := IsTranscriptID(id); got != want {
+			t.Errorf("IsTranscriptID(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
