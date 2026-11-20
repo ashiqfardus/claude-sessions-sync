@@ -448,7 +448,8 @@ func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.
 		_, was := filed[fid]
 		return was || archive.StatOrNil(filepath.Join(bucketDir, fid+".jsonl")) != nil
 	}
-	if at := strings.LastIndex(tag, "@"); at >= 0 && !known(tag) {
+	// Split at the first "@": a bucket's slug has none, a name set with set-machine may.
+	if at := strings.Index(tag, "@"); at >= 0 && !known(tag) {
 		for _, alt := range append([]string{""}, opts.FormerNames[tag[at+1:]]...) {
 			if t := forkTag(tag[:at], alt); t != tag && known(t) {
 				tag = t
