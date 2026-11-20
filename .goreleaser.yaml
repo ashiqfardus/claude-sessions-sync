@@ -32,6 +32,46 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# One-command installs: `brew install --cask ashiqfardus/tap/claude-sessions` and
+# `scoop install claude-sessions` from ashiqfardus/scoop-bucket. Writing to those two
+# repositories needs PACKAGES_GITHUB_TOKEN (the workflow's own token cannot); without
+# it, a release still succeeds and skips them.
+homebrew_casks:
+  - name: claude-sessions
+    repository:
+      owner: ashiqfardus
+      name: homebrew-tap
+      token: "{{ .Env.PACKAGES_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/ashiqfardus/claude-sessions-sync
+    description: Back up Claude Code conversations and resume them on another computer
+    skip_upload: '{{ if eq (index .Env "PACKAGES_GITHUB_TOKEN") "" }}true{{ end }}'
+    # The binary is not signed by Apple, so macOS would refuse to run it the first
+    # time. A third-party tap may install it; this clears the quarantine flag.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/claude-sessions"]
+          end
+    caveats: |
+      Set it up with:
+        claude-sessions config set-destination "<your synced folder>"
+        claude-sessions install
+      Before `brew uninstall`, run `claude-sessions uninstall` to remove the hooks
+      and the background sweep it added.
+
+scoops:
+  - name: claude-sessions
+    repository:
+      owner: ashiqfardus
+      name: scoop-bucket
+      token: "{{ .Env.PACKAGES_GITHUB_TOKEN }}"
+    homepage: https://github.com/ashiqfardus/claude-sessions-sync
+    description: Back up Claude Code conversations and resume them on another computer
+    license: MIT
+    skip_upload: '{{ if eq (index .Env "PACKAGES_GITHUB_TOKEN") "" }}true{{ end }}'
+
 changelog:
   use: github
   sort: asc

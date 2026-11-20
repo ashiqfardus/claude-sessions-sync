@@ -146,7 +146,21 @@ would be a "backup" that never leaves the computer.
 
 It runs on Windows 10 or later, macOS and Linux.
 
-**Download** the file for your system from the
+**With a package manager** (the program lands on your `PATH`, and upgrades are one
+command):
+
+```sh
+# macOS or Linux, with Homebrew
+brew install --cask ashiqfardus/tap/claude-sessions
+```
+
+```powershell
+# Windows, with Scoop
+scoop bucket add ashiqfardus https://github.com/ashiqfardus/scoop-bucket
+scoop install ashiqfardus/claude-sessions
+```
+
+**Or download** the file for your system from the
 [Releases page](https://github.com/ashiqfardus/claude-sessions-sync/releases): a `.zip`
 for Windows, a `.tar.gz` for macOS and Linux, for amd64 (Intel and AMD) or arm64
 (Apple silicon, ARM). Unpack it and put `claude-sessions` (`claude-sessions.exe` on
@@ -506,6 +520,9 @@ want them:
 Replace the program, then run `install` again with the same flags you used before:
 
 ```sh
+brew upgrade --cask claude-sessions   # Homebrew
+scoop update claude-sessions          # Scoop
+# or download the new release and replace the file
 claude-sessions install
 ```
 
@@ -562,7 +579,9 @@ claude-sessions restore --source "/path/to/old/bucket" \
 lookup ignores case.
 
 **I want to stop using it.** `claude-sessions uninstall` removes both hooks and the
-sweep. **Your archive is left completely alone.** These files in `~/.claude` stay for
+sweep; run it before `brew uninstall --cask claude-sessions` or
+`scoop uninstall claude-sessions`, which only remove the program. **Your archive is
+left completely alone.** These files in `~/.claude` stay for
 you to delete if you want:
 - `bin/` (the program, and `claude-sessionsw.exe` on Windows);
 - `session-sync.json` (destination, exclusions, mappings, computer name);
