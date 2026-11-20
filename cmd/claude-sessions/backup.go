@@ -28,6 +28,10 @@ var (
 	backupFiles = []string{"settings.json", "settings.local.json", "history.jsonl", "session-sync.json", "keybindings.json"}
 )
 
+// backupMarker is the first line of every backup's MANIFEST.txt; import reads it to
+// know an unzipped backup, whose rules and skills sit at its top.
+const backupMarker = "Claude Code backup"
+
 func cmdBackup(args []string) error {
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
@@ -203,7 +207,7 @@ func addToZip(zw *zip.Writer, root, rel string) error {
 
 func manifestText(root string, buckets []claude.Bucket, transcripts int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Claude Code backup\ncreated   %s\nmachine   %s\nsource    %s\n",
+	fmt.Fprintf(&b, backupMarker+"\ncreated   %s\nmachine   %s\nsource    %s\n",
 		time.Now().Format("2006-01-02 15:04:05"), machineName(), root)
 	b.WriteString("excluded  .credentials.json, .claude.json (by design)\n\ntranscripts per project bucket:\n")
 	for _, bk := range buckets {

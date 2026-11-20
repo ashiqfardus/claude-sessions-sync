@@ -129,6 +129,15 @@ have pushed with this version.
   half-written files under `forks/`, `profile/` and `memory/` were never cleaned up.
 - With archives in two accounts, macOS detection still fell back to the Google one.
 
+### Fixed (2026-11-20, after the README fact-check)
+- Importing an unzipped `backup` brought back sessions and memory but not rules,
+  skills, agents, commands or output styles, which a backup keeps at its top level
+  rather than under `profile/`. import and pull now recognise a backup by its
+  `MANIFEST.txt`, restore those, and install the plugins its `settings.json` lists.
+  Only a backup is read that way, so an archive's own `INDEX.md` or `README.md` is
+  never taken for a rule. The backup's `settings.json` is still not restored: its
+  hooks point at the old machine.
+
 ### Added (2026-11-17)
 - **Global rules, skills and plugins travel with the sessions.** `push` archives
   `CLAUDE.md` and the other top-level `.md` files beside it, `skills/`, `agents/`,
