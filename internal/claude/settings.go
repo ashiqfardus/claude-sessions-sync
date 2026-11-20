@@ -90,8 +90,13 @@ func (s Settings) EffectiveCleanupPeriodDays() int {
 // session and race on the manifest, and that is worth reporting rather than hiding
 // behind the first match.
 func (s Settings) SessionEndHooks(needles ...string) []Hook {
+	return s.HooksFor("SessionEnd", needles...)
+}
+
+// HooksFor returns every installed hook for event mentioning any needle.
+func (s Settings) HooksFor(event string, needles ...string) []Hook {
 	var out []Hook
-	for _, group := range s.Hooks["SessionEnd"] {
+	for _, group := range s.Hooks[event] {
 		for _, h := range group.Hooks {
 			for _, n := range needles {
 				if h.Mentions(n) {

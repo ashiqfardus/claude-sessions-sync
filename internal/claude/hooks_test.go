@@ -118,8 +118,8 @@ func TestInstallHookIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replaced != 1 {
-		t.Errorf("second install should replace our entry, got replaced=%d", replaced)
+	if replaced != len(ourHooks) {
+		t.Errorf("second install should replace our entry for each hooked event, got replaced=%d", replaced)
 	}
 	if entries := sessionEnd(t, readSettings(t, path)); len(entries) != 1 {
 		t.Errorf("expected exactly one hook, got %d", len(entries))
@@ -179,8 +179,8 @@ func TestRemoveHookLeavesOthersAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if removed != 1 {
-		t.Errorf("expected to remove exactly ours, got %d", removed)
+	if removed != len(ourHooks) {
+		t.Errorf("expected to remove exactly ours, one per hooked event, got %d", removed)
 	}
 
 	doc := readSettings(t, path)

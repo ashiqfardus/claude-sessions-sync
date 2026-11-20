@@ -50,14 +50,28 @@ func pruneBackups(settingsPath string, keep int) {
 	}
 }
 
-// InstallHook merges a SessionEnd hook into settings.json.
+// ourHooks are the events this tool hooks. SessionEnd archives a session as it
+// closes. Stop archives the current one after each reply, so a machine that dies or is
+// put away mid-session loses minutes rather than up to half an hour of work; it is
+// quiet and short, since it runs after every reply.
+var ourHooks = []struct {
+	event   string
+	args    []any
+	timeout int
+	status  string
+}{
+	{"SessionEnd", []any{"push", "--quiet"}, 120, "Archiving session"},
+	{"Stop", []any{"push", "--quiet", "--from-hook"}, 30, ""},
+}
+
+// InstallHook merges our hooks into settings.json.
 //
 // settings.json belongs to the user, not to this tool: it may hold formatter hooks,
 // permissions, model settings and keys no version of this program has heard of. The
 // file is round-tripped with its key order intact, only our own hook entries are
 // touched, and a timestamped backup is written first.
 //
-// Idempotent: re-running replaces our own previous entry rather than adding a second.
+// Idempotent: re-running replaces our own previous entries rather than adding more.
 // Returns how many existing entries were replaced.
 func InstallHook(settingsPath, binary string, alsoRemoveLegacy bool) (replaced int, err error) {
 	settingsPath = resolveLink(settingsPath)
@@ -76,19 +90,23 @@ func InstallHook(settingsPath, binary string, alsoRemoveLegacy bool) (replaced i
 	if hooks == nil {
 		hooks = newObject()
 	}
-	existing, _ := hooks.get("SessionEnd").([]any)
-	kept, replaced := withoutOurHooks(existing, alsoRemoveLegacy)
+	for _, h := range ourHooks {
+		existing, _ := hooks.get(h.event).([]any)
+		kept, n := withoutOurHooks(existing, alsoRemoveLegacy)
+		replaced += n
 
-	entry := newObject()
-	hook := newObject()
-	hook.set("type", "command")
-	hook.set("command", binary)
-	hook.set("args", []any{"push", "--quiet"})
-	hook.set("timeout", 120)
-	hook.set("statusMessage", "Archiving session")
-	entry.set("hooks", []any{hook})
-
-	hooks.set("SessionEnd", append(kept, entry))
+		entry := newObject()
+		hook := newObject()
+		hook.set("type", "command")
+		hook.set("command", binary)
+		hook.set("args", h.args)
+		hook.set("timeout", h.timeout)
+		if h.status != "" {
+			hook.set("statusMessage", h.status)
+		}
+		entry.set("hooks", []any{hook})
+		hooks.set(h.event, append(kept, entry))
+	}
 	doc.set("hooks", hooks)
 
 	if err := writeGeneric(settingsPath, doc); err != nil {
@@ -106,7 +124,7 @@ func InstallHook(settingsPath, binary string, alsoRemoveLegacy bool) (replaced i
 	return replaced, nil
 }
 
-// RemoveHook deletes this tool's SessionEnd hook, leaving everything else alone.
+// RemoveHook deletes this tool's hooks, leaving everything else alone.
 func RemoveHook(settingsPath string, alsoRemoveLegacy bool) (removed int, err error) {
 	settingsPath = resolveLink(settingsPath)
 	doc, err := loadGeneric(settingsPath)
@@ -117,16 +135,21 @@ func RemoveHook(settingsPath string, alsoRemoveLegacy bool) (removed int, err er
 	if hooks == nil {
 		return 0, nil
 	}
-	existing, _ := hooks.get("SessionEnd").([]any)
-	kept, removed := withoutOurHooks(existing, alsoRemoveLegacy)
+	for _, h := range ourHooks {
+		existing, _ := hooks.get(h.event).([]any)
+		kept, n := withoutOurHooks(existing, alsoRemoveLegacy)
+		if n == 0 {
+			continue
+		}
+		removed += n
+		if len(kept) > 0 {
+			hooks.set(h.event, kept)
+		} else {
+			hooks.del(h.event)
+		}
+	}
 	if removed == 0 {
 		return 0, nil
-	}
-
-	if len(kept) > 0 {
-		hooks.set("SessionEnd", kept)
-	} else {
-		hooks.del("SessionEnd")
 	}
 	if len(hooks.keys) == 0 {
 		doc.del("hooks")
