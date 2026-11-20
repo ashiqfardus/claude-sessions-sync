@@ -177,9 +177,21 @@ func (p pluginRun) Command() string { return "claude " + strings.Join(p.Args, " 
 //
 // Plugins enabled on any machine and not here are installed with `claude plugin
 // install`, unless installPlugins is false.
+//
+// An unzipped `backup` mirrors ~/.claude, so its profile is its top folder, and its
+// settings.json names the plugins that were enabled. That settings.json itself is
+// never restored: its hooks run programs at paths only the old machine has.
 func restoreProfile(root, dest string, dryRun, update, installPlugins bool) profileResult {
 	var res profileResult
 	src := profileDir(dest)
+	pluginLists := archivedPluginLists(src)
+	if !archive.IsRealDir(src) && isBackup(dest) {
+		src = dest
+		pluginLists = nil
+		if st, err := os.Lstat(filepath.Join(dest, "settings.json")); err == nil && st.Mode().IsRegular() {
+			pluginLists = []string{filepath.Join(dest, "settings.json")}
+		}
+	}
 	if !archive.IsRealDir(src) {
 		return res
 	}
@@ -222,7 +234,7 @@ func restoreProfile(root, dest string, dryRun, update, installPlugins bool) prof
 		return res
 	}
 	local, _ := readPluginList(claude.SettingsPath(root))
-	res.Plugins = missingPlugins(src, local)
+	res.Plugins = missingPlugins(pluginLists, local)
 	claudeBin, lookErr := exec.LookPath("claude")
 	for i := range res.Plugins {
 		p := &res.Plugins[i]
@@ -265,11 +277,7 @@ var (
 
 // missingPlugins combines every machine's plugin list and returns the plugins enabled
 // somewhere and not enabled locally, each with the arguments that install it.
-func missingPlugins(profile string, local pluginList) []pluginRun {
-	entries, err := os.ReadDir(filepath.Join(profile, "plugins"))
-	if err != nil {
-		return nil
-	}
+func missingPlugins(lists []string, local pluginList) []pluginRun {
 	seen := map[string]bool{}
 	for id, v := range local.EnabledPlugins {
 		if v != false {
@@ -277,11 +285,8 @@ func missingPlugins(profile string, local pluginList) []pluginRun {
 		}
 	}
 	var out []pluginRun
-	for _, e := range entries {
-		if !e.Type().IsRegular() || !strings.EqualFold(filepath.Ext(e.Name()), ".json") || !archive.ValidName(e.Name()) {
-			continue
-		}
-		list, err := readPluginList(filepath.Join(profile, "plugins", e.Name()))
+	for _, path := range lists {
+		list, err := readPluginList(path)
 		if err != nil {
 			continue
 		}
@@ -303,6 +308,33 @@ func missingPlugins(profile string, local pluginList) []pluginRun {
 		}
 	}
 	return out
+}
+
+// archivedPluginLists are the plugin lists every machine pushed: profile/plugins/*.json.
+func archivedPluginLists(profile string) []string {
+	entries, err := os.ReadDir(filepath.Join(profile, "plugins"))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.Type().IsRegular() && strings.EqualFold(filepath.Ext(e.Name()), ".json") && archive.ValidName(e.Name()) {
+			out = append(out, filepath.Join(profile, "plugins", e.Name()))
+		}
+	}
+	return out
+}
+
+// isBackup reports whether dest is an unzipped `claude-sessions backup`, by the first
+// line of the MANIFEST.txt every backup carries. Only then is its top folder a
+// profile: an archive's own INDEX.md and README.md must never be taken for rules.
+func isBackup(dest string) bool {
+	raw, err := os.ReadFile(filepath.Join(dest, "MANIFEST.txt"))
+	if err != nil {
+		return false
+	}
+	first, _, _ := strings.Cut(string(raw), "\n")
+	return strings.TrimSpace(first) == backupMarker
 }
 
 // pluginInstallArgs builds `claude plugin install` arguments for name@marketplace.

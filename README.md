@@ -76,7 +76,8 @@ Three things go wrong with that:
   credentials that ended up in the archive. Most warnings say what to do.
 
 **Other tools**
-- `backup` writes the whole profile to one zip, for a move with no synced folder.
+- `backup` writes the whole profile to one zip, for a move with no synced folder;
+  `import` brings it back, rules, skills and plugins included.
 - `pull` is a plain copy for computers with identical paths. `restore` files one folder
   of transcripts by hand.
 - `machines` lists, and forgets, the computers that push to the archive.
@@ -482,8 +483,14 @@ On the new computer, unzip it and import it like an archive:
 claude-sessions import --archive "E:\claude-backup" --search-root "E:\work"
 ```
 
-That brings back the sessions and memory. Copy `CLAUDE.md`, the other files and the
-folders at the top of the zip into `~/.claude` yourself.
+That brings back the sessions and memory, your rules, skills, agents, commands and
+output styles (by the same rules as any import: added if missing, replaced only with
+`--update` and a newer copy), and installs the plugins that were enabled, unless you
+pass `--no-plugins`. Three things stay in the zip on purpose, for you to copy if you
+want them:
+- `settings.json`, whose hooks run programs at paths only the old computer has;
+- `settings.local.json` and `keybindings.json`;
+- `history.jsonl`.
 
 ---
 
