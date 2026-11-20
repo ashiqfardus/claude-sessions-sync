@@ -1,8 +1,19 @@
 # claude-sessions-sync
 
+[![Release](https://img.shields.io/github/v/release/ashiqfardus/claude-sessions-sync)](https://github.com/ashiqfardus/claude-sessions-sync/releases/latest)
+[![CI](https://github.com/ashiqfardus/claude-sessions-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/ashiqfardus/claude-sessions-sync/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Back up your [Claude Code](https://claude.com/claude-code) conversations to any synced
 folder, read them as web pages, and carry on with them on another computer, even when
 the project lives at a different path there.
+
+```sh
+brew install --cask ashiqfardus/tap/claude-sessions   # macOS or Linux
+```
+
+Windows uses [Scoop](#step-1-install-the-tool) or a download. Then follow the
+[Quick start](#quick-start).
 
 ---
 
@@ -82,6 +93,27 @@ Three things go wrong with that:
 - `pull` is a plain copy for computers with identical paths. `restore` files one folder
   of transcripts by hand.
 - `machines` lists, and forgets, the computers that push to the archive.
+
+---
+
+## How it compares
+
+Other tools sync Claude Code history too. Which one fits depends on where you want it
+to live:
+
+| | claude-sessions-sync | [claude-code-sync](https://github.com/perfectra1n/claude-code-sync) | [claude-sync](https://github.com/tawanorg/claude-sync) |
+|---|---|---|---|
+| Stored in | Any synced folder (Google Drive, OneDrive, Dropbox, a NAS) | A git repository | R2, S3, GCS or WebDAV |
+| Encrypted before upload | No: relies on your provider | No | Yes |
+| Project at a different path | Found by folder name (git remote tells same-named ones apart) or home folder; else one `config map` | A project map on each computer, or the folder name | Home folder automatic, other paths mapped by hand |
+| Session continued on two computers | Kept as two sessions; resume either | Merged into one file | Local copy kept, the other saved as a `.conflict` file |
+| Sessions Claude Code deletes locally | Kept in the archive | Kept in the repository | Removed from storage on the next push |
+| Runs by itself | After every reply, at session end, every 30 minutes | Run by hand, or a cron job you set up | Optional shell hooks |
+| Undo and version history | No | Yes | No |
+
+Compared from each project's documentation and source code in November 2026; they
+change, so check them for yourself. If you want encryption, or a git history you can
+roll back, one of the others may suit you better.
 
 ---
 
