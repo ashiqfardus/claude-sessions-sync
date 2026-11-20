@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>claude-sessions-sync social card</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wght@500&family=Schibsted+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #EEF2F5;
+    --ink: #1C2430;
+    --carbon: #2747A8;
+    --carbon-ghost: #9DB0E0;
+    --muted: #4A5566;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; background: var(--paper); }
+  body {
+    font-family: "Schibsted Grotesk", sans-serif;
+    color: var(--ink);
+    padding: 72px 80px 64px;
+    display: flex;
+    flex-direction: column;
+  }
+  h1 { font-size: 64px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; }
+  .what {
+    margin-top: 22px;
+    font-size: 32px;
+    font-weight: 500;
+    line-height: 1.3;
+    max-width: 42ch;
+    color: var(--muted);
+  }
+  .paths {
+    margin-top: auto;
+    display: grid;
+    grid-template-columns: 210px auto;
+    row-gap: 14px;
+    align-items: baseline;
+  }
+  .where { font-size: 24px; font-weight: 500; color: var(--muted); }
+  .path { font-family: "Martian Mono", monospace; font-size: 64px; font-weight: 500; letter-spacing: -0.03em; }
+  .original { color: var(--ink); }
+  /* The copy: carbon ink, pressed a little off-register, with the faint impression behind it. */
+  .copy {
+    color: var(--carbon);
+    transform: translateX(3px);
+    text-shadow: -2px 2px 1.5px var(--carbon-ghost);
+  }
+  .foot { margin-top: 44px; font-size: 24px; font-weight: 500; color: var(--muted); }
+</style>
+</head>
+<body>
+  <h1>claude-sessions-sync</h1>
+  <p class="what">Back up your Claude Code conversations and continue them on another computer.</p>
+  <div class="paths">
+    <span class="where">On Windows</span><span class="path original">E:\work\api</span>
+    <span class="where">On your Mac</span><span class="path copy">/Users/you/dev/api</span>
+  </div>
+  <p class="foot">Google Drive, OneDrive, Dropbox or any synced folder. Windows, macOS and Linux.</p>
+</body>
+</html>
