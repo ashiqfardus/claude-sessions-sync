@@ -311,7 +311,8 @@ func Archive(dest string, opts Options) (Result, error) {
 // templateVersion changes whenever a rendered page would come out differently, so
 // every page is rendered again once. 2: secrets are redacted, times are local.
 // 3: a Content-Security-Policy forbids scripts, and more secret formats are redacted.
-const templateVersion = 3
+// 4: Claude's Markdown is formatted (bold, inline code, links, headings, tables).
+const templateVersion = 4
 
 // pageHref links a session's page from the main index.
 //
@@ -511,7 +512,8 @@ func writeTurn(b *strings.Builder, r claude.Record) int {
 	for _, blk := range r.Blocks {
 		switch blk.Kind {
 		case "text":
-			b.WriteString(formatBody(blk.Text))
+			// Only Claude writes Markdown; a prompt is shown exactly as typed.
+			b.WriteString(formatBody(blk.Text, role == "assistant"))
 		case "thinking":
 			if strings.TrimSpace(blk.Text) == "" {
 				unrecorded++
@@ -519,7 +521,7 @@ func writeTurn(b *strings.Builder, r claude.Record) int {
 			}
 			// Collapsed: interesting when you want it, noise when you do not.
 			b.WriteString(`<details class="thinking"><summary>thinking</summary>`)
-			b.WriteString(formatBody(blk.Text))
+			b.WriteString(formatBody(blk.Text, true))
 			b.WriteString(`</details>`)
 		case "tool_use":
 			name := blk.Name
@@ -527,19 +529,19 @@ func writeTurn(b *strings.Builder, r claude.Record) int {
 				name = "tool"
 			}
 			fmt.Fprintf(b, `<details class="tool"><summary>&#9881; %s</summary>`, html.EscapeString(name))
-			b.WriteString(formatBody(blk.Text))
+			b.WriteString(formatBody(blk.Text, false))
 			b.WriteString(`</details>`)
 		case "tool_result":
 			if strings.TrimSpace(blk.Text) == "" {
 				continue
 			}
 			b.WriteString(`<details class="result"><summary>result</summary>`)
-			b.WriteString(formatBody(blk.Text))
+			b.WriteString(formatBody(blk.Text, false))
 			b.WriteString(`</details>`)
 		default:
 			if strings.TrimSpace(blk.Text) != "" {
 				fmt.Fprintf(b, `<details class="tool"><summary>%s</summary>`, html.EscapeString(blk.Kind))
-				b.WriteString(formatBody(blk.Text))
+				b.WriteString(formatBody(blk.Text, false))
 				b.WriteString(`</details>`)
 			}
 		}
@@ -611,11 +613,12 @@ func IsExcluded(project, bucket string, patterns []string) bool {
 	return false
 }
 
-// formatBody escapes everything, then promotes ``` fences to code blocks.
+// formatBody escapes everything, then promotes ``` fences to code blocks and, when md
+// is set, formats the Markdown outside them.
 //
 // Escaping happens first and always: transcripts contain arbitrary text, including
 // HTML and script tags from pages that were being worked on.
-func formatBody(text string) string {
+func formatBody(text string, md bool) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
@@ -643,8 +646,13 @@ func formatBody(text string) string {
 			b.WriteString(html.EscapeString(part))
 			b.WriteString(`</code></pre>`)
 		} else if strings.TrimSpace(part) != "" {
+			// Edge newlines would show as blank lines next to a code block.
+			escaped := html.EscapeString(strings.Trim(part, "\r\n"))
+			if md {
+				escaped = markdown(escaped)
+			}
 			b.WriteString(`<div class="t">`)
-			b.WriteString(html.EscapeString(part))
+			b.WriteString(escaped)
 			b.WriteString(`</div>`)
 		}
 	}

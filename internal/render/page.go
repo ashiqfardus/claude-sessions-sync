@@ -42,6 +42,15 @@ a { color: var(--accent); }
 pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px;
       padding: .6rem; overflow-x: auto; font-size: .82rem; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.t code { background: var(--code); border: 1px solid var(--line); border-radius: 4px;
+          padding: 0 .25em; font-size: .88em; }
+.t strong.h { display: inline-block; font-size: 1.05em; margin-top: .35em; }
+/* Wide tables scroll inside their box, never the page. overflow-wrap is reset so
+   cells keep whole words instead of collapsing to a letter per line on phones. */
+.tw { overflow-x: auto; margin: .35rem 0; }
+.tw table { border-collapse: collapse; font-size: .9rem; white-space: normal; overflow-wrap: normal; }
+.tw th, .tw td { border: 1px solid var(--line); padding: .3rem .55rem; text-align: left; vertical-align: top; }
+.tw th { background: var(--code); font-weight: 600; }
 
 details { margin: .45rem 0; border-left: 2px solid var(--line); padding-left: .6rem; }
 summary { cursor: pointer; color: var(--muted); font-size: .82rem; }
