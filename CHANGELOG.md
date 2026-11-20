@@ -11,6 +11,13 @@ All notable changes to this project are documented here. This project follows
   `ashiqfardus/scoop-bucket` bucket on Windows. Releases update both through GoReleaser
   when the repository has a `PACKAGES_GITHUB_TOKEN` secret, and skip them without it.
 
+### Changed
+- **HTML pages format Claude's Markdown:** bold, inline code, http(s) links, headings
+  and pipe tables, instead of showing `**` and backticks as text. Prompts, tool input
+  and tool output are still shown exactly as written. Formatting runs on text that is
+  already escaped, so transcript content still cannot add markup. Blank lines next to
+  a code block are no longer shown. Every page is rendered again once after updating.
+
 ## [0.3.0] - 2026-11-20
 
 Upgrading: run `claude-sessions install` again after updating the binary. The hook
