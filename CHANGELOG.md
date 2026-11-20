@@ -3,7 +3,11 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.1] - 2026-11-21
+
+Upgrading: run `claude-sessions install` again after updating the binary, on every
+machine, as for 0.3.0. The first runs after updating render every HTML page again; a
+large archive finishes over a few runs, because each run has a time budget.
 
 ### Added
 - **Install with Homebrew or Scoop.** `brew install --cask ashiqfardus/tap/claude-sessions`
