@@ -120,14 +120,14 @@ commands:
   restore     file one folder of transcripts, rewriting an old project path
   machines    list machines that have pushed here, or forget one
   render      write mobile-readable HTML pages of every archived session
-  install     archive automatically: SessionEnd hook plus a periodic sweep
+  install     archive automatically: a session-end hook, a per-reply hook and a sweep
   uninstall   remove the hook and the sweep (your archive is kept)
   backup      zip the whole profile: sessions, subagents, memory and settings
   ls          list sessions (--archived: the archive's)
   search      search the text of every session (--archived: the archive's)
   stats       session counts and sizes per project
   doctor      check the archive, hook, retention and manifest drift
-  config      show or set the archive destination
+  config      archive destination, project mappings, this machine's name
   completion  print a shell completion script (bash|zsh|fish|powershell)
   version     print the version
 
@@ -143,5 +143,6 @@ examples:
   claude-sessions search "connection pool"
   claude-sessions push --dry-run
   claude-sessions import --search-root ~/dev --dry-run
+  claude-sessions import --search-root ~/dev --update
 `)
 }

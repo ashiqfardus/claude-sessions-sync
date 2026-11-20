@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -38,6 +39,8 @@ func cmdPush(args []string) error {
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	noHTML := fs.Bool("no-html", false, "skip rendering the mobile HTML pages")
 	lockWait := fs.Duration("lock-wait", 45*time.Second, "with --quiet, how long to wait for another run to finish before skipping")
+	fromHook := fs.Bool("from-hook", false, "Stop hook mode: archive only the session named by the hook input on stdin")
+	sweep := fs.Bool("sweep", false, "set by the scheduled sweep, which marks its log line: the one run that may lack the terminal's privacy grants")
 	if err := parseFlags(fs, args, false); err != nil {
 		// A hook written by a newer version may pass a flag this binary does not know.
 		// That must not break the end of the session any more than a missing drive -
@@ -53,9 +56,34 @@ func cmdPush(args []string) error {
 		return err
 	}
 
-	err := runPush(*claudeDir, *archiveDir, pushOpts{
-		Quiet: *quiet, DryRun: *dryRun, JSON: *asJSON, NoHTML: *noHTML, LockWait: *lockWait,
-	})
+	opts := pushOpts{Quiet: *quiet, DryRun: *dryRun, JSON: *asJSON, NoHTML: *noHTML, LockWait: *lockWait, Sweep: *sweep}
+	if *fromHook {
+		// Claude Code passes the hook's input as JSON on stdin; transcript_path is the
+		// session that just replied.
+		var in struct {
+			TranscriptPath string `json:"transcript_path"`
+		}
+		_ = json.NewDecoder(io.LimitReader(os.Stdin, 1<<20)).Decode(&in)
+		opts.Session = in.TranscriptPath
+		opts.FromHook = true
+		opts.LockWait = 0 // never hold up the next prompt: a run in progress covers it
+
+		// A hung filesystem call - a NAS asleep - is not covered by the lock wait, and
+		// would hold up every reply until Claude Code kills the hook. Give up instead;
+		// the sweep catches up.
+		var err error
+		if !withinDeadline(hookDeadline, func() { err = runPush(*claudeDir, *archiveDir, opts) }) {
+			if root, _, rerr := resolveRoot(*claudeDir); rerr == nil {
+				noteHookTimeout(root)
+			}
+			return nil
+		}
+		if *quiet && err != nil {
+			return nil
+		}
+		return err
+	}
+	err := runPush(*claudeDir, *archiveDir, opts)
 
 	// A SessionEnd hook that fails breaks the end of the user's session. Missing
 	// drive, offline mount, unexpected error: log it and exit 0. This is the single
@@ -66,9 +94,46 @@ func cmdPush(args []string) error {
 	return err
 }
 
+// hookDeadline bounds the per-reply hook, well inside the 30 seconds Claude Code
+// allows it.
+const hookDeadline = 5 * time.Second
+
+// withinDeadline runs work and reports whether it finished in time. Work that does
+// not is left running; the caller returns, and the process exits under it - its
+// writes are atomic, and a lock it held is recognised as stale by its dead PID.
+func withinDeadline(d time.Duration, work func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		work()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// noteHookTimeout logs that a per-reply push gave up - at most once an hour, so a slow
+// drive is visible in the log without a line after every reply.
+func noteHookTimeout(root string) {
+	marker := filepath.Join(root, "session-sync.hook-timeout")
+	if st, err := os.Stat(marker); err == nil && time.Since(st.ModTime()) < time.Hour {
+		return
+	}
+	newLogger(root, true)("TIMEOUT: a per-reply push gave up after %s, the archive's drive being slow or asleep; the sweep and the SessionEnd hook still archive the session", hookDeadline)
+	_ = os.WriteFile(marker, nil, 0o600)
+	now := time.Now()
+	_ = os.Chtimes(marker, now, now)
+}
+
 type pushOpts struct {
 	Quiet, DryRun, JSON, NoHTML bool
 	LockWait                    time.Duration // --quiet only
+	FromHook                    bool          // archive only Session, the Stop hook's
+	Session                     string
+	Sweep                       bool // the scheduled run: its PUSH line is marked
 }
 
 // quietRenderBudget bounds page rendering in an unattended push.
@@ -111,27 +176,39 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		}
 	}()
 
+	// The per-reply hook meets these routinely - drive offline, a sweep running - and
+	// would log one line per reply; the sweep and the SessionEnd hook report them.
+	skipf := logf
+	if opts.FromHook {
+		skipf = func(string, ...any) {}
+	}
+
 	dest, src, err := archive.ResolveDestination(root, archiveDir)
 	if err != nil {
 		logf("ERROR: %v", err)
 		return err
 	}
 	if dest == "" {
-		logf("SKIP: no destination configured")
+		skipf("SKIP: no destination configured")
 		return fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
 	}
 
 	// The destination's parent must already exist. Creating it would mean silently
 	// making a plain local folder where an unmounted cloud drive should be, and
 	// reporting success - the exact failure that makes someone trust a backup that
-	// is not happening.
+	// is not happening. The reason is logged: a macOS privacy refusal reads
+	// "operation not permitted", and doctor looks for it.
 	if st, statErr := os.Stat(filepath.Dir(dest)); statErr != nil || !st.IsDir() {
-		logf("SKIP: destination parent not available: %s", filepath.Dir(dest))
+		reason := "not a directory"
+		if statErr != nil {
+			reason = statErr.Error()
+		}
+		skipf("SKIP: destination parent not available: %s%s", reason, sweepSuffix(opts.Sweep))
 		return fmt.Errorf("%s is not available - is the sync client mounted?", filepath.Dir(dest))
 	}
 
 	if err := archive.ValidateDestination(root, dest); err != nil {
-		logf("SKIP: %v", err)
+		skipf("SKIP: %v", err)
 		return err
 	}
 
@@ -143,13 +220,18 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	}
 	lock, err := archive.AcquireLockWait(root, wait)
 	if err != nil {
-		logf("SKIP: %v", err)
+		skipf("SKIP: %v", err)
 		if quiet {
 			return nil
 		}
 		return err
 	}
 	defer lock.Release()
+
+	// Before anything that walks the archive: this runs after every reply.
+	if opts.FromHook {
+		return pushOne(root, dest, opts.Session, dryRun, logf)
+	}
 
 	if !dryRun {
 		if err := os.MkdirAll(archive.ProjectsDir(dest), 0o755); err != nil {
@@ -175,6 +257,8 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		SchemaVersion: archive.SchemaVersion,
 		Machine:       machineName(),
 		ClaudeRoot:    root,
+		Home:          userHome(),
+		ToolVersion:   version,
 		Projects:      map[string]archive.Project{},
 	}
 	var sessions []archive.Session
@@ -185,6 +269,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	prevShard := readShard(dest, shard.Machine)
 	scanAll := !prevShard.RelatedIndexed
 	shard.RelatedIndexed = true
+	pushed := pushedBefore(dest, shard.Machine)
 
 	for _, b := range buckets {
 		destBucket := filepath.Join(archive.ProjectsDir(dest), b.Name)
@@ -196,55 +281,31 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		var changed []string
 
 		for _, t := range b.Transcripts {
-			target := filepath.Join(destBucket, filepath.Base(t.Path))
 			srcInfo, statErr := os.Stat(t.Path)
 			if statErr != nil {
 				res.Skipped = append(res.Skipped, t.ID)
 				continue
 			}
-			dstInfo := archive.StatOrNil(target)
-			if archive.NeedsCopy(srcInfo, dstInfo) && dstInfo != nil && srcInfo.Size() < dstInfo.Size() {
-				// Transcripts only grow. A newer but shorter local file is a session
-				// that forked on two machines, or a truncated copy; either way the
-				// archived conversation is not thrown away for it.
-				logf("WARN: %s: local copy is shorter than the archived one (%d < %d bytes); archive kept",
-					t.ID, srcInfo.Size(), dstInfo.Size())
+			switch archiveTranscript(dest, b.Name, t.ID, t.Path, srcInfo, pushed, dryRun, logf) {
+			case copyFailed:
+				// One unreadable transcript must not abandon the rest.
 				res.Skipped = append(res.Skipped, t.ID)
-			} else if archive.NeedsCopy(srcInfo, dstInfo) {
-				if !dryRun {
-					if err := archive.CopyFile(t.Path, target); err != nil {
-						// One unreadable transcript must not abandon the rest.
-						logf("WARN: %s: %v", t.ID, err)
-						res.Skipped = append(res.Skipped, t.ID)
-						continue
-					}
-				}
+				continue
+			case keptShorter:
+				res.Skipped = append(res.Skipped, t.ID)
+			case copiedOver:
 				res.Copied++
 				changed = append(changed, t.Path)
-			} else {
+			case keptFork:
+				res.Copied++
+			default:
 				res.Unchanged++
 			}
 			res.Sessions++
 
-			for _, rel := range t.Extras {
-				srcPath := filepath.Join(b.Dir, t.ID, rel)
-				srcInfo, statErr := os.Stat(srcPath)
-				if statErr != nil {
-					continue
-				}
-				extraTarget := filepath.Join(destBucket, t.ID, rel)
-				if !archive.NeedsCopy(srcInfo, archive.StatOrNil(extraTarget)) {
-					res.Unchanged++
-					continue
-				}
-				if !dryRun {
-					if err := archive.CopyFile(srcPath, extraTarget); err != nil {
-						logf("WARN: %s/%s: %v", t.ID, rel, err)
-						continue
-					}
-				}
-				res.Copied++
-			}
+			c, u := archiveExtras(b.Dir, destBucket, t.ID, t.Extras, dryRun, logf)
+			res.Copied += c
+			res.Unchanged += u
 
 			summary, _ := claude.ScanHead(t.Path, headScanLines)
 			sessions = append(sessions, archive.Session{
@@ -264,6 +325,14 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 			srcInfo, statErr := os.Stat(srcPath)
 			if statErr != nil {
 				continue
+			}
+			// This machine's own copy too, which no other machine writes. On a shared
+			// layout the bucket's memory is everyone's, newest file wins, so an import
+			// could not tell another machine's index from this machine's own push.
+			if own := filepath.Join(machineMemoryDir(dest, machineName(), b.Name), name); !dryRun && archive.NeedsCopy(srcInfo, archive.StatOrNil(own)) {
+				if err := archive.CopyFile(srcPath, own); err != nil {
+					logf("WARN: memory/%s/%s: %v", machineName(), name, err)
+				}
 			}
 			if archive.NeedsCopy(srcInfo, archive.StatOrNil(target)) {
 				if !dryRun {
@@ -314,8 +383,8 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		}
 	}
 
-	logf("PUSH: %d copied, %d unchanged, %d session(s), %d project(s) -> %s",
-		res.Copied, res.Unchanged, res.Sessions, res.Projects, dest)
+	logf("PUSH: %d copied, %d unchanged, %d session(s), %d project(s) -> %s%s",
+		res.Copied, res.Unchanged, res.Sessions, res.Projects, dest, sweepSuffix(opts.Sweep))
 
 	// Readable pages for phones and tablets. Best-effort by design: a rendering
 	// problem must never fail a sync that has already succeeded, so this is wrapped
@@ -513,6 +582,222 @@ func keepArchivedHistory(dest string, shard *archive.Shard, sessions []archive.S
 	return sessions
 }
 
+type archiveOutcome int
+
+const (
+	notCopied archiveOutcome = iota
+	copiedOver
+	keptFork
+	keptShorter
+	copyFailed
+)
+
+// archiveTranscript brings the archived copy of one local transcript up to date. The
+// archived copy is replaced only by one that holds more; when each holds turns the
+// other lacks, this machine's is kept beside it as a fork.
+func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushed map[string]archive.Session, dryRun bool, logf func(string, ...any)) archiveOutcome {
+	target := filepath.Join(archive.ProjectsDir(dest), bucket, filepath.Base(path))
+	dstInfo := archive.StatOrNil(target)
+	copyIt := archive.NeedsCopy(srcInfo, dstInfo)
+	shorter := copyIt && dstInfo != nil && srcInfo.Size() < dstInfo.Size()
+
+	// Dates and sizes cannot tell a continuation from a session continued on two
+	// machines: on a shared layout the other machine's turns were overwritten, or this
+	// one's never archived. So a copy that differs from the archived one is compared by
+	// content before it replaces it - every time, not only when it changed here: a
+	// fork kept by the last push is still a fork - and when it changed here since the
+	// last push, in case this is the copy that forked.
+	if dstInfo != nil && !sameStat(srcInfo, dstInfo) && (copyIt || changedSincePush(pushed, bucket, id, srcInfo)) {
+		// Already kept as a fork, and nothing new here since: not worth reading two
+		// whole transcripts - from a cloud drive, perhaps - on every push.
+		if fork := archive.StatOrNil(forkPath(dest, bucket, id, machineName())); fork != nil && sameStat(srcInfo, fork) {
+			return notCopied
+		}
+		switch claude.Compare(path, target) {
+		case claude.Extends:
+			copyIt, shorter = true, false
+		case claude.Same, claude.Behind:
+			return notCopied
+		case claude.Forked:
+			if keepFork(dest, bucket, id, path, srcInfo, dryRun, logf) {
+				return keptFork
+			}
+			return notCopied
+		}
+	}
+
+	switch {
+	case shorter:
+		// Transcripts only grow. A newer but shorter local file is a session that
+		// forked on two machines, or a truncated copy; either way the archived
+		// conversation is not thrown away for it.
+		logf("WARN: %s: local copy is shorter than the archived one (%d < %d bytes); archive kept",
+			id, srcInfo.Size(), dstInfo.Size())
+		return keptShorter
+	case !copyIt:
+		return notCopied
+	}
+	if !dryRun {
+		if err := archive.CopyFile(path, target); err != nil {
+			logf("WARN: %s: %v", id, err)
+			return copyFailed
+		}
+	}
+	return copiedOver
+}
+
+// archiveExtras copies a session's own folder - subagent transcripts and saved tool
+// output - where it changed, reporting how many files it copied and left alone.
+func archiveExtras(bucketDir, destBucket, id string, extras []string, dryRun bool, logf func(string, ...any)) (copied, unchanged int) {
+	for _, rel := range extras {
+		srcPath := filepath.Join(bucketDir, id, rel)
+		srcInfo, err := os.Stat(srcPath)
+		if err != nil {
+			continue
+		}
+		target := filepath.Join(destBucket, id, rel)
+		if !archive.NeedsCopy(srcInfo, archive.StatOrNil(target)) {
+			unchanged++
+			continue
+		}
+		if !dryRun {
+			if err := archive.CopyFile(srcPath, target); err != nil {
+				logf("WARN: %s/%s: %v", id, rel, err)
+				continue
+			}
+		}
+		copied++
+	}
+	return copied, unchanged
+}
+
+// quickSize and quickEvery throttle the per-reply backup. A sync client uploads a
+// whole file each time it changes, so a transcript over quickSize is copied at most
+// every quickEvery; whatever is left is caught by the next reply or the sweep.
+const (
+	quickSize  = 5 << 20
+	quickEvery = 5 * time.Minute
+)
+
+// pushOne archives the one session a Stop hook names, without the manifest, index or
+// pages: it runs after every reply, and the next full push brings those up to date.
+func pushOne(root, dest, transcript string, dryRun bool, logf func(string, ...any)) error {
+	// The path comes from the hook's input. Only a transcript directly inside one of
+	// this profile's buckets is ever read.
+	abs, err := filepath.Abs(transcript)
+	if err != nil || !strings.EqualFold(filepath.Ext(abs), ".jsonl") ||
+		!sameDir(filepath.Dir(filepath.Dir(abs)), claude.ProjectsDir(root)) {
+		logf("SKIP: hook named %q, which is not a transcript in %s", transcript, claude.ProjectsDir(root))
+		return nil
+	}
+	bucketDir := filepath.Dir(abs)
+	bucket := filepath.Base(bucketDir)
+	id := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
+	srcInfo, err := os.Lstat(abs)
+	if err != nil || !srcInfo.Mode().IsRegular() || !archive.ValidName(bucket) || !archive.ValidName(id) {
+		return nil
+	}
+
+	// Throttled against whichever copy this machine wrote last: the archived one, or
+	// for a forked session its fork.
+	destBucket := filepath.Join(archive.ProjectsDir(dest), bucket)
+	if srcInfo.Size() > quickSize {
+		for _, copied := range []string{filepath.Join(destBucket, id+".jsonl"), forkPath(dest, bucket, id, machineName())} {
+			if c := archive.StatOrNil(copied); c != nil && srcInfo.ModTime().Sub(c.ModTime()) < quickEvery {
+				return nil
+			}
+		}
+	}
+	switch archiveTranscript(dest, bucket, id, abs, srcInfo, pushedBefore(dest, machineName()), dryRun, logf) {
+	case copiedOver, keptFork:
+		archiveExtras(bucketDir, destBucket, id, claude.SessionFiles(filepath.Join(bucketDir, id)), dryRun, logf)
+	}
+	return nil
+}
+
+// machineMemoryDir is one machine's own copy of a project's memory in the archive.
+func machineMemoryDir(dest, machine, bucket string) string {
+	return filepath.Join(dest, "memory", machine, bucket)
+}
+
+func userHome() string {
+	h, _ := os.UserHomeDir()
+	return h
+}
+
+// sweepMark ends the PUSH line of the scheduled sweep. Every other run - a hook, a
+// terminal - holds a terminal's privacy grants, which the background sweep may lack,
+// so only the sweep's success says it can reach the archive.
+const sweepMark = " [sweep]"
+
+func sweepSuffix(sweep bool) string {
+	if sweep {
+		return sweepMark
+	}
+	return ""
+}
+
+// pushedBefore is what this machine's last push recorded about each session, keyed
+// "bucket/id": its local size and time then.
+func pushedBefore(dest, machine string) map[string]archive.Session {
+	out := map[string]archive.Session{}
+	raw, err := os.ReadFile(filepath.Join(archive.IndexDir(dest), machine+".json"))
+	if err != nil {
+		return out
+	}
+	var idx archive.SessionIndex
+	if json.Unmarshal(raw, &idx) == nil {
+		for _, s := range idx.Sessions {
+			out[s.Bucket+"/"+s.ID] = s
+		}
+	}
+	return out
+}
+
+// changedSincePush reports whether a local transcript changed since this machine last
+// pushed it. One that did not cannot have forked here, and is not worth reading.
+func changedSincePush(pushed map[string]archive.Session, bucket, id string, src os.FileInfo) bool {
+	s, ok := pushed[bucket+"/"+id]
+	return !ok || s.Size != src.Size() || !withinTolerance(s.Updated, src.ModTime())
+}
+
+func sameStat(a, b os.FileInfo) bool {
+	return a.Size() == b.Size() && withinTolerance(a.ModTime(), b.ModTime())
+}
+
+func withinTolerance(a, b time.Time) bool {
+	d := a.Sub(b)
+	return d <= archive.MTimeToleranceSeconds*time.Second && d >= -archive.MTimeToleranceSeconds*time.Second
+}
+
+// forkPath is where a session continued both here and on another machine keeps this
+// machine's copy, beside the archived one rather than over it. It is outside
+// projects/ so nothing mistakes it for a session of its own.
+func forkPath(dest, bucket, id, machine string) string {
+	return filepath.Join(dest, "forks", bucket, id, machine+".jsonl")
+}
+
+// keepFork archives this machine's copy of a forked session, reporting whether it
+// wrote anything.
+func keepFork(dest, bucket, id, src string, srcInfo os.FileInfo, dryRun bool, logf func(string, ...any)) bool {
+	path := forkPath(dest, bucket, id, machineName())
+	existing := archive.StatOrNil(path)
+	if !archive.NeedsCopy(srcInfo, existing) {
+		return false
+	}
+	if !dryRun {
+		if err := archive.CopyFile(src, path); err != nil {
+			logf("WARN: %s: fork: %v", id, err)
+			return false
+		}
+	}
+	if existing == nil { // said once, not after every reply that keeps it current
+		logf("FORK: %s was continued here and on another machine; the archived copy is kept and this one is saved as forks/%s/%s/%s.jsonl",
+			id, bucket, id, machineName())
+	}
+	return true
+}
+
 func writeManifest(dest string, shard archive.Shard) error {
 	data, err := json.MarshalIndent(shard, "", "  ")
 	if err != nil {
@@ -529,6 +814,12 @@ func writeManifest(dest string, shard archive.Shard) error {
 	merged, _, err := archive.Merged(dest)
 	if err != nil {
 		return err
+	}
+	// An entry the PowerShell tool wrote is read back marked as such; written out
+	// again, it keeps the machine it named - otherwise the name is gone after one push.
+	for bucket, p := range merged {
+		p.Machine = p.Owner()
+		merged[bucket] = p
 	}
 	legacy, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
@@ -663,6 +954,13 @@ func mdText(s string) string {
 		"<", `\<`, ">", `\>`, "!", `\!`, "|", `\|`, "#", `\#`).Replace(s)
 }
 
+// safeMachine makes a machine name usable as a file name.
+var safeMachine = strings.NewReplacer("/", "-", `\`, "-", ":", "-", " ", "-", "*", "-", "?", "-")
+
+// savedMachine is the name saved in session-sync.json, loaded by resolveRoot: every
+// command finds its profile through it before it names anything.
+var savedMachine string
+
 // machineName identifies the writer of a manifest shard.
 //
 // It includes the username, not just the hostname. Two accounts on one machine each
@@ -670,6 +968,18 @@ func mdText(s string) string {
 // on the hostname alone means they overwrite each other's shard, and each push
 // silently discards the other user's project identities.
 func machineName() string {
+	// A name the user pinned with `config set-machine`: a macOS hostname changes with
+	// the network, and a machine under a new name is taken for another one - its own
+	// forks come back to it. The environment variable is for tests, which run several
+	// "machines" side by side; it reaches no scheduled sweep.
+	safe := safeMachine
+	if v := strings.TrimSpace(os.Getenv("CLAUDE_SESSIONS_MACHINE")); v != "" {
+		return safe.Replace(v)
+	}
+	if savedMachine != "" {
+		return safe.Replace(savedMachine)
+	}
+
 	host := "unknown-machine"
 	if h, err := os.Hostname(); err == nil && strings.TrimSpace(h) != "" {
 		host = h
@@ -689,7 +999,7 @@ func machineName() string {
 		name = host + "-" + username
 	}
 	// A hostname or username can contain characters that are awkward in a filename.
-	return strings.NewReplacer("/", "-", `\`, "-", ":", "-", " ", "-", "*", "-", "?", "-").Replace(name)
+	return safe.Replace(name)
 }
 
 // maxLogBytes is when session-sync.log is rotated to session-sync.log.1.

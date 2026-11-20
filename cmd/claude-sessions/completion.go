@@ -23,7 +23,7 @@ func cmdCompletion(args []string) error {
 	default:
 		fmt.Fprint(os.Stderr, `usage: claude-sessions completion <bash|zsh|fish|powershell>
 
-  bash:        claude-sessions completion bash > /etc/bash_completion.d/claude-sessions
+  bash:        claude-sessions completion bash > ~/.local/share/bash-completion/completions/claude-sessions
   zsh:         claude-sessions completion zsh  > "${fpath[1]}/_claude-sessions"
   fish:        claude-sessions completion fish > ~/.config/fish/completions/claude-sessions.fish
   powershell:  claude-sessions completion powershell | Out-String | Add-Content $PROFILE
@@ -54,7 +54,7 @@ _claude_sessions() {
   case "${COMP_WORDS[1]}" in
     config)
       if [ "$COMP_CWORD" -eq 2 ]; then
-        COMPREPLY=( $(compgen -W "show set-destination" -- "$cur") ); return
+        COMPREPLY=( $(compgen -W "show set-destination map unmap set-machine" -- "$cur") ); return
       fi ;;
     completion) COMPREPLY=( $(compgen -W "bash zsh fish powershell" -- "$cur") ); return ;;
   esac
@@ -76,7 +76,7 @@ _claude-sessions() {
     return
   fi
   case "$words[2]" in
-    config) if (( CURRENT == 3 )); then compadd show set-destination; return; fi ;;
+    config) if (( CURRENT == 3 )); then compadd show set-destination map unmap set-machine; return; fi ;;
     completion) compadd bash zsh fish powershell; return ;;
   esac
   if [[ $PREFIX == -* ]]; then
@@ -92,7 +92,7 @@ _claude-sessions "$@"
 const fishCompletion = `# fish completion for claude-sessions
 complete -c claude-sessions -f
 complete -c claude-sessions -n __fish_use_subcommand -a "(claude-sessions help 2>&1 | ` + listCommands + `)"
-complete -c claude-sessions -n '__fish_seen_subcommand_from config' -a 'show set-destination'
+complete -c claude-sessions -n '__fish_seen_subcommand_from config' -a 'show set-destination map unmap set-machine'
 complete -c claude-sessions -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish powershell'
 complete -c claude-sessions -n 'not __fish_use_subcommand' -a "(claude-sessions (commandline -opc)[2] -h 2>&1 | ` + listFlags + `)"
 `
@@ -122,7 +122,7 @@ Register-ArgumentCompleter -Native -CommandName claude-sessions, claude-sessions
             if ($line -match '^  (\S+)') { $items += $Matches[1] } else { $in = $false }
         }
     } elseif ($words[1] -eq 'config' -and $pos -eq 2) {
-        $items = 'show', 'set-destination'
+        $items = 'show', 'set-destination', 'map', 'unmap', 'set-machine'
     } elseif ($words[1] -eq 'completion') {
         $items = 'bash', 'zsh', 'fish', 'powershell'
     } elseif ($word -like '-*') {
