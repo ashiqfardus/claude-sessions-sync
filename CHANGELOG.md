@@ -5,6 +5,12 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **Install with Homebrew or Scoop.** `brew install --cask ashiqfardus/tap/claude-sessions`
+  on macOS and Linux, and `scoop install ashiqfardus/claude-sessions` from the
+  `ashiqfardus/scoop-bucket` bucket on Windows. Releases update both through GoReleaser
+  when the repository has a `PACKAGES_GITHUB_TOKEN` secret, and skip them without it.
+
 ## [0.3.0] - 2026-11-20
 
 Upgrading: run `claude-sessions install` again after updating the binary. The hook
