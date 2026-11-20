@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -26,7 +28,8 @@ type restoreResult struct {
 	// Failed names transcripts that could not be filed. One bad transcript no longer
 	// abandons the rest of the project.
 	Failed []string
-	// Diverged names sessions continued both here and elsewhere; they are left alone.
+	// Diverged describes sessions continued both here and elsewhere: the local copy is
+	// left alone and the other is filed as a session of its own.
 	Diverged []string
 }
 
@@ -34,6 +37,21 @@ type restoreOpts struct {
 	BareName bool // also replace the bare folder name
 	DryRun   bool
 	Update   bool // refresh sessions and memory already here when the archive has more
+
+	// Owner is the machine that last pushed the source bucket, and OwnerOf, when set,
+	// the machine that wrote one archived session in it - on a shared layout not the
+	// same. Forks is the archive's forks/<bucket> folder. Only import and pull know these.
+	Owner   string
+	OwnerOf func(bucket, id string, info os.FileInfo) string
+	Forks   string
+
+	// Bucket files into this local bucket by name, instead of the one projectPath
+	// slugs to: pull's same-layout case.
+	Bucket string
+
+	// Archive is the archive's root, where each machine's own memory copy lives; ""
+	// for a restore from a folder outside an archive.
+	Archive string
 }
 
 const updateHelp = "also refresh sessions already here that continued on another machine, and memory files that are newer in the archive"
@@ -127,21 +145,24 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		return res, fmt.Errorf("no .jsonl transcripts in %s (memory .md files are not sessions - check the folder)", source)
 	}
 
-	// Relative input ("." or "../app") used to become a bucket named "." or "", filing
-	// transcripts straight into the projects folder.
-	abs, err := filepath.Abs(projectPath)
-	if err != nil {
-		return res, err
-	}
-	newPath := filepath.Clean(abs)
 	projectsDir := claude.ProjectsDir(root)
+	newPath, bucketName := "", opts.Bucket
+	if bucketName == "" {
+		// Relative input ("." or "../app") used to become a bucket named "." or "",
+		// filing transcripts straight into the projects folder.
+		abs, err := filepath.Abs(projectPath)
+		if err != nil {
+			return res, err
+		}
+		newPath = filepath.Clean(abs)
 
-	// Prefer a bucket that already exists, matched case-insensitively: the casing of a
-	// slug follows the string Claude recorded, not what is on disk, so computing a
-	// fresh one can create a second bucket that --resume never looks in.
-	bucketName := claude.Slug(newPath)
-	if existing, ok := claude.FindBucket(projectsDir, bucketName); ok {
-		bucketName = existing.Name
+		// Prefer a bucket that already exists, matched case-insensitively: the casing
+		// of a slug follows the string Claude recorded, not what is on disk, so
+		// computing a fresh one can create a second bucket --resume never looks in.
+		bucketName = claude.Slug(newPath)
+		if existing, ok := claude.FindBucket(projectsDir, bucketName); ok {
+			bucketName = existing.Name
+		}
 	}
 	res.Bucket = filepath.Join(projectsDir, bucketName)
 
@@ -165,11 +186,37 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		}
 	}
 
+	// Another machine files this machine's copy of a forked session as a fork, and
+	// pushes it back. Unless it was continued there, that is this machine's own
+	// conversation, and it is not filed again.
+	echoes := map[string]string{} // fork file name -> the local session it copies
+	if locals, err := os.ReadDir(res.Bucket); err == nil {
+		// A copy filed before its writer was known carries the tag with no machine; it
+		// may be this machine's too. Only a copy that adds nothing is skipped, so
+		// counting it is safe.
+		tags := []string{forkTag(filepath.Base(res.Bucket), machineName()), forkTag(filepath.Base(res.Bucket), "")}
+		for _, e := range locals {
+			if id, ok := strings.CutSuffix(e.Name(), ".jsonl"); ok {
+				for _, tag := range tags {
+					for level := 0; level < maxForkLevels; level++ {
+						echoes[claude.ForkID(id, forkLevel(tag, level))+".jsonl"] = filepath.Join(res.Bucket, e.Name())
+					}
+				}
+			}
+		}
+	}
+
 	for _, src := range transcripts {
 		name := filepath.Base(src)
 		dst := filepath.Join(res.Bucket, name)
-		restoreSessionFiles(source, res.Bucket, strings.TrimSuffix(name, filepath.Ext(name)), opts.DryRun)
 		exists := archive.StatOrNil(dst) != nil
+		if orig, echo := echoes[strings.ToLower(name)]; echo && !exists {
+			if rel := claude.Compare(src, orig); rel == claude.Same || rel == claude.Behind {
+				res.Skipped++
+				continue
+			}
+		}
+		restoreSessionFiles(source, res.Bucket, strings.TrimSuffix(name, filepath.Ext(name)), opts.DryRun)
 		if exists && !opts.Update {
 			res.Skipped++
 			continue
@@ -201,9 +248,58 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 			res.add(out)
 			res.Updated++
 		case state == diverged:
-			res.Diverged = append(res.Diverged, name)
+			// Both copies have turns the other lacks. Keep the local one as it is and
+			// file the archived one beside it, so either can be resumed.
+			id := strings.TrimSuffix(name, filepath.Ext(name))
+			owner := opts.Owner
+			if info, err := os.Stat(src); err == nil && opts.OwnerOf != nil {
+				if o := opts.OwnerOf(filepath.Base(source), id, info); o != "" {
+					owner = o // who wrote this very copy, not who last pushed the project
+				}
+			}
+			// This machine's tag names its own copies, and this one differs from what
+			// is here: it is someone else's, even when who is not known.
+			if strings.EqualFold(owner, machineName()) {
+				owner = ""
+			}
+			fid, outcome, err := fileFork(root, src, filepath.Join(source, id), res.Bucket, id,
+				forkTag(filepath.Base(source), owner), rules, bareLeaf, opts)
+			if err != nil {
+				res.Failed = append(res.Failed, fmt.Sprintf("%s: fork: %v", name, err))
+				continue
+			}
+			if outcome == forkUnchanged {
+				res.Skipped++
+			}
+			res.countFork(outcome, fmt.Sprintf("%s: the other machine's copy is session %s", id, fid))
 		default:
 			res.Skipped++
+		}
+	}
+
+	// On a shared layout push keeps a forked copy under forks/<bucket>/<id>/<machine>,
+	// since both machines write the one archived file. Every other machine's is filed
+	// here as a session of its own; this machine's own is what it already has.
+	if opts.Forks != "" && archive.IsRealDir(opts.Forks) {
+		ids, _ := os.ReadDir(opts.Forks)
+		for _, d := range ids {
+			if !d.IsDir() || !archive.ValidName(d.Name()) {
+				continue
+			}
+			copies, _ := os.ReadDir(filepath.Join(opts.Forks, d.Name()))
+			for _, c := range copies {
+				machine, ok := strings.CutSuffix(c.Name(), ".jsonl")
+				if !ok || !c.Type().IsRegular() || strings.EqualFold(machine, machineName()) {
+					continue
+				}
+				fid, outcome, err := fileFork(root, filepath.Join(opts.Forks, d.Name(), c.Name()), filepath.Join(source, d.Name()),
+					res.Bucket, d.Name(), forkTag(filepath.Base(source), machine), rules, bareLeaf, opts)
+				if err != nil {
+					res.Failed = append(res.Failed, fmt.Sprintf("%s: fork from %s: %v", d.Name(), machine, err))
+					continue
+				}
+				res.countFork(outcome, fmt.Sprintf("%s: %s's copy is session %s", d.Name(), machine, fid))
+			}
 		}
 	}
 
@@ -213,7 +309,8 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 	//
 	// Memory is markdown, not JSONL, and is never path-rewritten: it is prose, and
 	// substituting paths inside it would corrupt meaning rather than fix references.
-	res.Memory = restoreMemory(filepath.Join(source, "memory"), filepath.Join(res.Bucket, "memory"), opts.DryRun, opts.Update)
+	res.Memory = restoreProjectMemory(root, opts.Archive, filepath.Base(source), filepath.Join(source, "memory"),
+		filepath.Join(res.Bucket, "memory"), opts.Owner, opts.DryRun, opts.Update)
 
 	if len(res.Failed) > 0 && res.Copied == 0 && res.Skipped == 0 && res.Updated == 0 {
 		return res, fmt.Errorf("no transcript could be filed: %s", res.Failed[0])
@@ -255,9 +352,10 @@ const (
 )
 
 // updateTranscript replaces dst with a fresh copy of src only when the copy strictly
-// extends it - the same session, continued on another machine. Transcripts are
-// append-only, so anything else is a session that also continued here, and replacing
-// it would lose those turns.
+// extends it - the same session, continued on another machine. A copy that is behind
+// the local one, or the same conversation in other bytes, is left alone; one where
+// both sides have turns the other lacks is reported as diverged. The two are compared
+// by entry, not by bytes: the local copy may itself have been rewritten by an import.
 func updateTranscript(src, dst string, rules []rewrite.Rule, bareLeaf string) (rewrite.Result, updateState, error) {
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".tmp-update-*")
 	if err != nil {
@@ -271,6 +369,16 @@ func updateTranscript(src, dst string, rules []rewrite.Rule, bareLeaf string) (r
 	if err != nil {
 		return out, unchanged, err
 	}
+	switch claude.Compare(tmpName, dst) {
+	case claude.Same, claude.Behind:
+		return out, unchanged, nil
+	case claude.Forked:
+		return out, diverged, nil
+	case claude.Extends:
+		return out, extended, os.Rename(tmpName, dst)
+	}
+
+	// No entry ids to go by: a byte prefix is the only evidence of a continuation.
 	fresh, err := os.ReadFile(tmpName)
 	if err != nil {
 		return out, unchanged, err
@@ -288,6 +396,181 @@ func updateTranscript(src, dst string, rules []rewrite.Rule, bareLeaf string) (r
 	return out, extended, os.Rename(tmpName, dst)
 }
 
+// forkTag names where a forked copy came from - the archived bucket and the machine
+// whose copy it is - for ForkID. The machine that owns a bucket computes the same tag
+// for its own sessions, which is how it recognises one coming back.
+func forkTag(bucket, machine string) string { return strings.ToLower(bucket + "@" + machine) }
+
+// fileFork files src - another machine's copy of session id, which was continued here
+// as well - as a session of its own, with its session id replaced throughout. Its id
+// is derived from the original and the tag, so filing it again updates it in place,
+// and only with Update. sessionDir is the archived folder of subagent transcripts and
+// saved tool output that goes with it.
+//
+// The fork copy can itself be continued here while the other machine continues the
+// original. Then it no longer contains the other side, and the other side is filed
+// as the next level of fork rather than dropped.
+func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.Rule, bareLeaf string, opts restoreOpts) (string, forkOutcome, error) {
+	info, err := os.Stat(src)
+	if err != nil {
+		return "", forkUnchanged, err
+	}
+	// A copy filed before its writer was known has the tag with no machine. Once the
+	// writer is known, that same copy is kept current rather than filed a second time.
+	if alias := tag[:strings.LastIndex(tag, "@")+1]; alias != tag &&
+		archive.StatOrNil(filepath.Join(bucketDir, claude.ForkID(id, tag)+".jsonl")) == nil &&
+		archive.StatOrNil(filepath.Join(bucketDir, claude.ForkID(id, alias)+".jsonl")) != nil {
+		tag = alias
+	}
+	recPath := filedForksPath(root, bucketDir)
+	filed := loadFiledForks(recPath)
+	remember := func(fid string) {
+		if !opts.DryRun {
+			filed[fid] = info.Size()
+			saveFiledForks(recPath, filed)
+		}
+	}
+
+	for level := 0; level < maxForkLevels; level++ {
+		fid := claude.ForkID(id, forkLevel(tag, level))
+		dst := filepath.Join(bucketDir, fid+".jsonl")
+		forkRules := append(append([]rewrite.Rule{}, rules...), rewrite.Literal("session-id", id, fid))
+		exists := archive.StatOrNil(dst) != nil
+		// Filed before and deleted here since: the user kept the other copy. It comes
+		// back only once the other machine has gone on with it.
+		if size, was := filed[fid]; was && !exists && info.Size() <= size {
+			return fid, forkUnchanged, nil
+		}
+		outcome := forkNew
+		switch {
+		case opts.DryRun && !exists:
+			return fid, forkNew, nil
+		case opts.DryRun || (exists && !opts.Update):
+			return fid, forkUnchanged, nil
+		case !exists:
+			if _, err := fileTranscript(src, dst, forkRules, bareLeaf); err != nil {
+				return "", forkUnchanged, err
+			}
+		default:
+			_, state, err := updateTranscript(src, dst, forkRules, bareLeaf)
+			if err != nil {
+				return "", forkUnchanged, err
+			}
+			switch state {
+			case diverged:
+				continue // this copy was continued here too
+			case extended:
+				outcome = forkUpdated
+			default:
+				outcome = forkUnchanged
+			}
+		}
+		for _, rel := range claude.SessionFiles(sessionDir) {
+			if to := filepath.Join(bucketDir, fid, rel); archive.StatOrNil(to) == nil {
+				_ = archive.CopyFile(filepath.Join(sessionDir, rel), to)
+			}
+		}
+		if outcome != forkUnchanged {
+			remember(fid)
+		}
+		return fid, outcome, nil
+	}
+	return "", forkUnchanged, fmt.Errorf("continued on both machines %d times over; file it by hand with `restore`", maxForkLevels)
+}
+
+// filedForksPath records the forks this machine filed into one local bucket: fork id
+// to the size of the archived copy it came from. Kept beside the memory base, out of
+// Claude Code's projects folder.
+func filedForksPath(root, bucketDir string) string {
+	return filepath.Join(root, "session-sync-base", filepath.Base(bucketDir), "forks.json")
+}
+
+func loadFiledForks(path string) map[string]int64 {
+	m := map[string]int64{}
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(raw, &m)
+	}
+	return m
+}
+
+func saveFiledForks(path string, m map[string]int64) {
+	if data, err := json.MarshalIndent(m, "", "  "); err == nil {
+		_ = archive.WriteFileAtomic(path, append(data, '\n'), 0o644)
+	}
+}
+
+// forkOutcome is what filing a fork did, so a round with nothing new says nothing.
+type forkOutcome int
+
+const (
+	forkUnchanged forkOutcome = iota
+	forkNew
+	forkUpdated
+)
+
+// countFork adds what filing a fork did to the result, with a note only when it did
+// something.
+func (r *restoreResult) countFork(outcome forkOutcome, note string) {
+	switch outcome {
+	case forkNew:
+		r.Copied++
+	case forkUpdated:
+		r.Updated++
+	default:
+		return
+	}
+	r.Diverged = append(r.Diverged, note)
+}
+
+// maxForkLevels bounds how many times one session can fork again before import stops
+// and says so, rather than filing copies without end.
+const maxForkLevels = 8
+
+// forkLevel is the tag for the level-th fork of the same copy; level 0 is the tag.
+func forkLevel(tag string, level int) string {
+	if level == 0 {
+		return tag
+	}
+	return fmt.Sprintf("%s#%d", tag, level)
+}
+
+// restoreProjectMemory files one archived project's memory into dstDir.
+//
+// Every machine keeps its own copy in the archive (memory/<machine>/<bucket>/), which
+// no other machine writes; each other machine's is merged on its own, against what was
+// last taken from that machine. The bucket's shared memory folder is written by every
+// machine on a shared layout - an import could not tell another machine's index from
+// its own last push - so it is used only for a writer with no copy of its own, an
+// older version. This machine's own copy restores a machine with no memory here at
+// all, and is otherwise left alone.
+func restoreProjectMemory(root, dest, bucket, sharedDir, dstDir, owner string, dryRun, update bool) int {
+	me := machineName()
+	var mine, others []string
+	if dest != "" {
+		machines, _ := os.ReadDir(filepath.Join(dest, "memory"))
+		for _, m := range machines {
+			if !m.IsDir() || !archive.ValidName(m.Name()) || !archive.IsRealDir(machineMemoryDir(dest, m.Name(), bucket)) {
+				continue
+			}
+			if strings.EqualFold(m.Name(), me) {
+				mine = append(mine, m.Name())
+			} else {
+				others = append(others, m.Name())
+			}
+		}
+	}
+	n := 0
+	covered := map[string]bool{}
+	for _, m := range append(mine, others...) { // its own first: a restore onto an empty machine
+		covered[strings.ToLower(m)] = true
+		n += restoreMemory(root, machineMemoryDir(dest, m, bucket), dstDir, m+"@"+bucket, dryRun, update, strings.EqualFold(m, me))
+	}
+	if !covered[strings.ToLower(owner)] {
+		n += restoreMemory(root, sharedDir, dstDir, bucket, dryRun, update, strings.EqualFold(owner, me))
+	}
+	return n
+}
+
 // restoreMemory files a project's memory from the archive.
 //
 // Memory is loaded into every session as instructions, and the archive is written by
@@ -295,16 +578,28 @@ func updateTranscript(src, dst string, rules []rewrite.Rule, bareLeaf string) (r
 // here is never replaced unless the user asks with update - replacing used to happen
 // whenever the archived copy was newer, and a file dated in the future stayed newer
 // than any local edit forever. Even then, a future-dated file is refused.
-func restoreMemory(srcDir, dstDir string, dryRun, update bool) int {
+func restoreMemory(root, srcDir, dstDir, source string, dryRun, update, own bool) int {
 	// A symlink planted in the archive in place of the folder would otherwise copy
 	// whatever it points at into this machine's memory, and the next push back out.
 	if !archive.IsRealDir(srcDir) {
+		return 0
+	}
+	// This machine's own archived memory is a backup of itself, not another side:
+	// taken back, a copy pushed before this machine's latest edits undid them, and a
+	// file deleted here returned, since the archive never deletes. Only a machine with
+	// no memory here at all - a lost one, restored - takes it.
+	if own && archive.IsRealDir(dstDir) {
 		return 0
 	}
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		return 0
 	}
+	// What was last taken from this source, one folder per project and source: it is
+	// how a later import tells "deleted here" from "never seen here". Kept beside
+	// session-sync.json, out of Claude Code's own projects folder.
+	base := filepath.Join(root, "session-sync-base", filepath.Base(filepath.Dir(dstDir)), source)
+	stamp := time.Now().Format("20060102-150405")
 	n := 0
 	for _, e := range entries {
 		if !e.Type().IsRegular() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
@@ -312,18 +607,161 @@ func restoreMemory(srcDir, dstDir string, dryRun, update bool) int {
 		}
 		dst := filepath.Join(dstDir, e.Name())
 		src := filepath.Join(srcDir, e.Name())
+		baseFile := filepath.Join(base, e.Name())
+		srcInfo, err := e.Info()
+		if err != nil {
+			continue
+		}
+		// Already here as archived: remember it was taken, so that deleting it here is
+		// not later mistaken for never having had it.
+		if !dryRun && sameContent(src, dst) && !sameContent(src, baseFile) {
+			_ = archive.CopyFile(src, baseFile)
+		}
 
-		if srcInfo, err := e.Info(); err != nil || !shouldRestore(srcInfo, dst, update) {
+		// MEMORY.md is the index of every memory, loaded into each session, and each
+		// machine edits its own. Replacing one with the other dropped one machine's
+		// entries, here and after the next push in the archive; a plain union brought
+		// back every entry either machine deleted. So with update it is merged against
+		// what was last taken: what either side added arrives, what either deleted
+		// stays deleted.
+		if update && strings.EqualFold(e.Name(), "MEMORY.md") && archive.StatOrNil(dst) != nil {
+			if mergeMemoryIndex(src, dst, baseFile, srcInfo, dryRun) {
+				n++
+			}
+			continue
+		}
+		// A file this machine deleted after taking it is not brought back, as long as
+		// the archived copy is still the one it took.
+		if archive.StatOrNil(dst) == nil && sameContent(src, baseFile) {
+			continue
+		}
+		if !shouldRestore(srcInfo, dst, update) {
 			continue
 		}
 		if !dryRun {
+			// A memory file replaced by another machine's newer copy is kept, out of the
+			// way of push and of the memory Claude loads.
+			if mine, err := os.ReadFile(dst); err == nil {
+				if theirs, err := os.ReadFile(src); err != nil || bytes.Equal(mine, theirs) {
+					continue
+				}
+				if err := archive.CopyFile(dst, filepath.Join(dstDir, ".replaced", stamp, e.Name())); err != nil {
+					continue // never replace what could not be kept
+				}
+			}
 			if err := archive.CopyFile(src, dst); err != nil {
 				continue
 			}
+			_ = archive.CopyFile(src, baseFile)
 		}
 		n++
 	}
 	return n
+}
+
+func sameContent(a, b string) bool {
+	x, err1 := os.ReadFile(a)
+	y, err2 := os.ReadFile(b)
+	return err1 == nil && err2 == nil && bytes.Equal(x, y)
+}
+
+// mergeMemoryIndex merges the archived MEMORY.md into the local one against baseFile,
+// what was last taken from it, reporting whether the local one changed. A copy dated
+// in the future is refused.
+func mergeMemoryIndex(src, dst, baseFile string, srcInfo os.FileInfo, dryRun bool) bool {
+	// A copy dated in the future is refused outright, as for every memory file: it is
+	// how an archive someone else can write would plant an instruction that stays
+	// "newer" than any local edit.
+	if srcInfo.ModTime().After(time.Now().Add(time.Hour)) {
+		return false
+	}
+	theirs, err1 := os.ReadFile(src)
+	mine, err2 := os.ReadFile(dst)
+	dstInfo := archive.StatOrNil(dst)
+	if err1 != nil || err2 != nil || dstInfo == nil {
+		return false
+	}
+	base, _ := os.ReadFile(baseFile) // none yet: everything is new
+	merged := mergeIndex(string(base), string(theirs), string(mine), srcInfo.ModTime().After(dstInfo.ModTime()))
+	if dryRun {
+		return merged != string(mine)
+	}
+	if merged != string(mine) {
+		if archive.WriteFileAtomic(dst, []byte(merged), 0o644) != nil {
+			return false // the base moves on only once its entries are here
+		}
+	}
+	_ = archive.CopyFile(src, baseFile)
+	return merged != string(mine)
+}
+
+// indexLink is the memory file an index line points at: "- [Title](file.md) - hook".
+var indexLink = regexp.MustCompile(`\]\(([^)\s]+\.md)\)`)
+
+// mergeIndex merges two MEMORY.md indexes three ways. An entry is the file a line links
+// to, or the line itself when it links to none; base is what was last taken from
+// theirs. The result is mine, in its order, with what changed there since base:
+// entries they deleted dropped, entries only they changed taken, and entries they
+// added appended - and nothing this side deleted after taking it brought back. With
+// no base, nothing counts as deleted. An entry both sides changed gets the newer
+// file's wording.
+func mergeIndex(base, theirs, mine string, theirsNewer bool) string {
+	key := func(line string) string {
+		if m := indexLink.FindStringSubmatch(line); m != nil {
+			return "link:" + strings.ToLower(m[1])
+		}
+		return "line:" + strings.TrimSpace(line)
+	}
+	lines := func(s string) []string {
+		if strings.TrimSpace(s) == "" {
+			return nil
+		}
+		return strings.Split(strings.TrimRight(s, "\r\n"), "\n")
+	}
+	entries := func(s string) map[string]string {
+		m := map[string]string{}
+		for _, l := range lines(s) {
+			if k := key(l); strings.TrimSpace(l) != "" && m[k] == "" {
+				m[k] = l
+			}
+		}
+		return m
+	}
+	b, t := entries(base), entries(theirs)
+
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range lines(mine) {
+		if strings.TrimSpace(l) == "" {
+			out = append(out, l)
+			continue
+		}
+		k := key(l)
+		seen[k] = true
+		was, inBase := b[k]
+		now, inTheirs := t[k]
+		switch {
+		case inBase && !inTheirs && l == was:
+			continue // deleted there, untouched here
+		case inTheirs && now != l && inBase && l == was:
+			l = now // changed there only
+		case inTheirs && now != l && !(inBase && now == was) && theirsNewer:
+			l = now // changed on both sides, or never compared: the newer wording
+		}
+		out = append(out, l)
+	}
+	for _, l := range lines(theirs) {
+		k := key(l)
+		if strings.TrimSpace(l) == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		if _, inBase := b[k]; inBase {
+			continue // deleted here after it was taken
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n") + "\n"
 }
 
 // restoreSessionFiles copies a session's own folder - subagent transcripts and saved
@@ -362,8 +800,8 @@ func printDiverged(names []string) {
 	if len(names) == 0 {
 		return
 	}
-	fmt.Printf("\n%d session(s) continued both here and on another machine, so neither copy\n", len(names))
-	fmt.Println("contains the other; the local one was kept:")
+	fmt.Printf("\n%d session(s) continued both here and on another machine. The local copy\n", len(names))
+	fmt.Println("is kept as it is, and the other is filed as a session of its own - resume either:")
 	for _, n := range names {
 		fmt.Printf("  %s\n", n)
 	}

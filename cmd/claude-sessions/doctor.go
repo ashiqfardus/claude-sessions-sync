@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -145,6 +147,18 @@ func cmdDoctor(args []string) error {
 			fmt.Sprintf("Run `claude-sessions config set-destination %q` so every run agrees.", dest)})
 	}
 
+	if mixed := otherVersions(dest); len(mixed) > 0 {
+		add(check{"versions", levelWarn,
+			fmt.Sprintf("other machines run a different version than this one (%s): %s", version, strings.Join(mixed, ", ")),
+			"Mixed versions skip features without saying so - an older build pushes no rules or skills. Install the same release everywhere, or `claude-sessions machines --forget <name>` for a machine no longer in use."})
+	}
+
+	if diffs := profileDiffs(dest); len(diffs) > 0 {
+		add(check{"profile", levelInfo,
+			fmt.Sprintf("%d rule/skill file(s) differ between machines: %s", len(diffs), profileSummary(diffs)),
+			"`import --update` takes the newest. Every machine's own copy stays in the archive under profile/machines/."})
+	}
+
 	// --- manifest drift -------------------------------------------------------
 	// The check that matters: a bucket present in the archive but absent from the
 	// manifest cannot be identity-matched, so `import` on a new machine will not
@@ -268,6 +282,19 @@ func cmdDoctor(args []string) error {
 			"Sessions are only archived by the periodic sweep, so the most recent one can be missed."})
 	}
 
+	// The Stop hook arrived later than SessionEnd: an older install archives only when
+	// a session ends and on the sweep, so up to half an hour of work is at risk.
+	perReply := false
+	for _, h := range settings.HooksFor("Stop", "claude-sessions") {
+		if ours, _ := claude.IsArchiveHook(h.Command, h.Args); ours {
+			perReply = true
+		}
+	}
+	if len(goHooks) > 0 && !perReply {
+		add(check{"reply hook", levelInfo, "the per-reply backup is not installed",
+			"Run `claude-sessions install` again: it adds a Stop hook that archives the current session after each reply."})
+	}
+
 	sweep, err := hostagent.Sweep(sweepJob(root, ""))
 	if err != nil {
 		add(check{"sweep", levelWarn, err.Error(), ""})
@@ -331,8 +358,10 @@ func liveness(root, dest string, buckets []claude.Bucket) []check {
 			}
 			dst := archive.StatOrNil(filepath.Join(archive.ProjectsDir(dest), b.Name, filepath.Base(t.Path)))
 			// A shorter local copy is a session forked across machines, which push
-			// deliberately leaves alone; it is not a failure to archive.
-			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) {
+			// deliberately leaves alone; it is not a failure to archive. Nor is one
+			// whose copy is saved as a fork beside the archived one.
+			fork := archive.StatOrNil(forkPath(dest, b.Name, t.ID, machineName()))
+			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) {
 				pending = append(pending, b.Name+"/"+t.ID)
 			}
 		}
@@ -358,7 +387,76 @@ func liveness(root, dest string, buckets []claude.Bucket) []check {
 	default:
 		out = append(out, check{"last push", levelOK, last.Format("2006-01-02 15:04"), ""})
 	}
+
+	// doctor runs in a terminal, which may hold a privacy grant the background sweep
+	// does not, so a refusal only shows up in what the sweep logged.
+	if line, denied := deniedSincePush(root); denied {
+		// Say which run was refused: the sweep marks its own lines.
+		bySweep := strings.HasSuffix(strings.TrimSpace(line), strings.TrimSpace(sweepMark))
+		hint := "A push was refused access to the archive. Check the folder's permissions."
+		switch {
+		case runtime.GOOS == "darwin" && bySweep:
+			hint = "macOS privacy settings refused the background sweep. In System Settings > Privacy & Security > Full Disk Access, add " +
+				filepath.Join(root, "bin", "claude-sessions") + ". A rebuilt binary loses the grant: run `install` again and re-add it."
+		case runtime.GOOS == "darwin":
+			hint = "macOS privacy settings refused a push run from a terminal or Claude Code. Give that app access in System Settings > Privacy & Security > Files and Folders (or Full Disk Access)."
+		case bySweep:
+			hint = "The background sweep was refused access to the archive. Check the folder's permissions for the account the sweep runs as."
+		}
+		out = append(out, check{"archive access", levelFail, line, hint})
+	}
 	return out
+}
+
+// otherVersions names every other machine whose shard was written by a different
+// build, as "NAME (version)".
+func otherVersions(dest string) []string {
+	shards, _, _ := archive.ReadShards(dest)
+	me := machineName()
+	var out []string
+	for name, s := range shards {
+		if strings.EqualFold(name, me) || s.ToolVersion == version {
+			continue
+		}
+		v := s.ToolVersion
+		if v == "" {
+			v = "an older build that does not record it"
+		}
+		out = append(out, fmt.Sprintf("%s (%s)", name, v))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// deniedSincePush returns the newest "operation not permitted" line logged after the
+// last push that clears it, if there is one. Where a sweep marks its runs, only its
+// own success clears it: any other push - a hook, a terminal - holds a terminal's
+// privacy grant, which the sweep may lack. Where none does - `install --no-sweep`, or
+// an install from before --sweep - any successful push clears it, or it never could.
+func deniedSincePush(root string) (string, bool) {
+	raw, err := os.ReadFile(filepath.Join(root, "session-sync.log"))
+	if err != nil {
+		return "", false
+	}
+	mark := strings.TrimSpace(sweepMark)
+	lines := strings.Split(string(raw), "\n")
+	sweeps := false
+	for _, l := range lines {
+		if _, rest, _ := strings.Cut(l, "  "); strings.HasPrefix(rest, "PUSH:") && strings.HasSuffix(strings.TrimSpace(rest), mark) {
+			sweeps = true
+			break
+		}
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		_, rest, _ := strings.Cut(lines[i], "  ")
+		if strings.HasPrefix(rest, "PUSH:") && (!sweeps || strings.HasSuffix(strings.TrimSpace(rest), mark)) {
+			return "", false
+		}
+		if strings.Contains(strings.ToLower(lines[i]), "operation not permitted") {
+			return lines[i], true
+		}
+	}
+	return "", false
 }
 
 // lastPush is the time of the newest "PUSH:" line in the log, or its rotated copy.
@@ -500,11 +598,19 @@ func report(checks []check, asJSON bool) error {
 // the project's folder - so a cloned repository could supply the program that ran at
 // the end of every session.
 func resolveRoot(override string) (string, claude.RootSource, error) {
+	root, src, err := claude.Root()
 	if strings.TrimSpace(override) != "" {
-		abs, err := filepath.Abs(override)
-		return abs, "--claude-dir", err
+		root, src = "", "--claude-dir"
+		root, err = filepath.Abs(override)
 	}
-	return claude.Root()
+	// The machine name the user pinned is read here, where every command first knows
+	// its profile, so every name it writes agrees.
+	if err == nil {
+		if cfg, cerr := archive.LoadConfig(root); cerr == nil {
+			savedMachine = cfg.Machine
+		}
+	}
+	return root, src, err
 }
 
 // renderState summarises how current the HTML is.

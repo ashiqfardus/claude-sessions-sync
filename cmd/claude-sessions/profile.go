@@ -10,6 +10,7 @@ package main
 // exist on the machine that wrote them), credentials, caches and plugin installs.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -97,15 +98,36 @@ func readPluginList(path string) (pluginList, error) {
 	return p, json.Unmarshal(raw, &p)
 }
 
-// pushProfile copies the profile into the archive. The newer copy wins, as it does
-// for memory. It never fails the push: the sessions are what must get through.
+// machineProfileDir is one machine's own copy of its profile. The shared copy is
+// newest-wins across machines, so without this an older CLAUDE.md on one machine was
+// simply absent from the backup once another machine had pushed a newer one.
+func machineProfileDir(dest, machine string) string {
+	return filepath.Join(profileDir(dest), "machines", machine)
+}
+
+// replacedDir is where an import keeps this machine's version of a rule or skill file
+// it replaced, under the time of the import. No push ever writes there.
+func replacedDir(dest, machine string) string {
+	return filepath.Join(profileDir(dest), "replaced", machine, time.Now().Format("20060102-150405"))
+}
+
+// pushProfile copies the profile into the archive: into the shared copy, where the
+// newer file wins as it does for memory, and into this machine's own copy, which no
+// other machine writes. It never fails the push: the sessions are what must get
+// through.
 func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (copied, unchanged int) {
+	own := machineProfileDir(dest, machineName())
 	for _, rel := range profileFiles(root) {
 		src := filepath.Join(root, filepath.FromSlash(rel))
 		dst := filepath.Join(profileDir(dest), filepath.FromSlash(rel))
 		info, err := os.Stat(src)
 		if err != nil {
 			continue
+		}
+		if ownDst := filepath.Join(own, filepath.FromSlash(rel)); !dryRun && archive.NeedsCopy(info, archive.StatOrNil(ownDst)) {
+			if err := archive.CopyFile(src, ownDst); err != nil {
+				logf("WARN: profile/machines/%s: %v", rel, err)
+			}
 		}
 		if !archive.NeedsCopy(info, archive.StatOrNil(dst)) {
 			unchanged++
@@ -136,8 +158,9 @@ func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (cop
 }
 
 type profileResult struct {
-	Files   []string    // profile files filed here
-	Plugins []pluginRun // plugins enabled on another machine and missing here
+	Files    []string    // profile files filed here
+	Replaced []string    // of those, local files that differed and were replaced
+	Plugins  []pluginRun // plugins enabled on another machine and missing here
 }
 
 type pluginRun struct {
@@ -160,6 +183,7 @@ func restoreProfile(root, dest string, dryRun, update, installPlugins bool) prof
 	if !archive.IsRealDir(src) {
 		return res
 	}
+	keep := replacedDir(dest, machineName())
 	for _, rel := range profileFiles(src) {
 		from := filepath.Join(src, filepath.FromSlash(rel))
 		to := filepath.Join(root, filepath.FromSlash(rel))
@@ -167,10 +191,29 @@ func restoreProfile(root, dest string, dryRun, update, installPlugins bool) prof
 		if err != nil || !shouldRestore(info, to, update) {
 			continue
 		}
+		// A local file that differs is another machine's version winning over this
+		// one's. Keep this machine's first, so it can be had back, and say so. Not in
+		// profile/machines/: the next push rewrites that with the file now here.
+		replacing := false
+		if local, err := os.ReadFile(to); err == nil {
+			archived, err := os.ReadFile(from)
+			if err != nil || bytes.Equal(local, archived) {
+				continue
+			}
+			replacing = true
+		}
 		if !dryRun {
+			if replacing {
+				if err := archive.CopyFile(to, filepath.Join(keep, filepath.FromSlash(rel))); err != nil {
+					continue // never replace what could not be kept
+				}
+			}
 			if err := archive.CopyFile(from, to); err != nil {
 				continue
 			}
+		}
+		if replacing {
+			res.Replaced = append(res.Replaced, rel)
 		}
 		res.Files = append(res.Files, rel)
 	}
@@ -200,11 +243,16 @@ func restoreProfile(root, dest string, dryRun, update, installPlugins bool) prof
 // copy, and never with one dated in the future - that would stay "newer" than any
 // local edit forever.
 func shouldRestore(src os.FileInfo, dst string, update bool) bool {
+	// Checked first: a future-dated file filed because nothing was here yet stays
+	// "newer" than every later local edit, which then never reaches the archive.
+	if src.ModTime().After(time.Now().Add(time.Hour)) {
+		return false
+	}
 	dstInfo := archive.StatOrNil(dst)
 	if dstInfo == nil {
 		return true
 	}
-	return update && !src.ModTime().After(time.Now().Add(time.Hour)) && archive.NeedsCopy(src, dstInfo)
+	return update && archive.NeedsCopy(src, dstInfo)
 }
 
 // Names and sources from the archive become arguments to `claude`. No shell is
@@ -339,6 +387,10 @@ func printProfile(res profileResult, dryRun bool) {
 		fmt.Printf(" (%s)", profileSummary(res.Files))
 	}
 	fmt.Println()
+	for _, rel := range res.Replaced {
+		fmt.Printf("  ! %s replaced: it differed from another machine's newer copy (this machine's is kept in the archive under profile/replaced/%s/)\n",
+			rel, machineName())
+	}
 	for _, p := range res.Plugins {
 		marker := "+"
 		if p.Status != "installed" && p.Status != "would install" {
@@ -349,6 +401,37 @@ func printProfile(res profileResult, dryRun bool) {
 			fmt.Printf("      %s\n", p.Command())
 		}
 	}
+}
+
+// profileDiffs lists profile files that more than one machine has archived with
+// different content: what `import --update` would settle by taking the newest.
+func profileDiffs(dest string) []string {
+	machines, _ := os.ReadDir(filepath.Join(profileDir(dest), "machines"))
+	first := map[string][]byte{}
+	differs := map[string]bool{}
+	for _, m := range machines {
+		dir := filepath.Join(profileDir(dest), "machines", m.Name())
+		if !archive.IsRealDir(dir) {
+			continue
+		}
+		for _, rel := range profileFiles(dir) {
+			body, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+			if err != nil {
+				continue
+			}
+			if prev, seen := first[rel]; !seen {
+				first[rel] = body
+			} else if !bytes.Equal(prev, body) {
+				differs[rel] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(differs))
+	for rel := range differs {
+		out = append(out, rel)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // profileSummary names the top-level items: "CLAUDE.md, skills/graphify, ...".
