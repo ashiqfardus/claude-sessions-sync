@@ -63,30 +63,24 @@ func norm(p string, windows bool) (string, bool) {
 		(p[1]|0x20 >= 'a' && p[1]|0x20 <= 'z') { // MSYS /e/dir
 		p = p[1:2] + ":" + p[2:]
 	}
-	s := segs(p)
-	if WindowsPath(p) {
-		if len(s) > 0 && len(s[0]) == 2 {
-			s[0] = strings.ToUpper(s[0])
+	win := WindowsPath(p)
+	if !win && !strings.HasPrefix(p, "/") {
+		return "", false
+	}
+	var s []string
+	for _, x := range segs(p) {
+		if x != ".." {
+			s = append(s, x)
+		} else if len(s) > 0 && !(win && len(s) == 1) { // never pop the drive
+			s = s[:len(s)-1]
 		}
+	}
+	if win {
+		s[0] = strings.ToUpper(s[0])
 		if len(s) == 1 {
 			return s[0] + `\`, true
 		}
 		return strings.Join(s, `\`), true
-	}
-	if !strings.HasPrefix(p, "/") {
-		return "", false
-	}
-	for i := 0; i < len(s); i++ { // resolve ..
-		if s[i] == ".." {
-			j := i - 1
-			if j < 0 {
-				j = 0
-				s = s[1:]
-			} else {
-				s = append(s[:j], s[i+1:]...)
-			}
-			i = j - 1
-		}
 	}
 	return "/" + strings.Join(s, "/"), true
 }
@@ -148,16 +142,27 @@ func Folders(cands []Candidate, env Env) []Folder {
 			}
 			f = Folder{p, true}
 		}
+		all = append(all, f)
+	}
+	// Sort before dedupe so the kept spelling of case variants never depends on input order.
+	sort.Slice(all, func(i, j int) bool {
+		if len(all[i].Path) != len(all[j].Path) {
+			return len(all[i].Path) < len(all[j].Path)
+		}
+		return all[i].Path < all[j].Path
+	})
+	var uniq []Folder
+	for _, f := range all {
 		k := f.Path
-		if fold {
+		if env.Windows || WindowsPath(k) {
 			k = strings.ToLower(k)
 		}
 		if !seen[k] {
 			seen[k] = true
-			all = append(all, f)
+			uniq = append(uniq, f)
 		}
 	}
-	sort.SliceStable(all, func(i, j int) bool { return len(all[i].Path) < len(all[j].Path) })
+	all = uniq
 	var kept []Folder
 outer:
 	for _, f := range all {

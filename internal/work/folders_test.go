@@ -83,3 +83,32 @@ func TestFoldersWindowsCase(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func fakeWinEnv() Env {
+	return Env{
+		Home: `C:\Users\a`, ClaudeRoot: `C:\Users\a\.claude`, Temp: []string{`C:\Temp`}, Windows: true,
+		RepoRoot: func(string) string { return "" },
+		Exists:   func(string) bool { return true },
+	}
+}
+
+func TestFoldersWindowsDotDot(t *testing.T) {
+	for _, p := range []string{`C:\Users\a\proj\..\..`, `C:\Users\a\.claude\..\.claude\x`, `C:\Temp\x\..\y`, `C:\..\..`} {
+		if got := Folders([]Candidate{{p, false}}, fakeWinEnv()); len(got) != 0 {
+			t.Fatalf("%s: got %v", p, got)
+		}
+	}
+	got := Folders([]Candidate{{`E:\SQL\a\..\po`, false}}, fakeWinEnv())
+	if want := []Folder{{`E:\SQL\po`, false}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestFoldersCaseVariantOrderIndependent(t *testing.T) {
+	a, b := Candidate{`E:\SQL\po`, false}, Candidate{`e:\sql\po\r.md`, true}
+	x := Folders([]Candidate{a, b}, fakeWinEnv())
+	y := Folders([]Candidate{b, a}, fakeWinEnv())
+	if !reflect.DeepEqual(x, y) || len(x) != 1 {
+		t.Fatalf("x=%v y=%v", x, y)
+	}
+}
