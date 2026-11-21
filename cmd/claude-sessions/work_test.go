@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -536,15 +537,22 @@ type workPair struct {
 
 func newWorkPair(t *testing.T) workPair {
 	t.Helper()
+	p := workPairAt(t, t.TempDir())
+	p.a.workRun(t, p.homeA, "push", "--no-html")
+	return p
+}
+
+// workPairAt is newWorkPair with A's home at homeA, before A pushes.
+func workPairAt(t *testing.T, homeA string) workPair {
+	t.Helper()
 	arch := t.TempDir()
-	p := workPair{a: newMachine(t, "WIN", arch), b: newMachine(t, "MAC", arch), homeA: t.TempDir(), homeB: t.TempDir()}
+	p := workPair{a: newMachine(t, "WIN", arch), b: newMachine(t, "MAC", arch), homeA: homeA, homeB: t.TempDir()}
 	p.repo = gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
 	p.folder = filepath.Join(p.homeA, "My Work", "run 1")
 	mustWrite(t, filepath.Join(p.folder, "রিপোর্ট.md"), "report v1\n")
 	mustWrite(t, filepath.Join(p.homeA, "Desktop", "todo.md"), "todo\n") // a broad folder: this one file only
 	workSession(t, p.a, p.repo, []string{filepath.Join(p.folder, "রিপোর্ট.md"), filepath.Join(p.homeA, "Desktop", "todo.md")},
 		`cd "`+p.folder+`"`)
-	p.a.workRun(t, p.homeA, "push", "--no-html")
 	return p
 }
 
@@ -1061,5 +1069,210 @@ func TestWorkRoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(p.homeA, "claude-work")); !os.IsNotExist(err) {
 		t.Fatalf("A placed it under claude-work: %v", err)
+	}
+}
+
+// aged makes a file two hours old: --repoint leaves anything newer alone.
+func aged(t *testing.T, path string) {
+	t.Helper()
+	at := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stalePair is B after an import from before A's folder was in the archive: B's copy of
+// A's two-hour-old session still names A's folder. A has pushed the folder since.
+func stalePair(t *testing.T, homeA string) workPair {
+	t.Helper()
+	p := workPairAt(t, homeA)
+	aged(t, p.a.session(p.repo))
+	configAs(t, p.a.claudeDir, "WIN", "work", "off")
+	p.a.workRun(t, p.homeA, "push", "--no-html")
+	p.b.workRun(t, p.homeB, "import", "--no-plugins")
+	configAs(t, p.a.claudeDir, "WIN", "work", "on")
+	p.a.workRun(t, p.homeA, "push", "--no-html")
+	if s := mustRead(t, p.b.session(p.repo)); !strings.Contains(s, inJSON(p.folder)) {
+		t.Fatalf("B's copy does not name A's folder:\n%s", s)
+	}
+	return p
+}
+
+// repointBackups is every backed-up copy of rel in B's session bucket, one per
+// --repoint run, each in a <yyyymmdd-hhmm>[-n] folder.
+func (p workPair) repointBackups(t *testing.T, rel string) []string {
+	t.Helper()
+	base := filepath.Join(p.b.claudeDir, "repoint-backup")
+	found, _ := filepath.Glob(filepath.Join(base, "*", claude.Slug(p.repo), rel))
+	for _, f := range found {
+		r, _ := filepath.Rel(base, f)
+		stamp := strings.Split(filepath.ToSlash(r), "/")[0]
+		if _, err := time.Parse("20060102-1504", stamp[:min(13, len(stamp))]); err != nil {
+			t.Fatalf("backup folder %q is not <yyyymmdd-hhmm>", stamp)
+		}
+	}
+	return found
+}
+
+func TestRepointExisting(t *testing.T) {
+	p := stalePair(t, t.TempDir())
+	session := p.b.session(p.repo)
+	before := mustRead(t, session)
+
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins")
+	if !strings.Contains(out, "1 conversation(s) here still point at other machines' work folders: run claude-sessions import --repoint") {
+		t.Fatalf("no hint: %s", out)
+	}
+	if mustRead(t, session) != before {
+		t.Fatal("a plain import rewrote a conversation already here")
+	}
+
+	out = p.b.workRun(t, p.homeB, "import", "--no-plugins", "--repoint")
+	s := mustRead(t, session)
+	if !strings.Contains(s, inJSON(filepath.Join(p.placed(), "রিপোর্ট.md"))) || !strings.Contains(s, inJSON(`cd "`+p.placed()+`"`)) ||
+		!strings.Contains(s, inJSON(filepath.Join(p.homeB, "Desktop", "todo.md"))) || strings.Contains(s, inJSON(p.homeA)) {
+		t.Fatalf("not repointed:\n%s\n%s", s, out)
+	}
+	if !strings.Contains(out, "repointed 1 conversation(s)") {
+		t.Fatalf("output: %s", out)
+	}
+	if st, err := os.Stat(session); err != nil || time.Since(st.ModTime()) < time.Hour {
+		t.Fatalf("time not kept: %v %v", st, err)
+	}
+	backups := p.repointBackups(t, forkSession+".jsonl")
+	if len(backups) != 1 || mustRead(t, backups[0]) != before {
+		t.Fatalf("backup: %v", backups)
+	}
+	if out := p.b.workRun(t, p.homeB, "import", "--no-plugins"); strings.Contains(out, "--repoint") {
+		t.Fatalf("still hinted after --repoint: %s", out)
+	}
+}
+
+func TestRepointSkipsRecent(t *testing.T) {
+	p := stalePair(t, t.TempDir())
+	session := p.b.session(p.repo)
+	at := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(session, at, at); err != nil {
+		t.Fatal(err)
+	}
+	before := mustRead(t, session)
+
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins", "--repoint")
+	if !strings.Contains(out, "1 conversation(s) used in the last hour left alone") {
+		t.Fatalf("output: %s", out)
+	}
+	if mustRead(t, session) != before {
+		t.Fatal("a recent conversation was rewritten")
+	}
+	if _, err := os.Stat(filepath.Join(p.b.claudeDir, "repoint-backup")); !os.IsNotExist(err) {
+		t.Fatalf("backup folder made: %v", err)
+	}
+}
+
+func TestRepointDryRun(t *testing.T) {
+	p := stalePair(t, t.TempDir())
+	session := p.b.session(p.repo)
+	before := mustRead(t, session)
+
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins", "--repoint", "--dry-run")
+	if !strings.Contains(out, "would repoint 1 conversation(s)") {
+		t.Fatalf("output: %s", out)
+	}
+	if mustRead(t, session) != before {
+		t.Fatal("dry run rewrote a conversation")
+	}
+	for _, f := range []string{filepath.Join(p.b.claudeDir, "repoint-backup"), filepath.Join(p.b.claudeDir, "session-sync-base", "repointed.json")} {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Fatalf("dry run wrote %s: %v", f, err)
+		}
+	}
+}
+
+// A placement changed after a repoint: the next one moves the old target's paths, a
+// subagent's too, to the new folder. Two runs in one minute keep both backups.
+func TestRepointRemap(t *testing.T) {
+	p := stalePair(t, t.TempDir())
+	session := p.b.session(p.repo)
+	agentRel := filepath.Join(forkSession, "subagents", "agent-1.jsonl")
+	agent := filepath.Join(filepath.Dir(session), agentRel)
+	l, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "read " + filepath.Join(p.folder, "রিপোর্ট.md")}})
+	mustWrite(t, agent, string(l)+"\n")
+	aged(t, agent)
+	original := mustRead(t, session)
+
+	p.b.workRun(t, p.homeB, "import", "--no-plugins", "--repoint")
+	first := mustRead(t, session)
+	if !strings.Contains(first, inJSON(p.placed())) || !strings.Contains(mustRead(t, agent), inJSON(p.placed())) {
+		t.Fatalf("first repoint:\n%s", first)
+	}
+	dir := filepath.Join(p.homeB, "mapped")
+	mustMkdir(t, dir)
+	configAs(t, p.b.claudeDir, "MAC", "map-folder", p.folder, dir)
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins", "--repoint")
+
+	s, a := mustRead(t, session), mustRead(t, agent)
+	if !strings.Contains(s, inJSON(filepath.Join(dir, "রিপোর্ট.md"))) || strings.Contains(s, inJSON(p.placed())) ||
+		!strings.Contains(a, inJSON(filepath.Join(dir, "রিপোর্ট.md"))) {
+		t.Fatalf("not moved to the new folder:\n%s\n%s\n%s", s, a, out)
+	}
+	if got := mustRead(t, filepath.Join(dir, "রিপোর্ট.md")); got != "report v1\n" {
+		t.Fatalf("not placed at the new folder: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(p.placed(), "রিপোর্ট.md")); err != nil {
+		t.Fatalf("old copy moved: %v", err)
+	}
+	var got []string
+	for _, b := range p.repointBackups(t, forkSession+".jsonl") {
+		got = append(got, mustRead(t, b))
+	}
+	if len(got) != 2 || !slices.Contains(got, original) || !slices.Contains(got, first) {
+		t.Fatalf("backups: %q", got)
+	}
+	if n := len(p.repointBackups(t, agentRel)); n != 2 {
+		t.Fatalf("%d subagent backup(s)", n)
+	}
+	_ = filepath.WalkDir(filepath.Dir(session), func(q string, d fs.DirEntry, err error) error {
+		if err == nil && strings.HasPrefix(d.Name(), ".tmp") {
+			t.Errorf("temp file left: %s", q)
+		}
+		return nil
+	})
+}
+
+// --repoint made the copy shorter (A's home is longer than B's): push replaces the
+// archived copy with it once, without the truncation warning, then leaves it be.
+func TestRepointedAcceptedByPush(t *testing.T) {
+	for _, viaHook := range []bool{false, true} {
+		p := stalePair(t, filepath.Join(t.TempDir(), "a-much-longer-home-folder-for-the-first-machine"))
+		p.b.workRun(t, p.homeB, "import", "--no-plugins", "--repoint")
+		session := p.b.session(p.repo)
+		archived := filepath.Join(p.b.archive, "projects", claude.Slug(p.repo), forkSession+".jsonl")
+		local, _ := os.Stat(session)
+		if arch, _ := os.Stat(archived); local.Size() >= arch.Size() {
+			t.Fatalf("repoint did not shorten it: %d >= %d", local.Size(), arch.Size())
+		}
+		push := func() {
+			if viaHook {
+				p.b.hook(t, session)
+			} else {
+				p.b.workRun(t, p.homeB, "push", "--no-html")
+			}
+		}
+
+		push()
+		if mustRead(t, archived) != mustRead(t, session) {
+			t.Fatalf("hook %v: archived copy not replaced", viaHook)
+		}
+		if log, _ := os.ReadFile(filepath.Join(p.b.claudeDir, "session-sync.log")); strings.Contains(string(log), "shorter") {
+			t.Fatalf("hook %v: log: %s", viaHook, log)
+		}
+		if rec, _ := os.ReadFile(filepath.Join(p.b.claudeDir, "session-sync-base", "repointed.json")); strings.Contains(string(rec), forkSession) {
+			t.Fatalf("hook %v: entry kept: %s", viaHook, rec)
+		}
+		was, _ := os.Stat(archived)
+		push()
+		if now, _ := os.Stat(archived); now.Size() != was.Size() || !now.ModTime().Equal(was.ModTime()) {
+			t.Fatalf("hook %v: copied again", viaHook)
+		}
 	}
 }

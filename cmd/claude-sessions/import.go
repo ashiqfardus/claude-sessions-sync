@@ -14,6 +14,7 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
 type importRow struct {
@@ -40,6 +41,7 @@ func cmdImport(args []string) error {
 	update := fs.Bool("update", false, updateHelp)
 	noPlugins := fs.Bool("no-plugins", false, noPluginsHelp)
 	asJSON := fs.Bool("json", false, "machine-readable output")
+	repoint := fs.Bool("repoint", false, "also rewrite conversations already here that name other machines' work folders (originals are backed up; any used in the last hour is skipped)")
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
@@ -147,7 +149,11 @@ func cmdImport(args []string) error {
 	if cerr != nil {
 		wcfg.WorkBackup = "off"
 	}
+	// Where folders were placed before this import, which restoreWork records anew: a
+	// changed placement repoints its old target too (R7).
+	before := work.LoadHeld(heldWorkPath(root)).Placed
 	workMoves, workRes := restoreWork(root, dest, shards, wcfg, *dryRun, *update, false)
+	workMoves = append(workMoves, remapMoves(root, shards, before, workRes.ByMachine)...)
 	resolve := func(bucket string, p archive.Project) identity.Match {
 		if local, ok := cfg.Mapped(bucket); ok {
 			if st, err := os.Stat(local); err != nil || !st.IsDir() {
@@ -367,6 +373,13 @@ func cmdImport(args []string) error {
 		}
 	}
 
+	// Conversations already here are rewritten only when asked: that edits the user's
+	// own files (spec §7a). Work-folder moves only, never project moves.
+	var rp repointResult
+	if *repoint {
+		rp = repointLocal(root, workMoves, time.Now(), *dryRun)
+	}
+
 	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
 
 	if *asJSON {
@@ -388,6 +401,30 @@ func cmdImport(args []string) error {
 	}
 	if len(workRes.Placed) > 0 {
 		fmt.Println("  to place them elsewhere: claude-sessions config map-folder '<path from above>' '<local folder>', or claude-sessions config work-placement home|machine")
+	}
+	if *repoint {
+		verb := "repointed"
+		if *dryRun {
+			verb = "would repoint"
+		}
+		fmt.Printf("%s %d conversation(s) to this machine's work folders", verb, rp.Rewritten)
+		if rp.Backup != "" {
+			fmt.Printf("; the originals are in %s", rp.Backup)
+		}
+		fmt.Println()
+		if rp.Recent > 0 {
+			fmt.Printf("%d conversation(s) used in the last hour left alone: run import --repoint again later\n", rp.Recent)
+		}
+		if rp.Skipped > 0 {
+			fmt.Printf("%d conversation(s) left as they were after an error:\n", rp.Skipped)
+		}
+		for _, n := range rp.Notes {
+			fmt.Println(n)
+		}
+	} else if len(workMoves) > 0 {
+		if n := countPointing(root, workMoves); n > 0 {
+			fmt.Printf("%d conversation(s) here still point at other machines' work folders: run claude-sessions import --repoint\n", n)
+		}
 	}
 	printProfile(profile, *dryRun)
 	if !*update && sameLayout+filed > 0 {

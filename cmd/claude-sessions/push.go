@@ -279,6 +279,8 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	scanAll := !prevShard.RelatedIndexed
 	shard.RelatedIndexed = true
 	pushed := pushedBefore(dest, shard.Machine)
+	repointed := loadRepointed(root)
+	repointedWas := len(repointed)
 	// Transcripts to look for work folders in: those changed since the last full push
 	// - not only those copied now, as the per-reply hook has usually copied them.
 	var workScan []string
@@ -308,7 +310,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 					}
 				}
 			}
-			switch archiveTranscript(dest, b.Name, t.ID, t.Path, srcInfo, pushed, dryRun, logf) {
+			switch archiveTranscript(dest, b.Name, t.ID, t.Path, srcInfo, pushed, repointed, dryRun, logf) {
 			case copyFailed:
 				// One unreadable transcript must not abandon the rest.
 				res.Skipped = append(res.Skipped, t.ID)
@@ -383,6 +385,12 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 			entry.Related = relatedRepos(entry.Path, prevShard.Projects[b.Name].Related, scan)
 			shard.Projects[b.Name] = entry
 			res.Projects++
+		}
+	}
+
+	if len(repointed) != repointedWas && !dryRun {
+		if err := saveRepointed(root, repointed); err != nil {
+			logf("WARN: %s: %v", repointedPath(root), err)
 		}
 	}
 
@@ -640,10 +648,30 @@ const (
 
 // archiveTranscript brings the archived copy of one local transcript up to date. The
 // archived copy is replaced only by one that holds more; when each holds turns the
-// other lacks, this machine's is kept beside it as a fork.
-func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushed map[string]archive.Session, dryRun bool, logf func(string, ...any)) archiveOutcome {
+// other lacks, this machine's is kept beside it as a fork. A transcript in repointed
+// is the exception, and its entry is used up here: the caller saves the change.
+func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushed map[string]archive.Session, repointed map[string]repointedStat, dryRun bool, logf func(string, ...any)) archiveOutcome {
 	target := filepath.Join(archive.ProjectsDir(dest), bucket, filepath.Base(path))
 	dstInfo := archive.StatOrNil(target)
+
+	// Rewritten by import --repoint and unchanged since: the same turns with this
+	// machine's paths, so it replaces the archived copy once, shorter or not - unless
+	// that copy is newer, continued elsewhere since. Changed here since, it is a
+	// session resumed, and the rules below judge it.
+	if r, ok := repointed[bucket+"/"+id]; ok {
+		delete(repointed, bucket+"/"+id)
+		if srcInfo.Size() == r.Size && archive.SameMTime(srcInfo.ModTime(), r.MTime) &&
+			(dstInfo == nil || !srcInfo.ModTime().Before(dstInfo.ModTime().Add(-archive.MTimeToleranceSeconds*time.Second))) {
+			if !dryRun {
+				if err := archive.CopyFile(path, target); err != nil {
+					repointed[bucket+"/"+id] = r // tried again next time
+					logf("WARN: %s: %v", id, err)
+					return copyFailed
+				}
+			}
+			return copiedOver
+		}
+	}
 	copyIt := archive.NeedsCopy(srcInfo, dstInfo)
 	shorter := copyIt && dstInfo != nil && srcInfo.Size() < dstInfo.Size()
 
@@ -754,9 +782,16 @@ func pushOne(root, dest, transcript string, dryRun bool, logf func(string, ...an
 			}
 		}
 	}
-	switch archiveTranscript(dest, bucket, id, abs, srcInfo, pushedBefore(dest, machineName()), dryRun, logf) {
+	repointed := loadRepointed(root)
+	was := len(repointed)
+	switch archiveTranscript(dest, bucket, id, abs, srcInfo, pushedBefore(dest, machineName()), repointed, dryRun, logf) {
 	case copiedOver, keptFork:
 		archiveExtras(bucketDir, destBucket, id, claude.SessionFiles(filepath.Join(bucketDir, id)), dryRun, logf)
+	}
+	if len(repointed) != was && !dryRun {
+		if err := saveRepointed(root, repointed); err != nil {
+			logf("WARN: %s: %v", repointedPath(root), err)
+		}
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -357,11 +358,64 @@ func heldWorkPath(root string) string {
 const byWorkFolder identity.How = "work folder"
 
 // workRestoreResult is what restoreWork did. Placed maps each placed source path to
-// its local target; Notes are the lines import and pull print.
+// its local target; ByMachine, keyed machine + "|" + source as Held.Placed is, holds
+// every placement of this run, own paths included. Notes are the lines import and pull
+// print.
 type workRestoreResult struct {
-	Placed                       map[string]string
+	Placed, ByMachine            map[string]string
 	Filed, Kept, Beside, Refused int
 	Notes                        []string
+}
+
+// ownPaths reports whether p is a path of this machine's own (R17/R19): its home or
+// above it, in or above its Claude folder, a temp folder, one of its work folders or
+// projects. A move from one would repoint this machine's own conversations, so none is
+// made. An exact file skips the broad check, so the home is checked here too. A
+// project at the home or another broad folder is left to that home check: Claude
+// lists ~ itself.
+func ownPaths(root string, env work.Env, shards map[string]archive.Shard) func(string) bool {
+	// The Claude folder matters when it is no dot folder (/data/claude), which a work
+	// folder could then lie in.
+	inside := append([]string{root}, env.Temp...)
+	own, _ := loadWorkFolders(root)
+	for _, f := range own {
+		inside = append(inside, f.Path)
+	}
+	for _, s := range shards {
+		if isMe(s.Machine) {
+			for _, p := range s.Projects {
+				inside = append(inside, p.Path)
+			}
+		}
+	}
+	state, _ := claude.ProjectPaths(claude.StatePath(root))
+	inside = slices.DeleteFunc(append(inside, state...), func(x string) bool {
+		return !rewrite.AbsoluteAnywhere(x) || work.IsBroad(x, env)
+	})
+	return func(p string) bool {
+		return work.Within(env.Home, p, true) ||
+			slices.ContainsFunc(inside, func(x string) bool { return work.Within(p, x, true) || work.Within(x, p, true) })
+	}
+}
+
+// remapMoves repoints each folder whose placement this import changed - by
+// map-folder or work-placement - from its old target to its new one. before is
+// Held.Placed as it was before restoreWork (R7). A move from a path of this machine's
+// own is never made.
+func remapMoves(root string, shards map[string]archive.Shard, before, now map[string]string) []rewrite.Move {
+	own := ownPaths(root, workEnv(root), shards)
+	keys := make([]string, 0, len(before))
+	for k := range before {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // the first move for a path wins
+	var moves []rewrite.Move
+	for _, k := range keys {
+		if t, ok := now[k]; ok && !samePath(before[k], t) && !own(before[k]) {
+			moves = append(moves, rewrite.Move{From: before[k], To: t})
+		}
+	}
+	return moves
 }
 
 // restoreWork places other machines' work folders here and files their files (spec
@@ -370,7 +424,7 @@ type workRestoreResult struct {
 // each folder goes through work.Place, each file through the push filter and
 // work.SafeJoin, and files are written add-only, mode 0644, never through a link.
 func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive.Config, dryRun, update, sameLayout bool) ([]rewrite.Move, workRestoreResult) {
-	res := workRestoreResult{Placed: map[string]string{}}
+	res := workRestoreResult{Placed: map[string]string{}, ByMachine: map[string]string{}}
 	if !cfg.WorkOn() {
 		return nil, res
 	}
@@ -394,27 +448,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 	broad := func(p string) bool {
 		return slices.ContainsFunc(homes, func(h string) bool { return work.IsBroad(p, work.Env{Home: h}) })
 	}
-	// A path of this machine's own - its home or Claude folder or above them, or in or
-	// above one of its work folders or projects - keeps its files placed but never
-	// becomes a move: that would repoint this machine's own conversations. An exact
-	// file skips the broad check, so the home is checked here too. A project at the
-	// home or another broad folder is left to that home check: Claude lists ~ itself.
-	inside := slices.Clone(l.Own)
-	for _, s := range shards {
-		if isMe(s.Machine) {
-			for _, p := range s.Projects {
-				inside = append(inside, p.Path)
-			}
-		}
-	}
-	state, _ := claude.ProjectPaths(claude.StatePath(root))
-	inside = slices.DeleteFunc(append(inside, state...), func(x string) bool {
-		return !rewrite.AbsoluteAnywhere(x) || work.IsBroad(x, l.Env)
-	})
-	ownPath := func(p string) bool {
-		return work.Within(l.Home, p, true) || work.Within(root, p, true) ||
-			slices.ContainsFunc(inside, func(x string) bool { return work.Within(p, x, true) || work.Within(x, p, true) })
-	}
+	ownPath := ownPaths(root, l.Env, shards)
 	would := func(done string) string {
 		if dryRun {
 			return "would be " + done
@@ -459,6 +493,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				continue // not a path on this machine: pull's same layout does not fit
 			}
 			held.Placed[s.Machine+"|"+wf.Path] = target
+			res.ByMachine[s.Machine+"|"+wf.Path] = target
 			went = append(went, wf.Path+" -> "+target)
 			if target != wf.Path && ownPath(wf.Path) {
 				refuse(wf.Path, "a path of this machine's own: its files are placed, conversations are not repointed")
@@ -658,4 +693,193 @@ func placedPath(placed map[string]string, p string) string {
 // pathSegs splits a path of either OS form into its names, as work.Within counts them.
 func pathSegs(s string) []string {
 	return slices.DeleteFunc(strings.FieldsFunc(s, func(r rune) bool { return r == '/' || r == '\\' }), func(x string) bool { return x == "." })
+}
+
+// repointResult is what repointLocal did: transcripts rewritten (with dryRun, that
+// would be), left alone as used in the last hour, and left as they were after an
+// error, named in Notes. Backup is the folder holding the originals.
+type repointResult struct {
+	Rewritten, Skipped, Recent int
+	Backup                     string
+	Notes                      []string
+}
+
+// repointedStat is a transcript as --repoint left it. While it is unchanged, push
+// takes it over the archived copy, shorter or not (spec §7a).
+type repointedStat struct {
+	Size  int64     `json:"size"`
+	MTime time.Time `json:"mtime"`
+}
+
+// repointedPath records, by "bucket/id", the transcripts --repoint rewrote that push
+// has not archived since.
+func repointedPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "repointed.json")
+}
+
+// loadRepointed reads that record. Missing or unreadable is empty: push then treats
+// those transcripts as it treats any other.
+func loadRepointed(root string) map[string]repointedStat {
+	var out map[string]repointedStat
+	if raw, err := os.ReadFile(repointedPath(root)); err == nil {
+		_ = json.Unmarshal(raw, &out)
+	}
+	if out == nil {
+		out = map[string]repointedStat{}
+	}
+	return out
+}
+
+func saveRepointed(root string, m map[string]repointedStat) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return archive.WriteFileAtomic(repointedPath(root), append(data, '\n'), 0o644)
+}
+
+// errLive is a transcript that changed while it was rewritten: a session in use.
+var errLive = errors.New("changed while being rewritten")
+
+// repointLocal applies work-folder moves to the transcripts already here, subagent
+// transcripts included (spec §7a). A file changed in the hour before now may belong
+// to a live session and is left alone. Each original is copied to
+// <root>/repoint-backup/<yyyymmdd-hhmm>/<bucket>/ before the rewrite replaces it, and
+// with dryRun nothing at all is written. The caller holds the lock.
+func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool) repointResult {
+	var res repointResult
+	rules := rewrite.RulesForMoves(moves)
+	if len(rules) == 0 {
+		return res
+	}
+	finds := make([]string, len(rules))
+	for i, r := range rules {
+		finds[i] = strings.ToLower(r.Find)
+	}
+	rec, recorded := loadRepointed(root), false
+	buckets, _ := claude.ListBuckets(claude.ProjectsDir(root))
+	for _, b := range buckets {
+		for _, t := range b.Transcripts {
+			rels := []string{filepath.Base(t.Path)}
+			for _, x := range t.Extras {
+				if filepath.Dir(x) == "subagents" && strings.EqualFold(filepath.Ext(x), ".jsonl") {
+					rels = append(rels, filepath.Join(t.ID, x))
+				}
+			}
+			for i, rel := range rels {
+				p := filepath.Join(b.Dir, rel)
+				st, err := os.Lstat(p)
+				if err != nil || !st.Mode().IsRegular() || !pointing(p, rules, finds) {
+					continue
+				}
+				if st.ModTime().After(now.Add(-time.Hour)) {
+					res.Recent++
+					continue
+				}
+				if dryRun {
+					res.Rewritten++
+					continue
+				}
+				if res.Backup == "" {
+					if res.Backup, err = claimBackup(root, now); err != nil {
+						res.Backup = ""
+						res.Skipped++
+						res.Notes = append(res.Notes, fmt.Sprintf("  x %s: backup: %v", p, err))
+						continue
+					}
+				}
+				switch err := repointFile(p, b.Dir, filepath.Join(res.Backup, b.Name, rel), rules, st); {
+				case errors.Is(err, errLive):
+					res.Recent++
+				case err != nil:
+					res.Skipped++
+					res.Notes = append(res.Notes, fmt.Sprintf("  x %s: %v", p, err))
+				default:
+					res.Rewritten++
+					if st, err := os.Lstat(p); err == nil && i == 0 {
+						rec[b.Name+"/"+t.ID], recorded = repointedStat{Size: st.Size(), MTime: st.ModTime()}, true
+					}
+				}
+			}
+		}
+	}
+	if recorded {
+		if err := saveRepointed(root, rec); err != nil {
+			res.Notes = append(res.Notes, fmt.Sprintf("  x %s: %v (push keeps the archived copies of those conversations)", repointedPath(root), err))
+		}
+	}
+	return res
+}
+
+// countPointing is how many transcripts here a --repoint would rewrite: the same files
+// and the same hour's grace, read without writing.
+func countPointing(root string, moves []rewrite.Move) int {
+	return repointLocal(root, moves, time.Now(), true).Rewritten
+}
+
+// pointing reports whether a rule would change the file at p. It reads a line at a
+// time, never the whole file, and matches in full only a line holding one of finds
+// (the rules' Find strings, lower-cased: rules ignore case).
+func pointing(p string, rules []rewrite.Rule, finds []string) bool {
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 256<<10)
+	for {
+		line, err := r.ReadString('\n')
+		low := strings.ToLower(line)
+		if slices.ContainsFunc(finds, func(x string) bool { return strings.Contains(low, x) }) && rewrite.Apply(line, rules, nil) != line {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+	}
+}
+
+// claimBackup makes this run's backup folder, <root>/repoint-backup/<yyyymmdd-hhmm>,
+// or -2, -3... after it when an earlier run this minute took the name: a second run
+// must never overwrite the first one's originals.
+func claimBackup(root string, now time.Time) (string, error) {
+	base := filepath.Join(root, "repoint-backup")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", err
+	}
+	for i := 1; ; i++ {
+		d := filepath.Join(base, now.Format("20060102-1504"))
+		if i > 1 {
+			d += fmt.Sprintf("-%d", i)
+		}
+		if err := os.Mkdir(d, 0o700); !os.IsExist(err) {
+			return d, err
+		}
+	}
+}
+
+// repointFile rewrites p, as it was at st, into a temp file in dir, copies the
+// original to backup, and only then renames the rewrite over p. Whatever fails, p is
+// left as it was. dir is the bucket folder, on p's file system: a temp file left by a
+// crash there is no .jsonl, and nothing reads it, where one in a session's own folder
+// would be pushed with it.
+func repointFile(p, dir, backup string, rules []rewrite.Rule, st fs.FileInfo) error {
+	f, err := os.CreateTemp(dir, ".tmp-repoint-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	f.Close()
+	defer os.Remove(tmp) // already gone once renamed over p
+	if _, err := rewrite.File(p, tmp, rules, ""); err != nil {
+		return err
+	}
+	if err := archive.CopyFile(p, backup); err != nil {
+		return err
+	}
+	// A session resumed meanwhile has lines the rewrite lacks.
+	if cur, err := os.Lstat(p); err != nil || cur.Size() != st.Size() || !cur.ModTime().Equal(st.ModTime()) {
+		return errLive
+	}
+	return os.Rename(tmp, p)
 }
