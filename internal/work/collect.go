@@ -1,10 +1,12 @@
 package work
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -71,16 +73,18 @@ type Collected struct {
 	Skipped map[string]int
 }
 
-// Collect lists the files of f that may be archived, minus excluded paths.
+// Collect lists the files of f that may be archived, minus excluded paths. An
+// excluded folder is not walked at all.
 func Collect(f Folder, exclude []string) (Collected, error) {
 	c := Collected{Skipped: map[string]int{}}
 	fold := runtime.GOOS != "linux" // macOS and Windows ignore case
+	excluded := func(p string) bool {
+		return slices.ContainsFunc(exclude, func(x string) bool { return Within(p, x, fold) })
+	}
 	add := func(path, rel string, size int64) {
-		for _, x := range exclude {
-			if Within(path, x, fold) {
-				c.Skipped["excluded"]++
-				return
-			}
+		if excluded(path) {
+			c.Skipped["excluded"]++
+			return
 		}
 		if ok, why := Allowed(rel, size); !ok {
 			c.Skipped[why]++
@@ -90,9 +94,12 @@ func Collect(f Folder, exclude []string) (Collected, error) {
 		c.Bytes += size
 	}
 	if f.Exact {
-		fi, err := os.Stat(f.Path)
+		fi, err := os.Lstat(f.Path)
 		if err != nil {
 			return c, err
+		}
+		if !fi.Mode().IsRegular() { // a link is never followed
+			return c, fmt.Errorf("%s is not a regular file", f.Path)
 		}
 		add(f.Path, filepath.Base(f.Path), fi.Size())
 		return c, nil
@@ -114,7 +121,7 @@ func Collect(f Folder, exclude []string) (Collected, error) {
 			if p == f.Path {
 				return nil
 			}
-			if skipDir(d.Name()) || strings.HasPrefix(d.Name(), ".") {
+			if skipDir(d.Name()) || strings.HasPrefix(d.Name(), ".") || excluded(p) {
 				return fs.SkipDir
 			}
 			if _, e := os.Lstat(filepath.Join(p, ".git")); e == nil {

@@ -1459,3 +1459,29 @@ func TestImportWorkNoCopyStillRepoints(t *testing.T) {
 		t.Fatalf("files restored from nowhere: %v", err)
 	}
 }
+
+// A work folder holding the Claude folder or a temp folder never archives them (M2):
+// a Claude folder with no dot is not skipped as a dot folder.
+func TestPushSkipsClaudeRootAndTemp(t *testing.T) {
+	home := t.TempDir()
+	w := filepath.Join(home, "W")
+	m := machine{name: "MAC", claudeDir: filepath.Join(w, "claude"), archive: t.TempDir()}
+	mustMkdir(t, filepath.Join(m.claudeDir, "projects"))
+	mustWrite(t, filepath.Join(w, "a.md"), "mine\n")
+	mustWrite(t, filepath.Join(w, "tmp", "t.md"), "scratch\n")
+	workSession(t, m, w, []string{filepath.Join(w, "a.md")})
+	cmd := m.workCmd(home, "push", "--no-html")
+	cmd.Env = append(cmd.Env, "CLAUDE_SESSIONS_TEMP_DIRS="+filepath.Join(w, "tmp"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
+	files := workFiles(m.archive)
+	if !slices.ContainsFunc(files, func(f string) bool { return strings.HasSuffix(f, "W/a.md") }) {
+		t.Fatalf("folder not backed up: %v", files)
+	}
+	for _, f := range files {
+		if strings.Contains(f, "W/claude/") || strings.Contains(f, "W/tmp/") {
+			t.Errorf("archived: %s", f)
+		}
+	}
+}

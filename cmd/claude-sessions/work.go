@@ -72,8 +72,9 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 	env := workEnv(root)
 	// macOS and Windows file systems ignore case: ~/sql is ~/SQL there.
 	fold := func(p string) bool { return runtime.GOOS != "linux" || work.WindowsPath(p) }
-	// The archive is never copied into its own work/ folder.
-	exclude := append(slices.Clone(cfg.WorkExclude), dest)
+	// The archive is never copied into its own work/ folder, nor the Claude folder or a
+	// temp folder that a work folder holds.
+	exclude := append(append(slices.Clone(cfg.WorkExclude), dest, root), env.Temp...)
 	excluded := func(p string) bool {
 		return slices.ContainsFunc(exclude, func(x string) bool { return work.Within(p, x, fold(p)) })
 	}

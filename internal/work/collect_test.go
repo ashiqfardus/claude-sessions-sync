@@ -115,8 +115,21 @@ func TestCollectExclude(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := rels(t, root, c); !reflect.DeepEqual(got, []string{"r.md"}) || c.Skipped["excluded"] != 1 {
+	// Pruned, not walked: the files below are never looked at, so never counted.
+	if got := rels(t, root, c); !reflect.DeepEqual(got, []string{"r.md"}) || c.Skipped["excluded"] != 0 {
 		t.Fatalf("got %v %v", got, c.Skipped)
+	}
+}
+
+// An exact file is never read through a link.
+func TestCollectExactLink(t *testing.T) {
+	root := t.TempDir()
+	put(t, root, "a.md", 0)
+	if err := os.Symlink(filepath.Join(root, "a.md"), filepath.Join(root, "l.md")); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	if c, err := Collect(Folder{Path: filepath.Join(root, "l.md"), Exact: true}, nil); err == nil || len(c.Files) != 0 {
+		t.Fatalf("link collected: %v %v", c.Files, err)
 	}
 }
 

@@ -42,16 +42,17 @@ func TestRemoveOrphanTempsStaysInItsOwnFolders(t *testing.T) {
 	dest := t.TempDir()
 	ours := filepath.Join(ProjectsDir(dest), "e--api", ".tmp-x.jsonl-1")
 	root := filepath.Join(dest, ".tmp-INDEX.md-1")
+	work := filepath.Join(dest, "work", "MAC", "Users", "a", "SQL", ".tmp-r.md-1")
 	foreign := filepath.Join(dest, "Photos", ".tmp-upload")
-	for _, p := range []string{ours, root, foreign} {
+	for _, p := range []string{ours, root, work, foreign} {
 		mustWriteFile(t, p, "half")
 		old := time.Now().Add(-2 * OrphanTempAge)
 		if err := os.Chtimes(p, old, old); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n := RemoveOrphanTemps(dest); n != 2 {
-		t.Errorf("removed %d, want 2", n)
+	if n := RemoveOrphanTemps(dest); n != 3 {
+		t.Errorf("removed %d, want 3", n)
 	}
 	if _, err := os.Stat(foreign); err != nil {
 		t.Error("another program's temp file was deleted")
