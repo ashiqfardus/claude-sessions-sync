@@ -1,6 +1,7 @@
 package rewrite
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,5 +152,59 @@ func TestRulesForMovesWorkspace(t *testing.T) {
 	want := `{"a":"D:\code\web","b":"D:\elsewhere\api\src","c":"cd /d/elsewhere/api && ls"}`
 	if got := Apply(in, rules, nil); got != want {
 		t.Errorf("\n got %s\nwant %s", got, want)
+	}
+}
+
+func tailRules(convert bool) []Rule {
+	return RulesForMoves([]Move{{From: `E:\SQL`, To: "/Users/b/SQL", ConvertTail: convert}})
+}
+
+func TestConvertTail(t *testing.T) {
+	got := Apply(`{"t":"open E:\\SQL\\po\\x.md now"}`, tailRules(true), nil)
+	if want := `{"t":"open /Users/b/SQL/po/x.md now"}`; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}
+
+func TestConvertTailStopsAtEscapes(t *testing.T) {
+	for in, want := range map[string]string{
+		`E:\\SQL\\po\nnext`:   `/Users/b/SQL/po\nnext`,
+		`"E:\\SQL\\a\"`:       `"/Users/b/SQL/a\"`,
+		`E:\\SQL\\My Work\\x`: `/Users/b/SQL/My Work\\x`,
+	} {
+		if got := Apply(in, tailRules(true), nil); got != want {
+			t.Errorf("%s: got %s want %s", in, got, want)
+		}
+	}
+}
+
+func TestNoTailByDefault(t *testing.T) {
+	got := Apply(`{"t":"open E:\\SQL\\po\\x.md now"}`, tailRules(false), nil)
+	if want := `{"t":"open /Users/b/SQL\\po\\x.md now"}`; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}
+
+func TestTailStillValidJSON(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "s.jsonl"), filepath.Join(dir, "d.jsonl")
+	in := `{"cwd":"E:\\SQL\\po"}` + "\n" + `{"t":"E:\\SQL\\a\\b.md\nE:\\SQL\\c"}` + "\n" + `{"t":"none"}` + "\n"
+	if err := os.WriteFile(src, []byte(in), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := File(src, dst, tailRules(true), "")
+	if err != nil || res.Unparseable != 0 {
+		t.Fatalf("err=%v unparseable=%d", err, res.Unparseable)
+	}
+	b, _ := os.ReadFile(dst)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	var v struct{ Cwd, T string }
+	json.Unmarshal([]byte(lines[0]), &v)
+	if v.Cwd != "/Users/b/SQL/po" {
+		t.Errorf("cwd %q", v.Cwd)
+	}
+	json.Unmarshal([]byte(lines[1]), &v)
+	if want := "/Users/b/SQL/a/b.md\n/Users/b/SQL/c"; v.T != want {
+		t.Errorf("t %q want %q", v.T, want)
 	}
 }

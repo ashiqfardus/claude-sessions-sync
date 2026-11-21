@@ -28,6 +28,7 @@ type Rule struct {
 	Find    string
 	Replace string
 	re      *regexp.Regexp
+	tail    bool // also convert the rest of the path's \\ pairs to /
 }
 
 // Rules builds the substitution table for oldPath -> newPath.
@@ -80,7 +81,12 @@ func Literal(label, find, replace string) Rule {
 }
 
 // Move is one project path that changed between machines.
-type Move struct{ From, To string }
+// ConvertTail also turns the separators after the prefix into '/', for a Windows
+// folder placed on a Unix machine.
+type Move struct {
+	From, To    string
+	ConvertTail bool
+}
 
 // RulesForMoves builds rules for several moves at once - a session in a multi-folder
 // workspace names every repository it worked in. The most specific path goes first,
@@ -103,7 +109,11 @@ func RulesForMoves(moves []Move) []Rule {
 	sort.SliceStable(sorted, func(i, j int) bool { return len(sorted[i].From) > len(sorted[j].From) })
 	var rules []Rule
 	for _, m := range sorted {
-		rules = append(rules, Rules(m.From, m.To, false)...)
+		rs := Rules(m.From, m.To, false)
+		for i := range rs {
+			rs[i].tail = m.ConvertTail && rs[i].Label == "json-escaped"
+		}
+		rules = append(rules, rs...)
 	}
 	return rules
 }
@@ -164,7 +174,7 @@ func Apply(line string, rules []Rule, hits map[string]int) string {
 		var b strings.Builder
 		last, n := 0, 0
 		for _, m := range matches {
-			if !bounded(line, m[0], m[1]) {
+			if m[0] < last || !bounded(line, m[0], m[1]) {
 				continue
 			}
 			b.WriteString(line[last:m[0]])
@@ -172,6 +182,9 @@ func Apply(line string, rules []Rule, hits map[string]int) string {
 			// treated as an expansion token.
 			b.WriteString(r.Replace)
 			last = m[1]
+			if r.tail {
+				last = convertTail(&b, line, last)
+			}
 			n++
 		}
 		if n == 0 {
@@ -184,6 +197,28 @@ func Apply(line string, rules []Rule, hits map[string]int) string {
 		}
 	}
 	return line
+}
+
+// convertTail writes the rest of a JSON-escaped path from line[pos:] with each \\
+// pair as '/', and returns where it stopped. A lone backslash (\n, \") ends it, so
+// JSON escapes survive.
+//
+// shortcut: a path segment with a space ends the conversion, because a space also
+// ends a path in prose; upgrade if work folders with spaces matter.
+func convertTail(b *strings.Builder, line string, pos int) int {
+	for strings.HasPrefix(line[pos:], `\\`) {
+		j := pos + 2
+		for j < len(line) && !strings.ContainsRune("\\ \t\r\n\"'`|<>", rune(line[j])) {
+			j++
+		}
+		if j == pos+2 {
+			break
+		}
+		b.WriteByte('/')
+		b.WriteString(line[pos+2 : j])
+		pos = j
+	}
+	return pos
 }
 
 func nameRune(r rune) bool {
