@@ -225,6 +225,7 @@ func TestPlaceRefusedTargets(t *testing.T) {
 		{fakeEnv(), "/h/w/_GVIMRC", false},
 		{fakeEnv(), "/h/go/pkg/mod/example.com/m@v1.0.0", false},
 		{fakeWinEnv(), `C:\Users\a\Go\PKG\mod`, false},
+		{fakeEnv(), "/h/miniconda3/etc/conda/deactivate.d", false}, // conda runs these scripts
 		{fakeEnv(), "/h/go/src/x", true},
 		{fakeEnv(), "/h/go/pkg/x", true},
 		// M-4(b): a home whose own path holds refused names; only the part below it counts.
@@ -306,7 +307,7 @@ func TestSafeJoin(t *testing.T) {
 	}
 	// I-1: the folder rules apply to every archive segment too.
 	for _, rel := range []string{"vimfiles/plugin/x.vim", "w/_vimrc", "AppData/x", "pkg/mod/m@v1/x.go",
-		"lib/Site-Packages/x.py", "lib/dist-packages/x.py", "env/etc/conda/activate.d/x.sh"} { // R22
+		"lib/Site-Packages/x.py", "lib/dist-packages/x.py", "env/etc/conda/activate.d/x.sh", "etc/conda/DeActivate.d/x.sh"} { // R22
 		if got, err := SafeJoin(filepath.Join(target, "go"), rel); !errors.Is(err, ErrRefused) {
 			t.Errorf("SafeJoin(go, %q) = %q, %v", rel, got, err)
 		}

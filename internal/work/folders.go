@@ -1,6 +1,7 @@
 package work
 
 import (
+	"slices"
 	"sort"
 	"strings"
 )
@@ -153,7 +154,9 @@ func Folders(cands []Candidate, env Env) []Folder {
 			}
 			f = Folder{p, true}
 		}
-		if dotted(f.Path) {
+		// A folder a runtime loads code from is never ours to own: rule 0 would then let
+		// another machine write into it.
+		if dotted(f.Path) || slices.ContainsFunc(segs(f.Path), codeDir) {
 			continue
 		}
 		all = append(all, f)

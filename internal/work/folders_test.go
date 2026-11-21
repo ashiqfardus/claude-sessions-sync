@@ -125,3 +125,23 @@ func TestFoldersDotSegment(t *testing.T) {
 		t.Fatalf("windows: got %v", got)
 	}
 }
+
+// A folder a runtime loads code from is never a work folder, whatever its case: rule 0
+// trusts this machine's own folders.
+func TestFoldersDropCodeFolders(t *testing.T) {
+	paths := []string{"/h/p/node_modules/lodash", "/h/p/Venv/lib", "/h/php/vendor/x", "/h/p/__pycache__",
+		"/h/py/lib/site-packages/m", "/h/py/dist-packages", `C:\Users\a\p\NODE_MODULES\x`}
+	env := fakeEnv(paths...)
+	var c []Candidate
+	for _, p := range paths {
+		c = append(c, Candidate{p, false})
+	}
+	c = append(c, Candidate{"/h/p/node_modules/lodash/index.js", true})
+	if got := Folders(c, env); len(got) != 0 {
+		t.Fatalf("got %v", got)
+	}
+	want := []Folder{{"/h/build/report", false}} // R18: build, dist and target are kept
+	if got := Folders([]Candidate{{"/h/build/report", false}}, fakeEnv("/h/build/report")); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v", got)
+	}
+}

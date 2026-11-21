@@ -588,8 +588,11 @@ func copyRestored(src, dst string, want fs.FileInfo) error {
 		return err
 	}
 	defer f.Close()
+	// Against a fresh Lstat, not want: on Windows a walked entry carries a file id only
+	// on volumes that have object ids, so FAT, exFAT and some cloud drives never match.
 	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() || st.Size() != want.Size() || !os.SameFile(st, want) {
+	l, lerr := os.Lstat(src)
+	if err != nil || lerr != nil || !st.Mode().IsRegular() || !l.Mode().IsRegular() || !os.SameFile(st, l) || st.Size() != want.Size() {
 		return fmt.Errorf("changed in the archive while restoring")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, work.MaxFileBytes+1))

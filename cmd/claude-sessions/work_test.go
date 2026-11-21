@@ -1002,3 +1002,24 @@ func TestImportWorkUpdateOtherMachine(t *testing.T) {
 		t.Fatalf("copy beside: %q\n%s", got, out)
 	}
 }
+
+// A folder a runtime loads code from is never recorded as a work folder: as one of this
+// machine's own, an origin naming it would let another machine write there.
+func TestPushWorkSkipsCodeFolder(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home := t.TempDir()
+	lib := filepath.Join(home, "p", "node_modules", "lodash")
+	mustWrite(t, filepath.Join(lib, "index.js"), "x\n")
+	workSession(t, m, home, []string{filepath.Join(lib, "index.js")}, `cd "`+lib+`"`)
+
+	m.workRun(t, home, "push", "--no-html")
+	if wf := workShard(t, m); len(wf) != 0 {
+		t.Fatalf("shard: %+v", wf)
+	}
+	if got := workFiles(m.archive); len(got) != 0 {
+		t.Fatalf("archived %v", got)
+	}
+	if rec := mustRead(t, filepath.Join(m.claudeDir, "session-sync-base", "work-folders.json")); strings.Contains(rec, "node_modules") {
+		t.Fatalf("recorded: %s", rec)
+	}
+}

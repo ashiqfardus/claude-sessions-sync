@@ -205,7 +205,7 @@ func badNames(names []string, win bool) string {
 		switch {
 		case strings.HasPrefix(s, "."):
 			return "a dot folder or file"
-		case anyFold(s, "AppData", "vimfiles", "_vimrc", "_gvimrc", "site-packages", "dist-packages", "activate.d") ||
+		case anyFold(s, "AppData", "vimfiles", "_vimrc", "_gvimrc", "site-packages", "dist-packages", "activate.d", "deactivate.d") ||
 			win && anyFold(s, "ProgramData", "WindowsPowerShell", "PowerShell"):
 			return "in a folder that runs or configures programs"
 		case win && (strings.ContainsAny(s, ":~") || strings.TrimRight(s, ". ") != s):
