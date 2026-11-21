@@ -20,10 +20,13 @@ type HeldFile struct {
 }
 
 // Held is the local record of restored work: Files by local path, and Placed, the
-// local target of each placed folder, keyed machine + "|" + its source path.
+// local target of each placed folder, keyed machine + "|" + its source path. Prev, by
+// the same keys, holds a folder's earlier targets: import --repoint moves conversations
+// off them, then forgets them.
 type Held struct {
 	Files  map[string]HeldFile `json:"files"`
 	Placed map[string]string   `json:"placed"`
+	Prev   map[string][]string `json:"prev,omitempty"`
 	// Err is why an existing record could not be read; callers warn, and the record
 	// starts again empty.
 	Err error `json:"-"`
@@ -44,6 +47,9 @@ func LoadHeld(path string) Held {
 	}
 	if h.Placed == nil {
 		h.Placed = map[string]string{}
+	}
+	if h.Prev == nil {
+		h.Prev = map[string][]string{}
 	}
 	return h
 }

@@ -359,10 +359,11 @@ const byWorkFolder identity.How = "work folder"
 
 // workRestoreResult is what restoreWork did. Placed maps each placed source path to
 // its local target; ByMachine, keyed machine + "|" + source as Held.Placed is, holds
-// every placement of this run, own paths included. Notes are the lines import and pull
-// print.
+// every placement of this run, own paths included, and Prev the earlier targets of
+// those still remembered (Held.Prev). Notes are the lines import and pull print.
 type workRestoreResult struct {
 	Placed, ByMachine            map[string]string
+	Prev                         map[string][]string
 	Filed, Kept, Beside, Refused int
 	Notes                        []string
 }
@@ -398,24 +399,50 @@ func ownPaths(root string, env work.Env, shards map[string]archive.Shard) func(s
 	}
 }
 
-// remapMoves repoints each folder whose placement this import changed - by
-// map-folder or work-placement - from its old target to its new one. before is
-// Held.Placed as it was before restoreWork (R7). Both ends come from this machine's
-// own record, not from the archive, so no own-path check applies (R23): the old
-// target is one of this machine's work folders as soon as it has pushed once.
-func remapMoves(before, now map[string]string) []rewrite.Move {
-	keys := make([]string, 0, len(before))
-	for k := range before {
+// remapMoves repoints each folder placed elsewhere since - by map-folder or
+// work-placement - from its earlier targets (prev, Held.Prev) to the one it has now.
+// Both ends come from this machine's own record, not from the archive, so no own-path
+// check applies (R23): an old target is one of this machine's work folders as soon as
+// it has pushed once. A target inside the other gets no move, as rules apply in
+// sequence: old -> old/sub would turn old/sub/x into old/sub/sub/x. Notes name those.
+func remapMoves(prev map[string][]string, now map[string]string) (moves []rewrite.Move, notes []string) {
+	keys := make([]string, 0, len(prev))
+	for k := range prev {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys) // the first move for a path wins
-	var moves []rewrite.Move
 	for _, k := range keys {
-		if t, ok := now[k]; ok && !samePath(before[k], t) {
-			moves = append(moves, rewrite.Move{From: before[k], To: t})
+		t, ok := now[k]
+		if !ok {
+			continue
+		}
+		_, src, _ := strings.Cut(k, "|")
+		for _, old := range prev[k] {
+			if work.Within(t, old, true) || work.Within(old, t, true) {
+				notes = append(notes, fmt.Sprintf("  ! %s was placed at %s and is now at %s, one inside the other: conversations naming the old place are not repointed; edit them by hand", src, old, t))
+				continue
+			}
+			moves = append(moves, rewrite.Move{From: old, To: t})
 		}
 	}
-	return moves
+	return moves, notes
+}
+
+// forgetPrevious drops the earlier targets of the folders in placed, once a --repoint
+// has moved every conversation off them.
+func forgetPrevious(root string, placed map[string]string) error {
+	h := work.LoadHeld(heldWorkPath(root))
+	if h.Err != nil {
+		return h.Err
+	}
+	n := len(h.Prev)
+	for k := range placed {
+		delete(h.Prev, k)
+	}
+	if len(h.Prev) == n {
+		return nil
+	}
+	return h.Save(heldWorkPath(root))
 }
 
 // restoreWork places other machines' work folders here and files their files (spec
@@ -492,8 +519,17 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			} else if err != nil {
 				continue // not a path on this machine: pull's same layout does not fit
 			}
-			held.Placed[s.Machine+"|"+wf.Path] = target
-			res.ByMachine[s.Machine+"|"+wf.Path] = target
+			// Placed elsewhere before: remembered until a --repoint moves conversations off it.
+			key := s.Machine + "|" + wf.Path
+			if old, ok := held.Placed[key]; ok && !samePath(old, target) &&
+				!slices.ContainsFunc(held.Prev[key], func(x string) bool { return samePath(x, old) }) {
+				held.Prev[key] = append(held.Prev[key], old)
+			}
+			if held.Prev[key] = slices.DeleteFunc(held.Prev[key], func(x string) bool { return samePath(x, target) }); len(held.Prev[key]) == 0 {
+				delete(held.Prev, key)
+			}
+			held.Placed[key] = target
+			res.ByMachine[key] = target
 			went = append(went, wf.Path+" -> "+target)
 			if target != wf.Path && ownPath(wf.Path) {
 				refuse(wf.Path, "a path of this machine's own: its files are placed, conversations are not repointed")
@@ -623,6 +659,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			res.Notes = append(res.Notes, fmt.Sprintf("  x restored work record: %v", err))
 		}
 	}
+	res.Prev = held.Prev
 	return moves, res
 }
 

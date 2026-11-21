@@ -184,9 +184,11 @@ func workSession(t *testing.T, m machine, cwd string, writes []string, commands 
 		l, _ := json.Marshal(v)
 		b.Write(append(l, '\n'))
 	}
+	n := 0
 	msg := func(role string, content any) map[string]any {
+		n++
 		return map[string]any{"type": role, "cwd": cwd, "sessionId": forkSession, "timestamp": "2026-11-21T05:00:00.000Z",
-			"message": map[string]any{"role": role, "content": content}}
+			"uuid": fmt.Sprintf("w%d", n), "message": map[string]any{"role": role, "content": content}}
 	}
 	use := func(name string, input map[string]string) {
 		add(msg("assistant", []any{map[string]any{"type": "tool_use", "name": name, "input": input}}))
@@ -1279,6 +1281,97 @@ func TestRepointedAcceptedByPush(t *testing.T) {
 		push()
 		if now, _ := os.Stat(archived); now.Size() != was.Size() || !now.ModTime().Equal(was.ModTime()) {
 			t.Fatalf("hook %v: copied again", viaHook)
+		}
+	}
+}
+
+// turn appends one entry to m's copy of the pair's session and dates it at.
+func (p workPair) turn(t *testing.T, m machine, uuid string, at time.Time) {
+	t.Helper()
+	l, _ := json.Marshal(map[string]any{"type": "user", "uuid": uuid, "sessionId": forkSession,
+		"message": map[string]any{"role": "user", "content": "go on, " + uuid}})
+	f, err := os.OpenFile(m.session(p.repo), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write(append(l, '\n'))
+	f.Close()
+	if err := os.Chtimes(m.session(p.repo), at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A session continued on both machines is a fork. Repointed, B's copy still holds
+// none of A's later turns: push must keep the archived copy and the fork, not put B's
+// copy over A's turns.
+func TestRepointedForkKeepsOtherTurns(t *testing.T) {
+	p := stalePair(t, t.TempDir())
+	now := time.Now()
+	p.turn(t, p.a, "a1", now.Add(-100*time.Minute))
+	p.a.workRun(t, p.homeA, "push", "--no-html")
+	p.turn(t, p.b, "b1", now.Add(-90*time.Minute))
+	// One disk stands in for two: A's folder is not on B's, or B's push takes it for B's own.
+	away(t, p.homeA, func() { p.b.workRun(t, p.homeB, "push", "--no-html") })
+	fork := filepath.Join(p.b.archive, "forks", claude.Slug(p.repo), forkSession, "MAC.jsonl")
+	if !strings.Contains(mustRead(t, fork), `"b1"`) {
+		t.Fatal("B's push kept no fork")
+	}
+
+	p.b.workRun(t, p.homeB, "import", "--no-plugins", "--repoint")
+	if !strings.Contains(mustRead(t, p.b.session(p.repo)), inJSON(p.placed())) {
+		t.Fatal("not repointed")
+	}
+	p.b.workRun(t, p.homeB, "push", "--no-html")
+	p.a.workRun(t, p.homeA, "push", "--no-html")
+	archived := filepath.Join(p.b.archive, "projects", claude.Slug(p.repo), forkSession+".jsonl")
+	if s := mustRead(t, archived); !strings.Contains(s, `"a1"`) {
+		t.Fatalf("A's turn is gone from the archive:\n%s", s)
+	}
+	if s := mustRead(t, fork); !strings.Contains(s, `"b1"`) {
+		t.Fatalf("B's turn is gone from the fork:\n%s", s)
+	}
+}
+
+// A placement changes in one import and conversations are repointed by a later one,
+// as the hint says - straight after a plain import, or once a conversation used in the
+// last hour has aged. The earlier target is remembered until a --repoint has moved
+// everything off it, then forgotten.
+func TestRepointRemapLater(t *testing.T) {
+	for _, recent := range []bool{false, true} {
+		p := stalePair(t, t.TempDir())
+		session := p.b.session(p.repo)
+		held := filepath.Join(p.b.claudeDir, "session-sync-base", "work-held.json")
+		p.b.workRun(t, p.homeB, "import", "--no-plugins", "--repoint")
+		dir := filepath.Join(p.homeB, "mapped")
+		mustMkdir(t, dir)
+		configAs(t, p.b.claudeDir, "MAC", "map-folder", p.folder, dir)
+		if out := p.b.workRun(t, p.homeB, "import", "--no-plugins"); !strings.Contains(out, "1 conversation(s) here still point") {
+			t.Fatalf("recent %v: no hint after the placement changed: %s", recent, out)
+		}
+		if recent {
+			at := time.Now().Add(-10 * time.Minute)
+			if err := os.Chtimes(session, at, at); err != nil {
+				t.Fatal(err)
+			}
+			if out := p.b.workRun(t, p.homeB, "import", "--no-plugins", "--repoint"); !strings.Contains(out, "1 conversation(s) used in the last hour left alone") {
+				t.Fatalf("not left for later: %s", out)
+			}
+			if !strings.Contains(mustRead(t, held), `"prev"`) {
+				t.Fatal("old target forgotten while a conversation still names it")
+			}
+			aged(t, session)
+		}
+
+		out := p.b.workRun(t, p.homeB, "import", "--no-plugins", "--repoint")
+		if s := mustRead(t, session); !strings.Contains(out, "repointed 1 conversation(s)") ||
+			!strings.Contains(s, inJSON(filepath.Join(dir, "রিপোর্ট.md"))) || strings.Contains(s, inJSON(p.placed())) {
+			t.Fatalf("recent %v: not repointed to the new folder:\n%s\n%s", recent, s, out)
+		}
+		if h := mustRead(t, held); strings.Contains(h, `"prev"`) {
+			t.Fatalf("recent %v: old target kept after a full repoint: %s", recent, h)
+		}
+		if out := p.b.workRun(t, p.homeB, "import", "--no-plugins"); strings.Contains(out, "--repoint") {
+			t.Fatalf("recent %v: still hinted: %s", recent, out)
 		}
 	}
 }

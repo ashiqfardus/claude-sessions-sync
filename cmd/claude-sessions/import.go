@@ -14,7 +14,6 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
-	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
 type importRow struct {
@@ -149,11 +148,11 @@ func cmdImport(args []string) error {
 	if cerr != nil {
 		wcfg.WorkBackup = "off"
 	}
-	// Where folders were placed before this import, which restoreWork records anew: a
-	// changed placement repoints its old target too (R7).
-	before := work.LoadHeld(heldWorkPath(root)).Placed
 	workMoves, workRes := restoreWork(root, dest, shards, wcfg, *dryRun, *update, false)
-	workMoves = append(workMoves, remapMoves(before, workRes.ByMachine)...)
+	// A folder placed elsewhere since an earlier import repoints from where it was, until
+	// a --repoint has moved every conversation off it (spec §7a).
+	remaps, remapNotes := remapMoves(workRes.Prev, workRes.ByMachine)
+	workMoves = append(workMoves, remaps...)
 	resolve := func(bucket string, p archive.Project) identity.Match {
 		if local, ok := cfg.Mapped(bucket); ok {
 			if st, err := os.Stat(local); err != nil || !st.IsDir() {
@@ -378,6 +377,11 @@ func cmdImport(args []string) error {
 	var rp repointResult
 	if *repoint {
 		rp = repointLocal(root, workMoves, time.Now(), *dryRun)
+		if !*dryRun && rp.Recent == 0 && rp.Skipped == 0 {
+			if err := forgetPrevious(root, workRes.ByMachine); err != nil {
+				rp.Notes = append(rp.Notes, fmt.Sprintf("  x restored work record: %v", err))
+			}
+		}
 	}
 
 	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
@@ -396,7 +400,7 @@ func cmdImport(args []string) error {
 		fmt.Printf(", %d updated", updated)
 	}
 	fmt.Printf(". %d same layout, %d not found, %d ambiguous.\n", sameLayout, notFound, ambiguous)
-	for _, n := range workRes.Notes {
+	for _, n := range append(workRes.Notes, remapNotes...) {
 		fmt.Println(n)
 	}
 	if len(workRes.Placed) > 0 {

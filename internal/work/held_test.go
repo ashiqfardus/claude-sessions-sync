@@ -17,6 +17,7 @@ func TestHeldRoundTrip(t *testing.T) {
 	h.Files["/Users/b/SQL/po/r.md"] = HeldFile{Machine: "WIN", From: `E:\SQL\po\r.md`, Size: 12,
 		MTime: time.Date(2026, 11, 21, 5, 0, 0, 0, time.UTC)}
 	h.Placed[`WIN|E:\SQL\po`] = "/Users/b/claude-work/WIN/E/SQL/po"
+	h.Prev[`WIN|E:\SQL\po`] = []string{"/Users/b/SQL/po"}
 	if err := h.Save(path); err != nil {
 		t.Fatal(err)
 	}
@@ -28,5 +29,16 @@ func TestHeldRoundTrip(t *testing.T) {
 	}
 	if got := LoadHeld(path); got.Err == nil || len(got.Files)+len(got.Placed) != 0 || got.Files == nil {
 		t.Fatalf("corrupt record: %+v", got)
+	}
+}
+
+// A record written before Prev existed reads back with an empty one.
+func TestHeldWithoutPrev(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "work-held.json")
+	if err := os.WriteFile(path, []byte(`{"files":{},"placed":{"WIN|E:\\SQL":"/Users/b/SQL"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if h := LoadHeld(path); h.Err != nil || h.Prev == nil || len(h.Prev) != 0 || h.Placed[`WIN|E:\SQL`] != "/Users/b/SQL" {
+		t.Fatalf("%+v", h)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -654,14 +655,16 @@ func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushe
 	target := filepath.Join(archive.ProjectsDir(dest), bucket, filepath.Base(path))
 	dstInfo := archive.StatOrNil(target)
 
-	// Rewritten by import --repoint and unchanged since: the same turns with this
-	// machine's paths, so it replaces the archived copy once, shorter or not - unless
-	// that copy is newer, continued elsewhere since. Changed here since, it is a
-	// session resumed, and the rules below judge it.
+	// Rewritten by import --repoint and unchanged since: this machine's paths, so it
+	// replaces the archived copy once, shorter or not - but only over the same turns or
+	// fewer. An archived copy that is newer, or holds turns this one lacks (continued
+	// elsewhere, a fork), is left to the rules below. Changed here since, it is a
+	// session resumed, and the rules below judge it too.
 	if r, ok := repointed[bucket+"/"+id]; ok {
 		delete(repointed, bucket+"/"+id)
 		if srcInfo.Size() == r.Size && archive.SameMTime(srcInfo.ModTime(), r.MTime) &&
-			(dstInfo == nil || !srcInfo.ModTime().Before(dstInfo.ModTime().Add(-archive.MTimeToleranceSeconds*time.Second))) {
+			(dstInfo == nil || !srcInfo.ModTime().Before(dstInfo.ModTime().Add(-archive.MTimeToleranceSeconds*time.Second)) &&
+				slices.Contains([]claude.Relation{claude.Same, claude.Extends}, claude.Compare(path, target))) {
 			if !dryRun {
 				if err := archive.CopyFile(path, target); err != nil {
 					repointed[bucket+"/"+id] = r // tried again next time
