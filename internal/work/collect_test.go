@@ -147,8 +147,8 @@ func TestEncode(t *testing.T) {
 	}
 }
 
-// Restore runs Allowed on whole archive paths: a skipped folder anywhere above the file
-// refuses it, whatever its case.
+// Restore runs Allowed on a file's path in its folder: a skipped folder anywhere in it
+// refuses the file, whatever its case.
 func TestAllowedSkippedFolders(t *testing.T) {
 	for rel, want := range map[string]string{
 		"Users/a/p/r.md":                 "",

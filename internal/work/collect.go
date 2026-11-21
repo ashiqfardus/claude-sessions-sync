@@ -33,10 +33,10 @@ func init() {
 	}
 }
 
-// Allowed decides whether a file at rel ("/"-separated) is copied. reason is
-// "dot", "folder" (under a skipped folder), "secret", "type" or "large", checked in
-// that order. Restore passes the whole archive path, so a folder push skips is
-// refused even when an archive names it as the work folder itself.
+// Allowed decides whether a file at rel ("/"-separated, below a work folder) is
+// copied. reason is "dot", "folder" (under a skipped folder), "secret", "type" or
+// "large", checked in that order. Collect prunes skipped folders before asking;
+// restore, reading an archive push did not write, relies on the check here.
 func Allowed(rel string, size int64) (bool, string) {
 	parts := strings.Split(rel, "/")
 	for i, p := range parts {

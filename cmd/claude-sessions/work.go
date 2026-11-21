@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
@@ -345,6 +346,32 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 	broad := func(p string) bool {
 		return slices.ContainsFunc(homes, func(h string) bool { return work.IsBroad(p, work.Env{Home: h}) })
 	}
+	// A path of this machine's own - its home, Claude folder, work folders or projects,
+	// or in or above one - keeps its files placed but never becomes a move: that would
+	// repoint this machine's own conversations. An exact file skips the broad check, so
+	// the home is checked here too.
+	inside := slices.Clone(l.Own)
+	for _, s := range shards {
+		if isMe(s.Machine) {
+			for _, p := range s.Projects {
+				inside = append(inside, p.Path)
+			}
+		}
+	}
+	state, _ := claude.ProjectPaths(claude.StatePath(root))
+	inside = append(inside, state...)
+	ownPath := func(p string) bool {
+		return work.Within(l.Home, p, true) || work.Within(root, p, true) ||
+			slices.ContainsFunc(inside, func(x string) bool {
+				return rewrite.AbsoluteAnywhere(x) && (work.Within(p, x, true) || work.Within(x, p, true))
+			})
+	}
+	would := func(done string) string {
+		if dryRun {
+			return "would be " + done
+		}
+		return done
+	}
 
 	names := make([]string, 0, len(shards))
 	for n := range shards {
@@ -383,21 +410,21 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				continue // not a path on this machine: pull's same layout does not fit
 			}
 			held.Placed[s.Machine+"|"+wf.Path] = target
-			if _, ok := res.Placed[wf.Path]; !ok {
-				res.Placed[wf.Path] = target
-			}
 			went = append(went, wf.Path+" -> "+target)
-			if target != wf.Path {
-				moves = append(moves, rewrite.Move{From: wf.Path, To: target, ConvertTail: work.WindowsPath(wf.Path) && runtime.GOOS != "windows"})
+			if target != wf.Path && ownPath(wf.Path) {
+				refuse(wf.Path, "a path of this machine's own: its files are placed, conversations are not repointed")
+			} else {
+				if _, ok := res.Placed[wf.Path]; !ok {
+					res.Placed[wf.Path] = target
+				}
+				if target != wf.Path {
+					moves = append(moves, rewrite.Move{From: wf.Path, To: target, ConvertTail: work.WindowsPath(wf.Path) && runtime.GOOS != "windows"})
+				}
 			}
 
-			// tdir and trel are where a file goes, for SafeJoin. The push filter runs on
-			// what lands here, the target below the home (all of it outside), plus the
-			// file's path: rule 0 and a map choose targets that are not the source path.
-			tdir, loc := target, work.Encode(target)
-			if h := work.Encode(l.Home) + "/"; strings.HasPrefix(loc, h) {
-				loc = loc[len(h):]
-			}
+			// A file goes to trel below tdir. The push filter runs on trel, its path in
+			// the folder, as push runs it below a root.
+			tdir := target
 			if wf.Exact {
 				tdir = filepath.Dir(target)
 			}
@@ -406,11 +433,11 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				sep = `\`
 			}
 			file := func(src, rel string, fi fs.FileInfo) {
-				from, trel, arel := wf.Path+sep+strings.ReplaceAll(rel, "/", sep), rel, loc+"/"+rel
+				from, trel := wf.Path+sep+strings.ReplaceAll(rel, "/", sep), rel
 				if wf.Exact {
-					from, trel, arel = wf.Path, filepath.Base(target), loc
+					from, trel = wf.Path, filepath.Base(target)
 				}
-				if ok, why := work.Allowed(arel, fi.Size()); !ok {
+				if ok, why := work.Allowed(trel, fi.Size()); !ok {
 					refuse(from, why)
 					return
 				}
@@ -456,7 +483,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 					// "version" into "version.dll".
 					ext := filepath.Ext(trel)
 					name := "." + s.Machine + ext
-					if ok, why := work.Allowed(strings.TrimSuffix(arel, ext)+name, fi.Size()); !ok {
+					if ok, why := work.Allowed(strings.TrimSuffix(trel, ext)+name, fi.Size()); !ok {
 						refuse(from, why)
 						return
 					}
@@ -469,7 +496,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 					if os.IsNotExist(err) || err == nil && ss.Mode().IsRegular() && !same(ss) && mine(sib, ss) {
 						if write(sib) {
 							n.Beside++
-							notes = append(notes, fmt.Sprintf("  ~ %s kept; %s's copy written beside it as %s", dst, s.Machine, filepath.Base(sib)))
+							notes = append(notes, fmt.Sprintf("  ~ %s kept; %s's copy %s beside it as %s", dst, s.Machine, would("written"), filepath.Base(sib)))
 						}
 					} else {
 						n.Kept++
@@ -504,7 +531,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			where = "none placed"
 		}
 		res.Notes = append(res.Notes, fmt.Sprintf("work folders from %s: %s (%d file(s) %s, %d kept, %d beside, %d refused)",
-			s.Machine, where, n.Filed, verbFor(dryRun), n.Kept, n.Beside, n.Refused))
+			s.Machine, where, n.Filed, would("filed"), n.Kept, n.Beside, n.Refused))
 		res.Notes = append(res.Notes, notes...)
 	}
 	if !dryRun {
