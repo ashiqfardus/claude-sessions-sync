@@ -346,10 +346,11 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 	broad := func(p string) bool {
 		return slices.ContainsFunc(homes, func(h string) bool { return work.IsBroad(p, work.Env{Home: h}) })
 	}
-	// A path of this machine's own - its home, Claude folder, work folders or projects,
-	// or in or above one - keeps its files placed but never becomes a move: that would
-	// repoint this machine's own conversations. An exact file skips the broad check, so
-	// the home is checked here too.
+	// A path of this machine's own - its home or Claude folder or above them, or in or
+	// above one of its work folders or projects - keeps its files placed but never
+	// becomes a move: that would repoint this machine's own conversations. An exact
+	// file skips the broad check, so the home is checked here too. A project at the
+	// home or another broad folder is left to that home check: Claude lists ~ itself.
 	inside := slices.Clone(l.Own)
 	for _, s := range shards {
 		if isMe(s.Machine) {
@@ -359,12 +360,12 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 		}
 	}
 	state, _ := claude.ProjectPaths(claude.StatePath(root))
-	inside = append(inside, state...)
+	inside = slices.DeleteFunc(append(inside, state...), func(x string) bool {
+		return !rewrite.AbsoluteAnywhere(x) || work.IsBroad(x, l.Env)
+	})
 	ownPath := func(p string) bool {
 		return work.Within(l.Home, p, true) || work.Within(root, p, true) ||
-			slices.ContainsFunc(inside, func(x string) bool {
-				return rewrite.AbsoluteAnywhere(x) && (work.Within(p, x, true) || work.Within(x, p, true))
-			})
+			slices.ContainsFunc(inside, func(x string) bool { return work.Within(p, x, true) || work.Within(x, p, true) })
 	}
 	would := func(done string) string {
 		if dryRun {
@@ -389,6 +390,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			n.Refused++
 			notes = append(notes, fmt.Sprintf("  ! %s: refused: %v", p, why))
 		}
+	folders:
 		for _, wf := range s.WorkFolders {
 			dir, err := workDir(dest, s.Machine, wf.Path)
 			if err != nil {
@@ -408,6 +410,17 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				continue
 			} else if err != nil {
 				continue // not a path on this machine: pull's same layout does not fit
+			}
+			// Rule 0 puts a folder where its origin says, inside one of this machine's
+			// own: below that folder, the archive chose the names, so push's skipped
+			// folders are refused there too.
+			if o := wf.Origin; o != nil && target == filepath.Clean(o.Path) {
+				for _, own := range l.Own {
+					if work.Within(target, own, true) && slices.ContainsFunc(pathSegs(target)[len(pathSegs(own)):], work.SkipDir) {
+						refuse(wf.Path, "in a skipped folder")
+						continue folders
+					}
+				}
 			}
 			held.Placed[s.Machine+"|"+wf.Path] = target
 			went = append(went, wf.Path+" -> "+target)
@@ -596,12 +609,14 @@ func placedPath(placed map[string]string, p string) string {
 			best = src
 		}
 	}
-	segs := func(s string) []string { // as work.Within counts them
-		return slices.DeleteFunc(strings.FieldsFunc(s, func(r rune) bool { return r == '/' || r == '\\' }), func(x string) bool { return x == "." })
-	}
-	all := segs(p)
+	all := pathSegs(p)
 	if best == "" || slices.Contains(all, "..") {
 		return "" // archive data: a ".." here would climb out of the target
 	}
-	return filepath.Join(append([]string{placed[best]}, all[len(segs(best)):]...)...)
+	return filepath.Join(append([]string{placed[best]}, all[len(pathSegs(best)):]...)...)
+}
+
+// pathSegs splits a path of either OS form into its names, as work.Within counts them.
+func pathSegs(s string) []string {
+	return slices.DeleteFunc(strings.FieldsFunc(s, func(r rune) bool { return r == '/' || r == '\\' }), func(x string) bool { return x == "." })
 }

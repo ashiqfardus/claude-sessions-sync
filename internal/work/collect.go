@@ -20,8 +20,9 @@ var skipDirs = map[string]bool{
 	"__pycache__": true, ".cache": true, "dist": true, "build": true, "target": true, ".gradle": true,
 }
 
-// skipDir ignores case: on macOS and Windows Node_Modules is node_modules.
-func skipDir(name string) bool { return skipDirs[strings.ToLower(name)] }
+// SkipDir reports a folder name push never copies. It ignores case: on macOS and
+// Windows Node_Modules is node_modules.
+func SkipDir(name string) bool { return skipDirs[strings.ToLower(name)] }
 
 var deniedExt = map[string]bool{}
 
@@ -43,7 +44,7 @@ func Allowed(rel string, size int64) (bool, string) {
 		if strings.HasPrefix(p, ".") {
 			return false, "dot"
 		}
-		if i < len(parts)-1 && skipDir(p) {
+		if i < len(parts)-1 && SkipDir(p) {
 			return false, "folder"
 		}
 	}
@@ -113,7 +114,7 @@ func Collect(f Folder, exclude []string) (Collected, error) {
 			if p == f.Path {
 				return nil
 			}
-			if skipDir(d.Name()) || strings.HasPrefix(d.Name(), ".") {
+			if SkipDir(d.Name()) || strings.HasPrefix(d.Name(), ".") {
 				return fs.SkipDir
 			}
 			if _, e := os.Lstat(filepath.Join(p, ".git")); e == nil {
