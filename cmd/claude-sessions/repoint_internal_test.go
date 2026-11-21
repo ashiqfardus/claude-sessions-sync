@@ -110,3 +110,13 @@ func TestRepointMovesFiledMark(t *testing.T) {
 		t.Fatalf("rewritten %d, mark %d, size %d (was %d)", res.Rewritten, imported[importedKey(root, p)], st.Size(), before)
 	}
 }
+
+// Two machines placed at one target: the origin is the same on every run (M4).
+func TestOriginOfTieBreak(t *testing.T) {
+	placed := map[string]string{`WIN|E:\W`: "/h/W", "LNX|/w": "/h/W", "BOX|/b": "/h/W"}
+	for i := 0; i < 50; i++ {
+		if o := originOf("/h/W/sub", placed, "MAC", false); o == nil || o.Machine != "BOX" || o.Path != "/b/sub" {
+			t.Fatalf("run %d: %+v", i, o)
+		}
+	}
+}

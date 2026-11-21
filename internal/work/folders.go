@@ -65,7 +65,7 @@ func norm(p string, windows bool) (string, bool) {
 		p = p[1:2] + ":" + p[2:]
 	}
 	win := WindowsPath(p)
-	if !win && !strings.HasPrefix(p, "/") {
+	if !win && (windows || !strings.HasPrefix(p, "/")) { // on Windows "/x" is no path of its own
 		return "", false
 	}
 	var s []string

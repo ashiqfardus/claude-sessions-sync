@@ -1085,6 +1085,10 @@ func TestWorkRoundTrip(t *testing.T) {
 	if got := mustRead(t, filepath.Join(p.folder, "from-b.md")); got != "written on B\n" {
 		t.Fatalf("A's original folder has %q", got)
 	}
+	// B's conversation, filed on A, names A's original folder, not B's placement (M8).
+	if s := mustRead(t, p.a.session(repoB)); !strings.Contains(s, inJSON(filepath.Join(p.folder, "from-b.md"))) || strings.Contains(s, inJSON(placed)) {
+		t.Fatalf("A's copy of B's conversation:\n%s", s)
+	}
 	if _, err := os.Stat(filepath.Join(p.homeA, "claude-work")); !os.IsNotExist(err) {
 		t.Fatalf("A placed it under claude-work: %v", err)
 	}
@@ -1483,5 +1487,31 @@ func TestPushSkipsClaudeRootAndTemp(t *testing.T) {
 		if strings.Contains(f, "W/claude/") || strings.Contains(f, "W/tmp/") {
 			t.Errorf("archived: %s", f)
 		}
+	}
+}
+
+// exclude-folder removes the folder's copy where no entry lists it, under this
+// machine's name and the names it went by before; another machine's stays (M6).
+func TestExcludeFolderPurgesFormerNames(t *testing.T) {
+	arch := t.TempDir()
+	m := newMachine(t, "MAC", arch)
+	configAs(t, m.claudeDir, "MAC", "set-destination", arch)
+	configAs(t, m.claudeDir, "OLD", "set-machine", "MAC")
+	dir := t.TempDir()
+	enc := filepath.FromSlash(work.Encode(dir))
+	for _, n := range []string{"MAC", "OLD", "OTHER"} {
+		mustWrite(t, filepath.Join(arch, "work", n, enc, "r.md"), "x")
+	}
+	out := configAs(t, m.claudeDir, "MAC", "exclude-folder", dir)
+	for _, n := range []string{"MAC", "OLD"} {
+		if _, err := os.Stat(filepath.Join(arch, "work", n, enc)); !os.IsNotExist(err) {
+			t.Errorf("%s's copy remains: %v\n%s", n, err, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(arch, "work", "OTHER", enc, "r.md")); err != nil {
+		t.Errorf("another machine's copy removed: %v", err)
+	}
+	if !strings.Contains(out, "removed "+dir) {
+		t.Errorf("output: %s", out)
 	}
 }

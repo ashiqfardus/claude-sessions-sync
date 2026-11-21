@@ -162,3 +162,16 @@ func TestIsBroadOneDrive(t *testing.T) {
 		}
 	}
 }
+
+// On Windows a path from "/" is not one: only the MSYS form /c/... is read (M5).
+func TestNormWindowsUnixPath(t *testing.T) {
+	if got, ok := norm("/Users/a/x", true); ok {
+		t.Errorf("a Unix path taken on Windows: %q", got)
+	}
+	if got, ok := norm("/c/x", true); !ok || got != `C:\x` {
+		t.Errorf("MSYS: %q %v", got, ok)
+	}
+	if got, ok := norm("/Users/a/x", false); !ok || got != "/Users/a/x" {
+		t.Errorf("Unix: %q %v", got, ok)
+	}
+}

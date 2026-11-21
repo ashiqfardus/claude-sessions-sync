@@ -241,11 +241,18 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 
 // originOf names where folder f came from when it is, or lies below, a folder placed
 // here from another machine: that machine and the matching source path. The most
-// specific placement wins. Never this machine itself.
+// specific placement wins, and of two as specific the first by key. Never this
+// machine itself.
 func originOf(f string, placed map[string]string, self string, fold bool) *archive.WorkOrigin {
 	var best *archive.WorkOrigin
 	bestLen := -1
-	for k, t := range placed {
+	keys := make([]string, 0, len(placed))
+	for k := range placed {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		t := placed[k]
 		m, src, ok := strings.Cut(k, "|")
 		if !ok || m == self || len(t) <= bestLen || !work.Within(f, t, fold || work.WindowsPath(t)) {
 			continue
@@ -336,16 +343,17 @@ func realWorkDirs(dest, dir string, real map[string]bool) bool {
 }
 
 // purgeWork removes this machine's archived copies of folder: every shard entry inside
-// it, and, when folder lies inside an archived entry, just that subfolder (the entry
-// stays). It returns the folders removed. What workDir refuses, or a link reaches, is
-// never deleted. The caller holds the push lock.
+// it, and the folder's own copy wherever it is - inside an archived entry (which
+// stays), listed nowhere, or under a name this machine went by before. It returns the
+// folders removed. What workDir refuses, or a link reaches, is never deleted. The
+// caller holds the push lock.
 func purgeWork(dest, machine, folder string) ([]string, error) {
 	shard := readShard(dest, machine)
 	var keep []archive.WorkFolder
 	var removed []string
 	real := map[string]bool{}
-	drop := func(p string) error {
-		dir, err := workDir(dest, machine, p)
+	drop := func(m, p string) error {
+		dir, err := workDir(dest, m, p)
 		if err != nil || !realWorkDirs(dest, filepath.Dir(dir), real) {
 			return nil // hostile or malformed: skip, never delete
 		}
@@ -355,29 +363,30 @@ func purgeWork(dest, machine, folder string) ([]string, error) {
 		if err := os.RemoveAll(dir); err != nil { // never follows a link: removes the link
 			return err
 		}
-		removed = append(removed, p)
+		if !slices.Contains(removed, p) {
+			removed = append(removed, p)
+		}
 		return nil
 	}
 	changed := false
 	for _, f := range shard.WorkFolders {
 		fold := runtime.GOOS != "linux" || work.WindowsPath(f.Path) || work.WindowsPath(folder)
-		switch {
-		case work.Within(f.Path, folder, fold):
-			if _, err := workDir(dest, machine, f.Path); err != nil {
-				keep = append(keep, f)
-				continue
-			}
-			if err := drop(f.Path); err != nil {
-				return removed, err
-			}
-			changed = true
-		case work.Within(folder, f.Path, fold):
-			if err := drop(folder); err != nil {
-				return removed, err
-			}
+		if !work.Within(f.Path, folder, fold) {
 			keep = append(keep, f)
-		default:
+			continue
+		}
+		if _, err := workDir(dest, machine, f.Path); err != nil {
 			keep = append(keep, f)
+			continue
+		}
+		if err := drop(machine, f.Path); err != nil {
+			return removed, err
+		}
+		changed = true
+	}
+	for _, m := range append([]string{machine}, formerMachines...) {
+		if err := drop(m, folder); err != nil {
+			return removed, err
 		}
 	}
 	if !changed {
