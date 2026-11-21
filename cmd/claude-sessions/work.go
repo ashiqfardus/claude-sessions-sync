@@ -206,6 +206,11 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 			out = append(out, e)
 		}
 	}
+	for i := range out {
+		if o := originOf(out[i].Path, hr.Placed, shard.Machine, fold(out[i].Path)); o != nil {
+			out[i].Origin = o
+		}
+	}
 	slices.SortFunc(out, func(a, b archive.WorkFolder) int { return strings.Compare(a.Path, b.Path) })
 	shard.WorkFolders, shard.WorkIndexed = out, true
 	if !dryRun {
@@ -215,6 +220,32 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 		}
 	}
 	return res
+}
+
+// originOf names where folder f came from when it is, or lies below, a folder placed
+// here from another machine: that machine and the matching source path. The most
+// specific placement wins. Never this machine itself.
+func originOf(f string, placed map[string]string, self string, fold bool) *archive.WorkOrigin {
+	var best *archive.WorkOrigin
+	bestLen := -1
+	for k, t := range placed {
+		m, src, ok := strings.Cut(k, "|")
+		if !ok || m == self || len(t) <= bestLen || !work.Within(f, t, fold || work.WindowsPath(t)) {
+			continue
+		}
+		sep := "/"
+		if work.WindowsPath(src) {
+			sep = `\`
+		}
+		path := strings.TrimRight(src, `/\`)
+		rest := strings.Trim(f[min(len(t), len(f)):], `/\`)
+		if len(f) > len(t) && rest != "" {
+			rest = strings.NewReplacer(`/`, sep, `\`, sep).Replace(rest)
+			path += sep + rest
+		}
+		best, bestLen = &archive.WorkOrigin{Machine: m, Path: path}, len(t)
+	}
+	return best
 }
 
 // workFoldersPath is this machine's record of its work folders, the source of its

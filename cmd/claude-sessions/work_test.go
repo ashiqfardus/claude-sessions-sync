@@ -1023,3 +1023,43 @@ func TestPushWorkSkipsCodeFolder(t *testing.T) {
 		t.Fatalf("recorded: %s", rec)
 	}
 }
+
+// A's folder is placed on B under claude-work/ (not B's home layout), B adds a file
+// there, and A gets it back in its original folder: only an origin (rule 0) does that.
+func TestWorkRoundTrip(t *testing.T) {
+	p := newWorkPair(t)
+	configAs(t, p.b.claudeDir, "MAC", "work-placement", "machine")
+	p.b.workRun(t, p.homeB, "import", "--no-plugins")
+	var placed string
+	_ = filepath.WalkDir(filepath.Join(p.homeB, "claude-work"), func(q string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == "রিপোর্ট.md" {
+			placed = filepath.Dir(q)
+		}
+		return nil
+	})
+	if placed == "" {
+		t.Fatal("A's folder was not placed under claude-work")
+	}
+	repoB := gitRepo(t, filepath.Join(t.TempDir(), "dev", "web"))
+	newFile := filepath.Join(placed, "from-b.md")
+	mustWrite(t, newFile, "written on B\n")
+	workSession(t, p.b, repoB, []string{newFile})
+	p.b.workRun(t, p.homeB, "push", "--no-html")
+
+	var found bool
+	for _, f := range workShard(t, p.b) {
+		if f.Path == placed && f.Origin != nil && f.Origin.Machine == "WIN" && f.Origin.Path == p.folder {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no origin on %s: %+v", placed, workShard(t, p.b))
+	}
+	p.a.workRun(t, p.homeA, "import", "--no-plugins")
+	if got := mustRead(t, filepath.Join(p.folder, "from-b.md")); got != "written on B\n" {
+		t.Fatalf("A's original folder has %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(p.homeA, "claude-work")); !os.IsNotExist(err) {
+		t.Fatalf("A placed it under claude-work: %v", err)
+	}
+}
