@@ -14,8 +14,8 @@ All notable changes to this project are documented here. This project follows
   default; `config work off` stops it. Folders come only from what sessions on this
   computer wrote. A conversation imported from another computer adds none, except
   through a fork Claude Code makes of it (`--fork-session`). Someone who can write the
-  archive can still reach you through plugins and skills, so use `import --no-plugins`
-  and keep the archive private.
+  archive can still reach you through plugins (`--no-plugins` stops those) and through
+  rules and skills, which are only added. Keep the archive private.
 - **`push --scan-history`** looks for work folders in every conversation that was here
   before this version first ran, once: after upgrading, or after installing on a
   computer that already has history. It reads imported conversations too: use it only

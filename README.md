@@ -662,10 +662,12 @@ folder of yours. There are two exceptions:
   computer's own.
 - `push --scan-history`, below.
 
-Someone who can write to your archive can reach you in other ways too: through the
-plugins, skills and rules that `import` and `pull` bring in (see
-[SECURITY.md](SECURITY.md)). Use `import --no-plugins` unless you trust every writer, and
-keep the archive in a folder only you can write to.
+Someone who can write to your archive can reach you in other ways too (see
+[SECURITY.md](SECURITY.md)). `import` and `pull` install the plugins another computer
+enabled, unless you pass `--no-plugins`. They also add rules, skills, agents and commands
+from the archive; those are only added, never replacing yours unless you pass
+`--update`, and no flag turns that off. Pass `--no-plugins` unless you trust every
+writer, and keep the archive in a folder only you can write to.
 
 **The first run.** The first run of this version marks every conversation already on
 this computer as read, and looks for no folders in them. That applies to an upgrade, and

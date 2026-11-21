@@ -97,8 +97,9 @@ though it needs write access to the archive. Enforced in code:
     - A fork Claude Code makes of an imported conversation (`--fork-session`) copies
       its lines into a new conversation, which push reads as the machine's own.
     - `push --scan-history` reads every conversation in full, imported ones included.
-    - Plugins, skills and rules from the archive reach you anyway (above). Use
-      `--no-plugins` and keep the archive private.
+    - The archive reaches you anyway (above): through plugins, unless `--no-plugins`,
+      and through rules and skills, which are added but never replace yours without
+      `--update`. Keep the archive private.
 - **Rendered pages carry a Content-Security-Policy that forbids scripts**, and their
   links are relative and escaped, so a folder named `javascript:...` is inert.
 - **Text from the archive is sanitised before it is shown**: control characters are
