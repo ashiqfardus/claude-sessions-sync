@@ -1442,3 +1442,20 @@ func TestDoctorWork(t *testing.T) {
 		t.Fatalf("skipped: %s %s", l, d)
 	}
 }
+
+// A folder listed with no copy in the archive (over the cap, or not pushed yet) is
+// still placed for the conversations: they name where its files will land (I4).
+func TestImportWorkNoCopyStillRepoints(t *testing.T) {
+	p := newWorkPair(t)
+	if err := os.RemoveAll(workCopy(p.a, p.folder)); err != nil {
+		t.Fatal(err)
+	}
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins")
+	s := mustRead(t, p.b.session(p.repo))
+	if !strings.Contains(s, inJSON(filepath.Join(p.placed(), "রিপোর্ট.md"))) || strings.Contains(s, inJSON(p.folder)) {
+		t.Fatalf("not repointed:\n%s\n%s", s, out)
+	}
+	if _, err := os.Stat(p.placed()); !os.IsNotExist(err) {
+		t.Fatalf("files restored from nowhere: %v", err)
+	}
+}

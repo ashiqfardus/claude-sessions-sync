@@ -547,9 +547,6 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				refuse(wf.Path, err)
 				continue
 			}
-			if !realArchivePath(dest, dir, wf.Exact) {
-				continue // listed with no copy (over the cap, or not pushed yet), or a link
-			}
 			if !wf.Exact && broad(wf.Path) {
 				refuse(wf.Path, "a broad folder")
 				continue
@@ -588,6 +585,12 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				if target != wf.Path {
 					moves = append(moves, rewrite.Move{From: wf.Path, To: target, ConvertTail: work.WindowsPath(wf.Path) && runtime.GOOS != "windows"})
 				}
+			}
+
+			// Listed with no copy (over the cap, or not pushed yet), or a link: placed for
+			// the conversations, with nothing to file.
+			if !realArchivePath(dest, dir, wf.Exact) {
+				continue
 			}
 
 			// A file goes to trel below tdir. The push filter runs on trel, its path in
