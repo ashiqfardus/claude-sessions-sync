@@ -103,15 +103,20 @@ func seedShard(t *testing.T, arch string, paths ...string) {
 func TestExcludeFolderIgnoresTraversal(t *testing.T) {
 	arch := t.TempDir()
 	m := newMachine(t, "MAC", arch)
-	dir := t.TempDir()
 	configAs(t, m.claudeDir, "MAC", "set-destination", arch)
 	sentinel := filepath.Join(arch, "work", "OTHER", "keep.md")
 	mustWrite(t, sentinel, "x")
-	seedShard(t, arch, dir+strings.Repeat("/..", 40), dir+"/../../..")
+	mine := filepath.Join(arch, "work", "MAC", "keep.md")
+	mustWrite(t, mine, "x")
+	// Windows-form, so it behaves the same on every OS. Unguarded, the first entry
+	// resolves to <arch>/work/OTHER and the second to <arch>/work: both inside the temp tree.
+	seedShard(t, arch, `E:\zz\a\..\..\..\..\OTHER`, `E:\zz\a\..\..\..`)
 
-	configAs(t, m.claudeDir, "MAC", "exclude-folder", dir)
-	if _, err := os.Stat(sentinel); err != nil {
-		t.Fatalf("deleted outside work/MAC: %v", err)
+	configAs(t, m.claudeDir, "MAC", "exclude-folder", `E:\zz\a`)
+	for _, f := range []string{sentinel, mine} {
+		if _, err := os.Stat(f); err != nil {
+			t.Fatalf("deleted outside its folder: %v", err)
+		}
 	}
 }
 
@@ -137,7 +142,8 @@ func TestExcludeSubfolderOfArchivedFolder(t *testing.T) {
 		t.Fatal("parent content lost")
 	}
 	raw, _ := os.ReadFile(filepath.Join(arch, "manifest", "MAC.json"))
-	if !strings.Contains(string(raw), dir) {
+	var got struct{ WorkFolders []struct{ Path string } }
+	if json.Unmarshal(raw, &got) != nil || len(got.WorkFolders) != 1 || got.WorkFolders[0].Path != dir {
 		t.Fatalf("parent entry dropped: %s", raw)
 	}
 }
