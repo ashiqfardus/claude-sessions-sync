@@ -229,7 +229,7 @@ func cmdImport(args []string) error {
 	moves = append(moves, workMoves...)
 	writers := sessionWriters(dest)
 	former := formerNames(dest)
-	imported := startFiling(root, dest, *dryRun)
+	imported := loadImported(root, !*dryRun)
 
 	var rows []importRow
 	var filed, updated, sameLayout, notFound, ambiguous int
@@ -390,7 +390,7 @@ func cmdImport(args []string) error {
 			}
 		}
 	}
-	finishFiling(root, imported, *dryRun)
+	imported.report()
 
 	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
 
@@ -578,7 +578,7 @@ func cmdPull(args []string) error {
 	projectsDir := claude.ProjectsDir(root)
 	manifest, _, _ := archive.Merged(dest)
 	writers := sessionWriters(dest)
-	imported := startFiling(root, dest, *dryRun)
+	imported := loadImported(root, !*dryRun)
 	var pulled, updated, already, memory int
 	var forked, failed []string
 
@@ -615,7 +615,7 @@ func cmdPull(args []string) error {
 		forked = append(forked, res.Diverged...)
 		failed = append(failed, res.Failed...)
 	}
-	finishFiling(root, imported, *dryRun)
+	imported.report()
 
 	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
 	// Work folders at their recorded paths, under the same safety rules as import.

@@ -101,13 +101,12 @@ func TestRepointMovesFiledMark(t *testing.T) {
 	}
 	at := time.Now().Add(-2 * time.Hour)
 	_ = os.Chtimes(p, at, at)
-	imported := map[string]int64{}
-	noteFiled(imported, root, p)
-	before := imported[importedKey(root, p)]
+	imported := loadImported(root, false) // a first run: marks p
+	before := imported.offset(p)
 	res := repointLocal(root, []rewrite.Move{{From: "/old", To: "/a/much/longer/new"}}, time.Now(), false, imported)
 	st, _ := os.Stat(p)
-	if res.Rewritten != 1 || imported[importedKey(root, p)] != st.Size() || st.Size() <= before {
-		t.Fatalf("rewritten %d, mark %d, size %d (was %d)", res.Rewritten, imported[importedKey(root, p)], st.Size(), before)
+	if res.Rewritten != 1 || imported.offset(p) != st.Size() || st.Size() <= before {
+		t.Fatalf("rewritten %d, mark %d, size %d (was %d)", res.Rewritten, imported.offset(p), st.Size(), before)
 	}
 }
 
@@ -132,13 +131,32 @@ func TestRecordMarkOnlyGrows(t *testing.T) {
 	if err := os.WriteFile(p, []byte(strings.Repeat("x", 100)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m := map[string]int64{}
-	noteFiled(m, root, p)
+	r := loadImported(root, false)
+	r.note(p)
 	if err := os.WriteFile(p, []byte("y\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	noteFiled(m, root, p)
-	if got := m[importedKey(root, p)]; got != 101 {
+	r.note(p)
+	if got := r.offset(p); got != 101 {
 		t.Fatalf("mark %d, want 101", got)
+	}
+}
+
+// Each transcript noted is on disk at once: a run killed after it leaves nothing it
+// filed unrecorded (R26).
+func TestRecordSavedOnEachNote(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "projects", "-b", "11111111-1111-1111-1111-111111111111.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := loadImported(root, true)
+	if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.note(p)
+	raw, _ := os.ReadFile(importedPath(root))
+	if !strings.Contains(string(raw), `"-b/11111111-1111-1111-1111-111111111111.jsonl": 2`) {
+		t.Fatalf("not saved: %s", raw)
 	}
 }

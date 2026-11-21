@@ -5,6 +5,7 @@ package main_test
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,29 +131,6 @@ func TestImportedTranscriptContinuedHere(t *testing.T) {
 	noExfil(t, mac.archive)
 	if _, err := os.Stat(filepath.Join(workCopy(mac, filepath.Dir(mine)), "n.md")); err != nil {
 		t.Errorf("the folder named by the line added here is not backed up: %v\n%v", err, workFiles(mac.archive))
-	}
-}
-
-// Filed by a version that kept no record: the first run rebuilds it from the archive.
-func TestImportedBeforeRecordIsSeeded(t *testing.T) {
-	mac, homeM, _ := exfilSetup(t)
-	if err := os.Remove(filepath.Join(mac.claudeDir, "session-sync-base", "imported.json")); err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-	mac.workRun(t, homeM, "push", "--no-html")
-	noExfil(t, mac.archive)
-}
-
-// An import killed before it saved the record leaves a mark; the next run rebuilds it.
-func TestImportKilledBeforeRecordIsSeeded(t *testing.T) {
-	mac, homeM, _ := exfilSetup(t)
-	rec := filepath.Join(mac.claudeDir, "session-sync-base", "imported.json")
-	mustWrite(t, rec, "{}\n")
-	mustWrite(t, rec+".pending", "")
-	mac.workRun(t, homeM, "push", "--no-html")
-	noExfil(t, mac.archive)
-	if _, err := os.Stat(rec + ".pending"); !os.IsNotExist(err) {
-		t.Errorf("mark left: %v", err)
 	}
 }
 
@@ -353,4 +331,252 @@ func TestCaseCollidingMarks(t *testing.T) {
 	mac.workRun(t, homeM, "import", "--no-plugins")
 	mac.workRun(t, homeM, "push", "--no-html")
 	noExfil(t, arch)
+}
+
+// archiveFiles lists every file in the archive, for a failure message.
+func archiveFiles(arch string) []string {
+	var out []string
+	_ = filepath.WalkDir(arch, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(arch, p)
+			out = append(out, rel)
+		}
+		return nil
+	})
+	return out
+}
+
+// The record is lost and the archive writer has removed every trace of who wrote the
+// session: nothing the archive says may decide what push reads (R26).
+func TestRecordLostWriterInfoGone(t *testing.T) {
+	mac, homeM, _ := exfilSetup(t)
+	_ = os.Remove(filepath.Join(mac.claudeDir, "session-sync-base", "imported.json"))
+	_ = os.Remove(filepath.Join(mac.archive, "index", "EVIL.json"))
+	_ = os.Remove(filepath.Join(mac.archive, "manifest", "EVIL.json"))
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, mac.archive)
+}
+
+// The record is lost and a second, made-up machine lists the same session, so no
+// writer can be told (R26).
+func TestRecordLostWriterAmbiguous(t *testing.T) {
+	mac, homeM, _ := exfilSetup(t)
+	_ = os.Remove(filepath.Join(mac.claudeDir, "session-sync-base", "imported.json"))
+	idx := filepath.Join(mac.archive, "index", "EVIL.json")
+	raw, err := os.ReadFile(idx)
+	if err != nil {
+		t.Fatalf("no index file: %v (%v)", err, archiveFiles(mac.archive))
+	}
+	resize := func(machine string, size int) string {
+		var m map[string]any
+		_ = json.Unmarshal(raw, &m)
+		m["machine"] = machine
+		if ss, ok := m["sessions"].([]any); ok {
+			for _, s := range ss {
+				s.(map[string]any)["size"] = size
+			}
+		}
+		b, _ := json.Marshal(m)
+		return string(b)
+	}
+	mustWrite(t, filepath.Join(mac.archive, "index", "ZED.json"), resize("ZED", 1))
+	mustWrite(t, idx, resize("EVIL", 2)) // EVIL's own row no longer matches its copy either
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, mac.archive)
+}
+
+// Each transcript is recorded as it is filed, from local facts only: with the
+// archive's writer info gone afterwards, and a mark an earlier build left, push still
+// reads nothing of it (R26).
+func TestImportRecordNeedsNoArchive(t *testing.T) {
+	mac, homeM, _ := exfilSetup(t)
+	rec := filepath.Join(mac.claudeDir, "session-sync-base", "imported.json")
+	mustWrite(t, rec+".pending", "")
+	_ = os.Remove(filepath.Join(mac.archive, "index", "EVIL.json"))
+	_ = os.Remove(filepath.Join(mac.archive, "manifest", "EVIL.json"))
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, mac.archive)
+}
+
+// restore --source from a copy of the archive while the archive is offline records
+// what it files all the same (R26).
+func TestRestoreArchiveOffline(t *testing.T) {
+	arch := filepath.Join(t.TempDir(), "arch")
+	mustMkdir(t, arch)
+	evil, mac := newMachine(t, "EVIL", arch), newMachine(t, "MAC", arch)
+	homeE, homeM := t.TempDir(), t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	configAs(t, mac.claudeDir, "MAC", "set-destination", arch)
+	mac.workRun(t, homeM, "push", "--no-html") // record exists
+	configAs(t, evil.claudeDir, "EVIL", "work", "off")
+	workSession(t, evil, private, nil, "ls")
+	evil.workRun(t, homeE, "push", "--no-html")
+
+	copied := t.TempDir()
+	src := filepath.Join(arch, "projects", claude.Slug(private))
+	entries, _ := os.ReadDir(src)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".jsonl") {
+			mustWrite(t, filepath.Join(copied, e.Name()), mustRead(t, filepath.Join(src, e.Name())))
+		}
+	}
+	if err := os.Rename(arch, arch+".off"); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary, "restore", "--claude-dir", mac.claudeDir, "--source", copied, "--project-path", private)
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR=", "CLAUDE_SESSIONS_MACHINE=MAC", "HOME="+homeM, "USERPROFILE="+homeM,
+		"CLAUDE_SESSIONS_TEMP_DIRS="+filepath.Join(homeM, "no-temp"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("restore: %v\n%s", err, out)
+	}
+	if err := os.Rename(arch+".off", arch); err != nil {
+		t.Fatal(err)
+	}
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
+}
+
+// EVIL's session carries a subagent transcript naming MAC's folders.
+func TestImportedSubagentCannotExfiltrate(t *testing.T) {
+	arch := t.TempDir()
+	evil, mac := newMachine(t, "EVIL", arch), newMachine(t, "MAC", arch)
+	homeE, homeM := t.TempDir(), t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	mustWrite(t, filepath.Join(homeM, "Documents", "passport.pdf"), "pdf bytes\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "m1"))
+	mac.workRun(t, homeM, "push", "--no-html")
+
+	configAs(t, evil.claudeDir, "EVIL", "work", "off")
+	repoE := gitRepo(t, filepath.Join(t.TempDir(), "dev", "evil"))
+	tr := workSession(t, evil, repoE, nil, "ls")
+	sub := filepath.Join(strings.TrimSuffix(tr, ".jsonl"), "subagents", "agent-1.jsonl")
+	mustWrite(t, sub, toolLineJSON(private, "s1", filepath.Join(homeM, "Documents", "passport.pdf")))
+	evil.workRun(t, homeE, "push", "--no-html")
+	mac.workRun(t, homeM, "import", "--no-plugins")
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
+}
+
+// A subagent transcript planted into MAC's own archived session.
+func TestPlantedSubagentCannotExfiltrate(t *testing.T) {
+	arch := t.TempDir()
+	mac := newMachine(t, "MAC", arch)
+	homeM := t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "m1"))
+	mac.workRun(t, homeM, "push", "--no-html")
+	mustWrite(t, filepath.Join(arch, "projects", claude.Slug(repo), forkSession, "subagents", "agent-9.jsonl"),
+		toolLineJSON(private, "s9", filepath.Join(private, "salary.txt")))
+	mac.workRun(t, homeM, "import", "--no-plugins")
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
+}
+
+// The archive writer extends MAC's own archived transcript; MAC imports with --update.
+func TestUpdateExtendedOwnCannotExfiltrate(t *testing.T) {
+	arch := t.TempDir()
+	mac := newMachine(t, "MAC", arch)
+	homeM := t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "m1"))
+	aged(t, mac.session(repo))
+	mac.workRun(t, homeM, "push", "--no-html")
+	a := filepath.Join(arch, "projects", claude.Slug(repo), forkSession+".jsonl")
+	mustWrite(t, a, mustRead(t, a)+toolLineJSON(private, "evil1", filepath.Join(private, "salary.txt")))
+	mac.workRun(t, homeM, "import", "--no-plugins", "--update")
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
+}
+
+// pull files EVIL's transcript at its recorded path.
+func TestPulledTranscriptCannotExfiltrate(t *testing.T) {
+	arch := t.TempDir()
+	evil, mac := newMachine(t, "EVIL", arch), newMachine(t, "MAC", arch)
+	homeE, homeM := t.TempDir(), t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "m1"))
+	mac.workRun(t, homeM, "push", "--no-html")
+	configAs(t, evil.claudeDir, "EVIL", "work", "off")
+	workSession(t, evil, private, nil, "ls")
+	evil.workRun(t, homeE, "push", "--no-html")
+	mac.workRun(t, homeM, "pull", "--no-plugins")
+	if _, err := os.Stat(mac.session(private)); err != nil {
+		t.Fatalf("not pulled: %v", err)
+	}
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
+}
+
+// A link at work/<machine> itself, or at work/, is never written through (C1).
+func TestPushRefusesLinkedWorkRoot(t *testing.T) {
+	for _, level := range []string{"machine", "work"} {
+		m := newMachine(t, "MAC", t.TempDir())
+		home, _, _ := poSession(t, m)
+		docs := filepath.Join(home, "Docs")
+		mustMkdir(t, docs)
+		mustMkdir(t, filepath.Join(m.archive, "work"))
+		link := filepath.Join(m.archive, "work", "MAC")
+		if level == "work" {
+			link = filepath.Join(m.archive, "work")
+			_ = os.Remove(link)
+		}
+		symlink(t, docs, link)
+		m.workRun(t, home, "push", "--no-html")
+		if got := archiveFiles(docs); len(got) != 0 {
+			t.Errorf("%s: push wrote through a link into %s: %v", level, docs, got)
+		}
+	}
+}
+
+// A link at work/<former name> or work/<machine>: exclude-folder never deletes the
+// local folder it leads to (C1, M6).
+func TestPurgeRefusesLinkedMachineFolder(t *testing.T) {
+	for _, n := range []string{"OLD", "MAC"} {
+		arch := t.TempDir()
+		m := newMachine(t, "MAC", arch)
+		configAs(t, m.claudeDir, "MAC", "set-destination", arch)
+		configAs(t, m.claudeDir, "OLD", "set-machine", "MAC")
+		home := t.TempDir()
+		priv := filepath.Join(home, "SQL", "private")
+		mustWrite(t, filepath.Join(priv, "keep-me.md"), "local only\n")
+		// work/<n> leads to a folder whose encoded path ends at the real home.
+		fake := t.TempDir()
+		enc := filepath.Join(fake, filepath.FromSlash(work.Encode(home)))
+		mustMkdir(t, filepath.Dir(enc))
+		symlink(t, home, enc)
+		mustMkdir(t, filepath.Join(arch, "work"))
+		symlink(t, fake, filepath.Join(arch, "work", n))
+		out := configAs(t, m.claudeDir, "MAC", "exclude-folder", priv)
+		if _, err := os.Stat(filepath.Join(priv, "keep-me.md")); err != nil {
+			t.Errorf("%s: local folder deleted: %v\n%s", n, err, out)
+		}
+	}
+}
+
+// The purged copy is itself a link: only the link goes, never what it leads to (C1).
+func TestPurgeFinalLinkOnly(t *testing.T) {
+	arch := t.TempDir()
+	m := newMachine(t, "MAC", arch)
+	configAs(t, m.claudeDir, "MAC", "set-destination", arch)
+	home := t.TempDir()
+	priv := filepath.Join(home, "SQL", "private")
+	mustWrite(t, filepath.Join(priv, "keep-me.md"), "local only\n")
+	other := filepath.Join(home, "Other")
+	mustWrite(t, filepath.Join(other, "keep.md"), "x\n")
+	copyDir := filepath.Join(arch, "work", "MAC", filepath.FromSlash(work.Encode(priv)))
+	mustMkdir(t, filepath.Dir(copyDir))
+	symlink(t, other, copyDir)
+	configAs(t, m.claudeDir, "MAC", "exclude-folder", priv)
+	if _, err := os.Stat(filepath.Join(other, "keep.md")); err != nil {
+		t.Errorf("followed the final link: %v", err)
+	}
 }

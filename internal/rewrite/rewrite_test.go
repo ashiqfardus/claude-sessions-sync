@@ -217,3 +217,24 @@ func TestTailStillValidJSON(t *testing.T) {
 		t.Errorf("t %q want %q", v.T, want)
 	}
 }
+
+// Moves for one place, and for its parent, all converting: each path is converted
+// once. Of two moves from one path to different places the first wins, and does not
+// take the other's flag.
+func TestConvertTailNoDoubleConversion(t *testing.T) {
+	rules := RulesForMoves([]Move{
+		{From: `E:\SQL\po`, To: "/Users/b/SQL/po", ConvertTail: true}, // project
+		{From: `E:\SQL\po`, To: "/Users/b/SQL/po", ConvertTail: true}, // work
+		{From: `E:\SQL`, To: "/Users/b/SQL", ConvertTail: true},       // remap/work parent
+		{From: `C:\Users\a\.claude`, To: "/Users/b/.claude"},
+	})
+	in := `{"a":"E:\\SQL\\po\\sub\\x.md","b":"E:\\SQL\\other\\y.md","c":"cd E:\\SQL\\po && dir","d":"C:\\Users\\a\\.claude\\projects\\p"}`
+	want := `{"a":"/Users/b/SQL/po/sub/x.md","b":"/Users/b/SQL/other/y.md","c":"cd /Users/b/SQL/po && dir","d":"/Users/b/.claude\\projects\\p"}`
+	if got := Apply(in, rules, nil); got != want {
+		t.Fatalf("\ngot  %s\nwant %s", got, want)
+	}
+	rules = RulesForMoves([]Move{{From: `E:\SQL`, To: "/Users/b/A"}, {From: `E:\SQL`, To: "/Users/b/B", ConvertTail: true}})
+	if got := Apply(`{"a":"E:\\SQL\\x"}`, rules, nil); got != `{"a":"/Users/b/A\\x"}` {
+		t.Fatalf("got %s", got)
+	}
+}

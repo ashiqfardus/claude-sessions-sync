@@ -42,6 +42,7 @@ func cmdPush(args []string) error {
 	lockWait := fs.Duration("lock-wait", 45*time.Second, "with --quiet, how long to wait for another run to finish before skipping")
 	fromHook := fs.Bool("from-hook", false, "Stop hook mode: archive only the session named by the hook input on stdin")
 	sweep := fs.Bool("sweep", false, "set by the scheduled sweep, which marks its log line: the one run that may lack the terminal's privacy grants")
+	scanHistory := fs.Bool("scan-history", false, "this run only, read every conversation in full for work folders, once after upgrading; this reads ones imported from other computers too: use it only if you trust everyone who can write to the archive")
 	if err := parseFlags(fs, args, false); err != nil {
 		// A hook written by a newer version may pass a flag this binary does not know.
 		// That must not break the end of the session any more than a missing drive -
@@ -57,7 +58,7 @@ func cmdPush(args []string) error {
 		return err
 	}
 
-	opts := pushOpts{Quiet: *quiet, DryRun: *dryRun, JSON: *asJSON, NoHTML: *noHTML, LockWait: *lockWait, Sweep: *sweep}
+	opts := pushOpts{Quiet: *quiet, DryRun: *dryRun, JSON: *asJSON, NoHTML: *noHTML, LockWait: *lockWait, Sweep: *sweep, ScanHistory: *scanHistory}
 	if *fromHook {
 		// Claude Code passes the hook's input as JSON on stdin; transcript_path is the
 		// session that just replied.
@@ -135,6 +136,7 @@ type pushOpts struct {
 	FromHook                    bool          // archive only Session, the Stop hook's
 	Session                     string
 	Sweep                       bool // the scheduled run: its PUSH line is marked
+	ScanHistory                 bool // read every transcript in full for work folders, this run only
 }
 
 // quietRenderBudget bounds page rendering in an unattended push.
@@ -286,7 +288,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	// - not only those copied now, as the per-reply hook has usually copied them.
 	var workScan []string
 	_, werr := loadWorkFolders(root)
-	scanAllWork := !prevShard.WorkIndexed || werr != nil
+	scanAllWork := !prevShard.WorkIndexed || werr != nil || opts.ScanHistory
 
 	for _, b := range buckets {
 		destBucket := filepath.Join(archive.ProjectsDir(dest), b.Name)
@@ -406,7 +408,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	if quiet {
 		workBudget = quietWorkBudget
 	}
-	wr := pushWork(root, dest, &shard, prevShard, workScan, cfg, dryRun, workBudget, logf)
+	wr := pushWork(root, dest, &shard, prevShard, workScan, cfg, dryRun, opts.ScanHistory, workBudget, logf)
 	res.Copied += wr.Copied
 	res.Unchanged += wr.Unchanged
 

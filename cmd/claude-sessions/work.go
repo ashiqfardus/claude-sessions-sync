@@ -58,8 +58,11 @@ func workEnv(root string) work.Env {
 // work/<machine>/ and records them in shard. It looks for folders only in scan, the
 // transcripts that changed; those found before come from this machine's local record
 // (prev is not read for folders). The caller holds the push lock.
-func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan []string, cfg archive.Config, dryRun bool, budget time.Duration, logf func(string, ...any)) workPushResult {
+func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan []string, cfg archive.Config, dryRun, history bool, budget time.Duration, logf func(string, ...any)) workPushResult {
 	var res workPushResult
+	// Loaded with work off too: a first run marks what is here then, and conversations
+	// from then on are found when work is turned on.
+	imported := loadImported(root, !dryRun)
 	// The previous folders come from this machine's own record, never from prev: the
 	// shard is shared archive data, and a path added there must not get walked.
 	known, _ := loadWorkFolders(root)
@@ -80,10 +83,20 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 	}
 
 	var cands []work.Candidate
-	// What import or pull filed here names folders only from lines added here since.
-	imported := loadImported(root, dest, dryRun)
+	if history {
+		fmt.Fprintln(os.Stderr, "WARNING: --scan-history reads every conversation on this computer in full, including ones\n"+
+			"imported from other computers. Anyone who can write to the archive can name any of your\n"+
+			"folders in those, and this push would upload it. Use it only if you trust everyone who can\n"+
+			"write to "+dest+".")
+	}
 	for _, t := range scan {
-		c, _ := work.Candidates(t, env.Home, imported[importedKey(root, t)]) // a transcript that fails part way still gives what it read
+		// A conversation filed from elsewhere, or here before the first run, names folders
+		// only in lines added here since.
+		off := imported.offset(t)
+		if history {
+			off = 0
+		}
+		c, _ := work.Candidates(t, env.Home, off) // a transcript that fails part way still gives what it read
 		cands = append(cands, c...)
 	}
 	// Repeated every push, so an exclusion made while the archive was away - a whole
@@ -836,10 +849,18 @@ func saveRepointed(root string, m map[string]repointedStat) error {
 	return archive.WriteFileAtomic(repointedPath(root), append(data, '\n'), 0o644)
 }
 
-// importedPath records the size each transcript had when import or pull last filed it
-// here, by importedKey. Push looks for work folders only past that size: the bytes
-// before it came from the archive, where anyone who can write it could name any local
-// folder for the next push to upload.
+// importRecord is this machine's record of the transcripts it filed from elsewhere -
+// by import, pull or restore - with the size each had when filed, by importedKey.
+// Push looks for work folders only past that mark: the bytes before it came from
+// outside, where anyone who can write the archive could name any local folder for
+// the next push to upload. Nothing in it comes from the archive.
+type importRecord struct {
+	root  string
+	marks map[string]int64
+	save  bool  // false under --dry-run
+	err   error // the first save that failed
+}
+
 func importedPath(root string) string {
 	return filepath.Join(root, "session-sync-base", "imported.json")
 }
@@ -854,122 +875,80 @@ func importedKey(root, p string) string {
 	return work.FoldKey(filepath.ToSlash(p))
 }
 
-// noteFiled records the transcript just filed at p, at its size now. A mark only
-// grows: another file with the same key, or this one shorter, never lowers it. m is
-// nil where nothing is recorded (--dry-run).
-func noteFiled(m map[string]int64, root, p string) {
-	if m == nil || !strings.EqualFold(filepath.Ext(p), ".jsonl") {
-		return
+// loadImported reads the record. On the first run - none yet, or one that cannot be
+// read - every transcript here, main and subagent, is marked at its size now: none
+// names a folder to back up, wherever it came from. push --scan-history reads them
+// once, when asked. With save, the record is written at once.
+func loadImported(root string, save bool) *importRecord {
+	r := &importRecord{root: root, save: save}
+	if raw, err := os.ReadFile(importedPath(root)); err == nil && json.Unmarshal(raw, &r.marks) == nil && r.marks != nil {
+		return r
 	}
-	if st, err := os.Lstat(p); err == nil {
-		k := importedKey(root, p)
-		m[k] = max(m[k], st.Size())
-	}
-}
-
-// loadImported reads that record. When it is missing or unreadable, or a run that
-// was filing died before saving it (the .pending mark), what that run filed is not
-// in it: the transcripts the archive says another machine wrote are added at their
-// size now (seedImported), and unless dryRun the result is saved.
-func loadImported(root, dest string, dryRun bool) map[string]int64 {
-	var m map[string]int64
-	raw, err := os.ReadFile(importedPath(root))
-	_, pending := os.Lstat(importedPath(root) + ".pending")
-	if err == nil && json.Unmarshal(raw, &m) == nil && m != nil && pending != nil {
-		return m
-	}
-	if m == nil {
-		m = map[string]int64{}
-	}
-	for k, n := range seedImported(root, dest) {
-		m[k] = max(m[k], n)
-	}
-	if !dryRun {
-		_ = endFiling(root, m)
-	}
-	return m
-}
-
-// seedImported finds the transcripts filed here before the record existed: each one,
-// with its subagent transcripts, of a session the archive says another machine wrote,
-// and each fork filed here. Its bytes so far are all taken as filed.
-func seedImported(root, dest string) map[string]int64 {
-	m := map[string]int64{}
-	if dest == "" {
-		return m
-	}
-	writer := sessionWriters(dest)
-	theirs := map[string]bool{}
-	names, _ := archive.BucketNames(dest)
-	for _, b := range names {
-		entries, _ := os.ReadDir(filepath.Join(archive.ProjectsDir(dest), b))
-		for _, e := range entries {
-			id, ok := strings.CutSuffix(e.Name(), ".jsonl")
-			if info, err := e.Info(); ok && err == nil && e.Type().IsRegular() && writer(b, id, info) != "" {
-				theirs[strings.ToLower(id)] = true
-			}
-		}
-	}
+	r.marks = map[string]int64{}
 	buckets, _ := claude.ListBuckets(claude.ProjectsDir(root))
 	for _, b := range buckets {
-		forks := loadFiledForks(filedForksPath(root, b.Dir))
 		for _, t := range b.Transcripts {
-			if _, fork := forks[strings.ToLower(t.ID)]; !fork && !theirs[strings.ToLower(t.ID)] {
-				continue
-			}
-			noteFiled(m, root, t.Path)
+			r.mark(t.Path)
 			for _, x := range t.Extras {
 				if filepath.Dir(x) == "subagents" {
-					noteFiled(m, root, filepath.Join(b.Dir, t.ID, x))
+					r.mark(filepath.Join(b.Dir, t.ID, x))
 				}
 			}
 		}
 	}
-	return m
+	r.write()
+	return r
 }
 
-// beginFiling marks the record as out of date until endFiling saves it: a run killed
-// in between leaves the mark, and the next load rebuilds what it filed.
-func beginFiling(root string) error {
-	return archive.WriteFileAtomic(importedPath(root)+".pending", nil, 0o644)
-}
+// offset is where push starts reading the transcript at p.
+func (r *importRecord) offset(p string) int64 { return r.marks[importedKey(r.root, p)] }
 
-// startFiling loads the record for a run that files transcripts, and marks it out of
-// date until finishFiling. nil under dryRun: nothing is filed.
-func startFiling(root, dest string, dryRun bool) map[string]int64 {
-	if dryRun {
-		return nil
+// mark raises p's mark to its size now, reporting whether it changed. A mark only
+// grows: another file with the same key, or this one shorter, never lowers it.
+func (r *importRecord) mark(p string) bool {
+	if !strings.EqualFold(filepath.Ext(p), ".jsonl") {
+		return false
 	}
-	m := loadImported(root, dest, false)
-	if err := beginFiling(root); err != nil {
-		fmt.Printf("  x %s: %v\n", importedPath(root), err)
+	st, err := os.Lstat(p)
+	k := importedKey(r.root, p)
+	if n, ok := r.marks[k]; err != nil || ok && n >= st.Size() {
+		return false
 	}
-	return m
+	r.marks[k] = st.Size()
+	return true
 }
 
-// finishFiling saves what startFiling began.
-func finishFiling(root string, m map[string]int64, dryRun bool) {
-	if dryRun {
+// note records the transcript just filed at p, and saves the record at once: a run
+// killed after it leaves nothing it filed unrecorded. A nil record notes nothing.
+func (r *importRecord) note(p string) {
+	if r != nil && r.mark(p) {
+		r.write()
+	}
+}
+
+// write saves the record. One that cannot be saved is removed instead, so the next
+// run starts over as a first run, with every transcript here marked.
+func (r *importRecord) write() {
+	if !r.save {
 		return
 	}
-	if err := endFiling(root, m); err != nil {
-		fmt.Printf("  x %s: %v (the next run rebuilds it from the archive)\n", importedPath(root), err)
+	data, err := json.MarshalIndent(r.marks, "", "  ")
+	if err == nil {
+		err = archive.WriteFileAtomic(importedPath(r.root), append(data, '\n'), 0o644)
+	}
+	if err != nil {
+		_ = os.Remove(importedPath(r.root))
+		if r.err == nil {
+			r.err = err
+		}
 	}
 }
 
-// endFiling saves the record and clears the mark.
-func endFiling(root string, m map[string]int64) error {
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
+// report prints why the record could not be saved, if it could not.
+func (r *importRecord) report() {
+	if r != nil && r.err != nil {
+		fmt.Printf("  x %s: %v (the next push treats every conversation here as already read)\n", importedPath(r.root), r.err)
 	}
-	if err := archive.WriteFileAtomic(importedPath(root), append(data, '\n'), 0o644); err != nil {
-		return err
-	}
-	if err := os.Remove(importedPath(root) + ".pending"); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return nil
 }
 
 // errLive is a transcript that changed while it was rewritten: a session in use.
@@ -980,7 +959,7 @@ var errLive = errors.New("changed while being rewritten")
 // to a live session and is left alone. Each original is copied to
 // <root>/repoint-backup/<yyyymmdd-hhmm>/<bucket>/ before the rewrite replaces it, and
 // with dryRun nothing at all is written. The caller holds the lock.
-func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool, imported map[string]int64) repointResult {
+func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool, imported *importRecord) repointResult {
 	var res repointResult
 	rules := rewrite.RulesForMoves(moves)
 	if len(rules) == 0 {
@@ -1034,8 +1013,8 @@ func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool,
 						rec[b.Name+"/"+t.ID], recorded = repointedStat{Size: st.Size(), MTime: st.ModTime()}, true
 					}
 					// Rewritten whole, it may have grown: what was filed is now all of it.
-					if _, ok := imported[importedKey(root, p)]; ok {
-						noteFiled(imported, root, p)
+					if _, ok := imported.marks[importedKey(root, p)]; ok {
+						imported.note(p)
 					}
 				}
 			}

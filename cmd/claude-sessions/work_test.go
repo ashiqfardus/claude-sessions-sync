@@ -1470,6 +1470,7 @@ func TestPushSkipsClaudeRootAndTemp(t *testing.T) {
 	home := t.TempDir()
 	w := filepath.Join(home, "W")
 	m := machine{name: "MAC", claudeDir: filepath.Join(w, "claude"), archive: t.TempDir()}
+	mustWrite(t, filepath.Join(m.claudeDir, "session-sync-base", "imported.json"), "{}\n") // as newMachine
 	mustMkdir(t, filepath.Join(m.claudeDir, "projects"))
 	mustWrite(t, filepath.Join(w, "a.md"), "mine\n")
 	mustWrite(t, filepath.Join(w, "tmp", "t.md"), "scratch\n")
@@ -1513,5 +1514,33 @@ func TestExcludeFolderPurgesFormerNames(t *testing.T) {
 	}
 	if !strings.Contains(out, "removed "+dir) {
 		t.Errorf("output: %s", out)
+	}
+}
+
+// The first run marks every conversation already here as read: none names a folder
+// to back up, whoever wrote it. push --scan-history reads them all once, after a
+// warning on stderr (R26).
+func TestPushScanHistory(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, po, _ := poSession(t, m)
+	// From before this version: no record yet.
+	if err := os.Remove(filepath.Join(m.claudeDir, "session-sync-base", "imported.json")); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	if _, err := os.Stat(filepath.Join(workCopy(m, po), "r.md")); !os.IsNotExist(err) {
+		t.Fatalf("an earlier conversation's folder backed up without --scan-history: %v", err)
+	}
+	cmd := m.workCmd(home, "push", "--no-html", "--scan-history")
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("push --scan-history: %v\n%s%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "imported from other computers") || !strings.Contains(stderr.String(), "trust") {
+		t.Errorf("no warning on stderr: %q", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(workCopy(m, po), "r.md")); err != nil {
+		t.Errorf("not backed up with --scan-history: %v", err)
 	}
 }

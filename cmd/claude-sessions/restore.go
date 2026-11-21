@@ -57,9 +57,9 @@ type restoreOpts struct {
 	// for a restore from a folder outside an archive.
 	Archive string
 
-	// Imported is the record of transcripts filed from the archive (importedPath),
-	// updated with each one filed; nil records nothing.
-	Imported map[string]int64
+	// Imported is the record of transcripts filed from elsewhere, noted as each one
+	// is filed; nil records nothing.
+	Imported *importRecord
 }
 
 const updateHelp = "also refresh sessions already here that continued on another machine, and memory files that are newer in the archive"
@@ -94,20 +94,12 @@ func cmdRestore(args []string) error {
 	}
 	defer lock.Release()
 
-	// The source may be an archive's bucket: recorded as import records, so push reads
-	// folders only from lines added here. With no archive reachable push has none to
-	// send to, and the first push that has one rebuilds the record from it.
-	var imported map[string]int64
-	if dest, _, _ := archive.ResolveDestination(root, ""); dest != "" {
-		if st, err := os.Stat(dest); err == nil && st.IsDir() {
-			imported = startFiling(root, dest, *dryRun)
-		}
-	}
+	// Recorded as import records, archive or not: push reads folders only from lines
+	// added here.
+	imported := loadImported(root, !*dryRun)
 	res, err := restoreInto(root, *source, *projectPath, *rewriteFrom, nil,
 		restoreOpts{BareName: *bareName, DryRun: *dryRun, Update: *update, Imported: imported})
-	if imported != nil {
-		finishFiling(root, imported, *dryRun)
-	}
+	imported.report()
 	if err != nil {
 		return err
 	}
@@ -250,7 +242,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 			continue
 		}
 		restoreSessionFiles(source, res.Bucket, strings.TrimSuffix(name, filepath.Ext(name)), opts.DryRun,
-			func(p string) { noteFiled(opts.Imported, root, p) })
+			opts.Imported.note)
 		if exists && !opts.Update {
 			res.Skipped++
 			continue
@@ -270,7 +262,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 				res.Failed = append(res.Failed, fmt.Sprintf("%s: %v", name, err))
 				continue
 			}
-			noteFiled(opts.Imported, root, dst)
+			opts.Imported.note(dst)
 			res.add(out)
 			res.Copied++
 			continue
@@ -280,7 +272,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		case err != nil:
 			res.Failed = append(res.Failed, fmt.Sprintf("%s: %v", name, err))
 		case state == extended:
-			noteFiled(opts.Imported, root, dst)
+			opts.Imported.note(dst)
 			res.add(out)
 			res.Updated++
 		case state == diverged:
@@ -513,11 +505,11 @@ func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.
 		}
 		for _, rel := range claude.SessionFiles(sessionDir) {
 			if to := filepath.Join(bucketDir, fid, rel); archive.StatOrNil(to) == nil && archive.CopyFile(filepath.Join(sessionDir, rel), to) == nil {
-				noteFiled(opts.Imported, root, to)
+				opts.Imported.note(to)
 			}
 		}
 		if outcome != forkUnchanged {
-			noteFiled(opts.Imported, root, dst)
+			opts.Imported.note(dst)
 			remember(fid, dst)
 		}
 		return fid, outcome, nil

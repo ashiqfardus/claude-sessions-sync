@@ -23,6 +23,9 @@ func newMachine(t *testing.T, name, archive string) machine {
 	t.Helper()
 	m := machine{name: name, claudeDir: filepath.Join(t.TempDir(), ".claude"), archive: archive}
 	mustMkdir(t, filepath.Join(m.claudeDir, "projects"))
+	// This version has run here before, so the sessions a test writes are new ones whose
+	// work folders push finds. A test of the first run removes it.
+	mustWrite(t, filepath.Join(m.claudeDir, "session-sync-base", "imported.json"), "{}\n")
 	return m
 }
 
