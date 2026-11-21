@@ -153,7 +153,7 @@ func cmdImport(args []string) error {
 	// changed placement repoints its old target too (R7).
 	before := work.LoadHeld(heldWorkPath(root)).Placed
 	workMoves, workRes := restoreWork(root, dest, shards, wcfg, *dryRun, *update, false)
-	workMoves = append(workMoves, remapMoves(root, shards, before, workRes.ByMachine)...)
+	workMoves = append(workMoves, remapMoves(before, workRes.ByMachine)...)
 	resolve := func(bucket string, p archive.Project) identity.Match {
 		if local, ok := cfg.Mapped(bucket); ok {
 			if st, err := os.Stat(local); err != nil || !st.IsDir() {

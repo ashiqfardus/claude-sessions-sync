@@ -1189,7 +1189,9 @@ func TestRepointDryRun(t *testing.T) {
 }
 
 // A placement changed after a repoint: the next one moves the old target's paths, a
-// subagent's too, to the new folder. Two runs in one minute keep both backups.
+// subagent's too, to the new folder. B has pushed in between, so the old target is one
+// of B's own work folders by then: a remap move is trusted all the same, both its ends
+// being B's own record (R23). Two runs in one minute keep both backups.
 func TestRepointRemap(t *testing.T) {
 	p := stalePair(t, t.TempDir())
 	session := p.b.session(p.repo)
@@ -1204,6 +1206,10 @@ func TestRepointRemap(t *testing.T) {
 	first := mustRead(t, session)
 	if !strings.Contains(first, inJSON(p.placed())) || !strings.Contains(mustRead(t, agent), inJSON(p.placed())) {
 		t.Fatalf("first repoint:\n%s", first)
+	}
+	p.b.workRun(t, p.homeB, "push", "--no-html")
+	if own := mustRead(t, filepath.Join(p.b.claudeDir, "session-sync-base", "work-folders.json")); !strings.Contains(own, quoted(p.placed())) {
+		t.Fatalf("the placed folder is not one of B's own after a push: %s", own)
 	}
 	dir := filepath.Join(p.homeB, "mapped")
 	mustMkdir(t, dir)

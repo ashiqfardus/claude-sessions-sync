@@ -400,10 +400,10 @@ func ownPaths(root string, env work.Env, shards map[string]archive.Shard) func(s
 
 // remapMoves repoints each folder whose placement this import changed - by
 // map-folder or work-placement - from its old target to its new one. before is
-// Held.Placed as it was before restoreWork (R7). A move from a path of this machine's
-// own is never made.
-func remapMoves(root string, shards map[string]archive.Shard, before, now map[string]string) []rewrite.Move {
-	own := ownPaths(root, workEnv(root), shards)
+// Held.Placed as it was before restoreWork (R7). Both ends come from this machine's
+// own record, not from the archive, so no own-path check applies (R23): the old
+// target is one of this machine's work folders as soon as it has pushed once.
+func remapMoves(before, now map[string]string) []rewrite.Move {
 	keys := make([]string, 0, len(before))
 	for k := range before {
 		keys = append(keys, k)
@@ -411,7 +411,7 @@ func remapMoves(root string, shards map[string]archive.Shard, before, now map[st
 	sort.Strings(keys) // the first move for a path wins
 	var moves []rewrite.Move
 	for _, k := range keys {
-		if t, ok := now[k]; ok && !samePath(before[k], t) && !own(before[k]) {
+		if t, ok := now[k]; ok && !samePath(before[k], t) {
 			moves = append(moves, rewrite.Move{From: before[k], To: t})
 		}
 	}
