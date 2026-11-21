@@ -94,18 +94,6 @@ func Slug(path string) string {
 	return string(out[:maxSlug]) + "-" + strconv.FormatInt(abs, 36)
 }
 
-// IsSlug reports whether name could be a folder Slug made: ASCII letters, digits and
-// '-' only. A name with a dot or a space is no Claude Code project - but it may be the
-// name of a file this tool keeps beside one.
-func IsSlug(name string) bool {
-	for _, c := range name {
-		if !(c == '-' || c < 128 && (unicode.IsLetter(c) || unicode.IsDigit(c))) {
-			return false
-		}
-	}
-	return name != ""
-}
-
 // FindBucket returns the existing bucket matching slug, compared case-insensitively.
 //
 // Casing follows the cwd string Claude saw, which is not always what is on disk:

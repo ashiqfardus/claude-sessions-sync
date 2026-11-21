@@ -815,8 +815,10 @@ func TestMixedCaseSubagent(t *testing.T) {
 }
 
 // An archive bucket named like a file this tool keeps - imported.log, work-held.json -
-// is no project folder: Claude Code's folder names hold no dot. Filed, its memory base
-// would turn that file's path into a folder and stop every later import (R30).
+// is no project folder: every such file has a dot, and no bucket name needs one.
+// Filed, its memory base would turn that file's path into a folder and stop every later
+// import (R30). A name another tool or an older Claude Code made, with "_" or
+// non-ASCII letters, is still filed (R32).
 func TestBucketNamedLikeRecordSkipped(t *testing.T) {
 	arch := t.TempDir()
 	mac := newMachine(t, "MAC", arch)
@@ -827,8 +829,11 @@ func TestBucketNamedLikeRecordSkipped(t *testing.T) {
 	for _, n := range []string{"imported.log", "work-held.json"} {
 		mustWrite(t, filepath.Join(arch, "projects", n, "memory", "MEMORY.md"), "- [x](x.md) - x\n")
 	}
-	// A transcript after them: filing it needs the journal.
-	mustWrite(t, filepath.Join(arch, "projects", "zz", forkSession+".jsonl"), sessionLines(repo, "z1"))
+	// Transcripts after them: filing them needs the journal.
+	kept := []string{"my_app", "-Users-a-রিপোর্ট", "zz"}
+	for _, n := range kept {
+		mustWrite(t, filepath.Join(arch, "projects", n, forkSession+".jsonl"), sessionLines(repo, "k"+n))
+	}
 	for _, cmd := range []string{"pull", "import"} {
 		out, err := mac.workCmd(homeM, cmd, "--no-plugins").CombinedOutput()
 		if err != nil {
@@ -845,6 +850,11 @@ func TestBucketNamedLikeRecordSkipped(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(mac.claudeDir, "projects", n)); !os.IsNotExist(err) {
 			t.Errorf("bucket %s filed: %v", n, err)
+		}
+	}
+	for _, n := range kept {
+		if _, err := os.Stat(filepath.Join(mac.claudeDir, "projects", n, forkSession+".jsonl")); err != nil {
+			t.Errorf("bucket %s not filed: %v", n, err)
 		}
 	}
 	mac.workRun(t, homeM, "import", "--no-plugins") // still works

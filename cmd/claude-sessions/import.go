@@ -245,8 +245,8 @@ func cmdImport(args []string) error {
 	for _, bucket := range buckets {
 		// Named like a file kept beside a project - imported.log - its memory base would
 		// take that file's path.
-		if !claude.IsSlug(bucket) {
-			report(importRow{Bucket: printable(bucket), Note: notSlug}, "!")
+		if !safeBucketName(bucket) {
+			report(importRow{Bucket: printable(bucket), Note: notBucket}, "!")
 			continue
 		}
 		p, known := manifest[bucket]
@@ -596,8 +596,8 @@ func cmdPull(args []string) error {
 	var forked, failed []string
 
 	for _, name := range archivedBuckets {
-		if !claude.IsSlug(name) { // as in import
-			fmt.Printf("! %s: %s\n", printable(name), notSlug)
+		if !safeBucketName(name) { // as in import
+			fmt.Printf("! %s: %s\n", printable(name), notBucket)
 			continue
 		}
 		srcDir := filepath.Join(archive.ProjectsDir(dest), name)
@@ -711,9 +711,16 @@ func sessionWriters(dest string) func(bucket, id string, info os.FileInfo) strin
 	}
 }
 
-// notSlug is why an archive folder is not filed: Claude Code names no project folder
-// with a dot or a space in it.
-const notSlug = "not a project folder name (Claude Code's have only letters, digits and dashes); skipped"
+// safeBucketName reports whether name, an archive folder, may be filed as a bucket.
+// Each file this tool keeps beside a bucket's memory base in session-sync-base -
+// imported.json, imported.log, work-held.json - has a dot, and a bucket named like one
+// would take its path; claude.Slug never makes one.
+func safeBucketName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, `./\`)
+}
+
+// notBucket is why an archive folder is not filed.
+const notBucket = "a dot or a path separator in the name, as in this tool's own files: not a project folder; skipped"
 
 // mappedMissing is a project the user mapped to a folder that is no longer there.
 const mappedMissing identity.How = "mapped folder missing"

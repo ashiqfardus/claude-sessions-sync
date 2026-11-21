@@ -104,19 +104,3 @@ func TestListBucketsSeparatesMemoryOnly(t *testing.T) {
 		t.Error("memory files should still be listed for a transcript-less bucket")
 	}
 }
-
-// Every name Slug makes is slug-shaped; a name with a dot, a space or nothing in it is
-// not, so a bucket named like a file this tool keeps is never taken for a project.
-func TestIsSlug(t *testing.T) {
-	for _, p := range []string{"/Users/a/dev/api", `C:\Users\a\My Work\run 1`, `E:\SQL\po`, "/home/a/.config/x",
-		"/Users/a/রিপোর্ট/résumé", "/w/" + strings.Repeat("long name. ", 40)} {
-		if s := Slug(p); !IsSlug(s) {
-			t.Errorf("Slug(%q) = %q refused", p, s)
-		}
-	}
-	for _, n := range []string{"imported.log", "work-held.json", "a b", ".x", "", "x/y"} {
-		if IsSlug(n) {
-			t.Errorf("%q taken for a slug", n)
-		}
-	}
-}

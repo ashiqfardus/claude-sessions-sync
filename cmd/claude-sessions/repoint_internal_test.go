@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 )
 
@@ -208,5 +209,26 @@ func TestRecordFoldedLookup(t *testing.T) {
 	_ = os.Chtimes(p, at, at)
 	if res := repointLocal(root, []rewrite.Move{{From: "/old", To: "/new"}}, time.Now(), false, nil); res.Rewritten != 1 {
 		t.Errorf("repoint with no record: %+v", res)
+	}
+}
+
+// Only a name with a dot or a path separator - one of this tool's own files - is
+// refused: "_", non-ASCII letters and every name claude.Slug makes are filed (R32).
+func TestSafeBucketName(t *testing.T) {
+	for _, n := range []string{"imported.log", "work-held.json", "imported.json", "", "a/b", `a\b`, ".."} {
+		if safeBucketName(n) {
+			t.Errorf("%q accepted", n)
+		}
+	}
+	for _, n := range []string{"my_app", "-Users-a-রিপোর্ট", "C--Users-a-proj"} {
+		if !safeBucketName(n) {
+			t.Errorf("%q refused", n)
+		}
+	}
+	for _, p := range []string{"/Users/a/dev/api", `C:\Users\a\My Work\run 1`, `E:\SQL\po`, "/home/a/.config/x",
+		"/Users/a/রিপোর্ট/résumé", "/w/" + strings.Repeat("long name. ", 40)} {
+		if s := claude.Slug(p); !safeBucketName(s) {
+			t.Errorf("Slug(%q) = %q refused", p, s)
+		}
 	}
 }
