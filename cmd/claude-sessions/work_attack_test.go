@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -149,5 +150,47 @@ func TestImportKilledBeforeRecordIsSeeded(t *testing.T) {
 	noExfil(t, mac.archive)
 	if _, err := os.Stat(rec + ".pending"); !os.IsNotExist(err) {
 		t.Errorf("mark left: %v", err)
+	}
+}
+
+// A Windows folder mapped on a Unix machine, the session started in it or below it:
+// the project resolves through the work folder, and the rest of every path is
+// converted.
+func TestWindowsToUnixTailConverted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows-form paths are native here")
+	}
+	for _, sub := range []string{"", `\sub`} {
+		arch := t.TempDir()
+		win, mac := newMachine(t, "WIN", arch), newMachine(t, "MAC", arch)
+		homeW, homeM := t.TempDir(), t.TempDir()
+		tr := workSession(t, win, `E:\SQL\po`+sub, []string{`E:\SQL\po\r.md`, `E:\SQL\po` + sub + `\x.md`}, `cd "E:\SQL\po" && sqlcmd -i q.sql -o out.csv`)
+		aged(t, tr)
+		win.workRun(t, homeW, "push", "--no-html")
+		sp := filepath.Join(arch, "manifest", "WIN.json")
+		var s map[string]any
+		if err := json.Unmarshal([]byte(mustRead(t, sp)), &s); err != nil {
+			t.Fatal(err)
+		}
+		s["home"] = `C:\Users\a`
+		s["workFolders"] = []map[string]any{{"path": `E:\SQL\po`, "files": 2}}
+		b, _ := json.Marshal(s)
+		mustWrite(t, sp, string(b))
+		mustWrite(t, filepath.Join(arch, "work", "WIN", "E", "SQL", "po", "r.md"), "report\n")
+		mustWrite(t, filepath.Join(arch, "work", "WIN", "E", "SQL", "po", "out.csv"), "a,b\n")
+
+		sql := filepath.Join(homeM, "SQL")
+		mustMkdir(t, sql)
+		configAs(t, mac.claudeDir, "MAC", "map-folder", `E:\SQL`, sql)
+		out := mac.workRun(t, homeM, "import", "--no-plugins")
+		if _, err := os.Stat(filepath.Join(sql, "po", "r.md")); err != nil {
+			t.Fatalf("not placed: %v\n%s", err, out)
+		}
+		project := filepath.Join(sql, "po", strings.TrimPrefix(sub, `\`))
+		got := mustRead(t, mac.session(project))
+		if !strings.Contains(got, inJSON(filepath.Join(sql, "po", "r.md"))) || !strings.Contains(got, inJSON(filepath.Join(project, "x.md"))) ||
+			strings.Contains(got, `E:`) || strings.Contains(got, `\\`) {
+			t.Errorf("cwd E:\\SQL\\po%s: not fully repointed:\n%s", sub, got)
+		}
 	}
 }

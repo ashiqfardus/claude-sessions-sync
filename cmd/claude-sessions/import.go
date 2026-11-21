@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
 type importRow struct {
@@ -197,7 +199,10 @@ func cmdImport(args []string) error {
 	for _, name := range projects {
 		p := manifest[name]
 		if m := resolve(name, p); m.Path != "" && !samePath(p.Path, m.Path) {
-			moves = append(moves, rewrite.Move{From: p.Path, To: m.Path})
+			// A Windows project in a placed work folder: the rest of its paths are that
+			// folder's, and take '/' as the work move does.
+			tail := work.WindowsPath(p.Path) && runtime.GOOS != "windows" && placedPath(workRes.Placed, p.Path) != ""
+			moves = append(moves, rewrite.Move{From: p.Path, To: m.Path, ConvertTail: tail})
 		}
 	}
 	for _, name := range projects {

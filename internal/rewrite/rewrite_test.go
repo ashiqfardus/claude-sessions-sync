@@ -178,6 +178,15 @@ func TestConvertTailStopsAtEscapes(t *testing.T) {
 	}
 }
 
+// The same move twice, once converting the tail: the first is kept, converting too.
+func TestConvertTailSurvivesDedupe(t *testing.T) {
+	rules := RulesForMoves([]Move{{From: `E:\SQL`, To: "/Users/b/SQL"}, {From: `e:\sql\`, To: "/Users/b/SQL", ConvertTail: true}})
+	got := Apply(`{"t":"open E:\\SQL\\po\\x.md now"}`, rules, nil)
+	if want := `{"t":"open /Users/b/SQL/po/x.md now"}`; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}
+
 func TestNoTailByDefault(t *testing.T) {
 	got := Apply(`{"t":"open E:\\SQL\\po\\x.md now"}`, tailRules(false), nil)
 	if want := `{"t":"open /Users/b/SQL\\po\\x.md now"}`; got != want {

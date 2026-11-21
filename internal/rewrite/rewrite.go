@@ -90,20 +90,25 @@ type Move struct {
 
 // RulesForMoves builds rules for several moves at once - a session in a multi-folder
 // workspace names every repository it worked in. The most specific path goes first,
-// so /work/app/api is repointed before its parent /work/app could claim it.
+// so /work/app/api is repointed before its parent /work/app could claim it. Of moves
+// from one path the first wins; one to the same place that converts the tail makes
+// the first convert it too.
 //
 // ponytail: rules apply in sequence, so a destination that equals another move's
 // source would be rewritten twice. Nothing in import produces that.
 func RulesForMoves(moves []Move) []Rule {
 	var sorted []Move
-	seen := map[string]bool{}
+	seen := map[string]int{}
+	trim := func(p string) string { return strings.ToLower(strings.TrimRight(p, `\/`)) }
 	for _, m := range moves {
 		if !AbsoluteAnywhere(m.From) {
 			continue
 		}
-		if key := strings.ToLower(strings.TrimRight(m.From, `\/`)); !seen[key] {
-			seen[key] = true
+		if i, ok := seen[trim(m.From)]; !ok {
+			seen[trim(m.From)] = len(sorted)
 			sorted = append(sorted, m)
+		} else if trim(sorted[i].To) == trim(m.To) {
+			sorted[i].ConvertTail = sorted[i].ConvertTail || m.ConvertTail
 		}
 	}
 	sort.SliceStable(sorted, func(i, j int) bool { return len(sorted[i].From) > len(sorted[j].From) })
