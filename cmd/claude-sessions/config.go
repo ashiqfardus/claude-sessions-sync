@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
 // cmdConfig makes doctor's advice actionable: without it there is no way to persist
@@ -25,6 +27,12 @@ func cmdConfig(args []string) error {
   claude-sessions config map <bucket> <folder>     say where an archived project lives here
   claude-sessions config unmap <bucket>            remove a mapping
   claude-sessions config set-machine <name>        pin the name this machine is known by
+  claude-sessions config work on|off               back up folders Claude worked in outside git
+  claude-sessions config work-placement home|machine  where import files a folder with no local home
+  claude-sessions config map-folder <path> <folder>   say where an archived work folder lives here
+  claude-sessions config unmap-folder <path>       remove that mapping
+  claude-sessions config exclude-folder <folder>   never back up a folder, and remove its archived copy
+  claude-sessions config unexclude-folder <folder> back up a folder again
 
 flags:
 `)
@@ -64,6 +72,27 @@ flags:
 		if dest != "" && src != archive.SourceConfig {
 			fmt.Printf("in use       %s (%s)\n", dest, src)
 			fmt.Printf("\nRun `claude-sessions config set-destination %q` to make that permanent.\n", dest)
+		}
+		on := "on"
+		if !cfg.WorkOn() {
+			on = "off"
+		}
+		placement := cfg.WorkPlacement
+		if placement == "" {
+			placement = "home"
+		}
+		fmt.Printf("work backup  %s\n", on)
+		fmt.Printf("placement    %s\n", placement)
+		keys := make([]string, 0, len(cfg.WorkMap))
+		for k := range cfg.WorkMap {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("work map     %s -> %s\n", k, cfg.WorkMap[k])
+		}
+		for _, x := range cfg.WorkExclude {
+			fmt.Printf("excluded     %s\n", x)
 		}
 		return nil
 
@@ -187,18 +216,149 @@ flags:
 		}
 		return nil
 
+	case "work":
+		if len(rest) != 2 || (rest[1] != "on" && rest[1] != "off") {
+			return fmt.Errorf("usage: claude-sessions config work on|off")
+		}
+		return saveWork(root, func(c *archive.Config) { c.WorkBackup = rest[1] }, "Work folder backup is "+rest[1])
+
+	case "work-placement":
+		if len(rest) != 2 || (rest[1] != "home" && rest[1] != "machine") {
+			return fmt.Errorf("usage: claude-sessions config work-placement home|machine")
+		}
+		return saveWork(root, func(c *archive.Config) { c.WorkPlacement = rest[1] }, "Work folders are filed under "+rest[1])
+
+	case "map-folder":
+		if len(rest) != 3 {
+			return fmt.Errorf("usage: claude-sessions config map-folder <original path> <local folder>")
+		}
+		if !rewrite.AbsoluteAnywhere(rest[1]) {
+			return fmt.Errorf("%q is not an absolute path: give the folder's path as it was on the machine that archived it", rest[1])
+		}
+		local, err := filepath.Abs(expandHome(rest[2]))
+		if err != nil {
+			return err
+		}
+		if st, err := os.Stat(local); err != nil || !st.IsDir() {
+			return fmt.Errorf("%s does not exist or is not a folder", local)
+		}
+		return saveWork(root, func(c *archive.Config) {
+			m := map[string]string{}
+			for k, v := range c.WorkMap {
+				if k != rest[1] {
+					m[k] = v
+				}
+			}
+			m[rest[1]] = local
+			c.WorkMap = m
+		}, rest[1]+" -> "+local)
+
+	case "unmap-folder":
+		if len(rest) != 2 {
+			return fmt.Errorf("usage: claude-sessions config unmap-folder <original path>")
+		}
+		cfg, err := archive.LoadConfig(root)
+		if err != nil {
+			return err
+		}
+		if _, ok := cfg.WorkMap[rest[1]]; !ok {
+			return fmt.Errorf("%s is not mapped", rest[1])
+		}
+		return saveWork(root, func(c *archive.Config) {
+			m := map[string]string{} // non-nil, so the saved file drops the old entry
+			for k, v := range c.WorkMap {
+				if k != rest[1] {
+					m[k] = v
+				}
+			}
+			c.WorkMap = m
+		}, rest[1]+" unmapped")
+
+	case "exclude-folder":
+		if len(rest) != 2 {
+			return fmt.Errorf("usage: claude-sessions config exclude-folder <folder>")
+		}
+		folder := expandHome(rest[1])
+		if !rewrite.AbsoluteAnywhere(folder) {
+			return fmt.Errorf("%q is not an absolute path", rest[1])
+		}
+		if !work.WindowsPath(folder) {
+			if folder, err = filepath.Abs(folder); err != nil {
+				return err
+			}
+		}
+		if err := saveWork(root, func(c *archive.Config) {
+			if !slices.Contains(c.WorkExclude, folder) {
+				c.WorkExclude = append(append([]string{}, c.WorkExclude...), folder)
+			}
+		}, folder+" will not be backed up"); err != nil {
+			return err
+		}
+		dest, _, err := archive.ResolveDestination(root, "")
+		if err != nil || dest == "" {
+			fmt.Println("The archive is not reachable; the next push removes the archived copy.")
+			return nil
+		}
+		if _, err := os.Stat(dest); err != nil {
+			fmt.Println("The archive is not reachable; the next push removes the archived copy.")
+			return nil
+		}
+		n, err := purgeWork(dest, machineName(), folder)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%d archived folder(s) removed from the archive. They may still be in the sync service's trash or version history.\n", n)
+		return nil
+
+	case "unexclude-folder":
+		if len(rest) != 2 {
+			return fmt.Errorf("usage: claude-sessions config unexclude-folder <folder>")
+		}
+		cfg, err := archive.LoadConfig(root)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(cfg.WorkExclude, func(x string) bool { return x == rest[1] || x == expandHome(rest[1]) }) {
+			return fmt.Errorf("%s is not excluded", rest[1])
+		}
+		return saveWork(root, func(c *archive.Config) {
+			keep := []string{} // non-nil, so the saved file drops the old entry
+			for _, x := range c.WorkExclude {
+				if x != rest[1] && x != expandHome(rest[1]) {
+					keep = append(keep, x)
+				}
+			}
+			c.WorkExclude = keep
+		}, rest[1]+" will be backed up again")
+
 	default:
-		return fmt.Errorf("unknown config action %q (try: show, set-destination, map, unmap, set-machine)", action)
+		return fmt.Errorf("unknown config action %q (try: show, set-destination, map, unmap, set-machine, work, work-placement, map-folder, unmap-folder, exclude-folder, unexclude-folder)", action)
 	}
+}
+
+// saveWork loads the config, applies change and saves it.
+func saveWork(root string, change func(*archive.Config), msg string) error {
+	cfg, err := archive.LoadConfig(root)
+	if err != nil {
+		return err
+	}
+	change(&cfg)
+	if err := archive.SaveConfig(root, cfg); err != nil {
+		return err
+	}
+	fmt.Println(msg)
+	return nil
 }
 
 // positionalAfterAction keeps the arguments of map, unmap and set-machine from being
 // read as flags: a bucket name on macOS or Linux starts with "-", and the command
 // import prints for it failed exactly as printed. After the action only --claude-dir
 // is a flag.
+var positionalActions = []string{"map", "unmap", "set-machine", "work", "work-placement", "map-folder", "unmap-folder", "exclude-folder", "unexclude-folder"}
+
 func positionalAfterAction(args []string) []string {
 	for i, a := range args {
-		if a != "map" && a != "unmap" && a != "set-machine" {
+		if !slices.Contains(positionalActions, a) {
 			continue
 		}
 		flags := append([]string{}, args[:i]...)

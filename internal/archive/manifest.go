@@ -81,6 +81,23 @@ func (p Project) Routable() bool { return p.Path != "" || p.Leaf != "" || p.Remo
 // entries. Nothing detects it, because both writes are well-formed JSON.
 //
 // One writer per file removes the race entirely. Readers merge in memory.
+// WorkFolder is one archived work folder: a folder Claude worked in that no git
+// repository or ~/.claude covers.
+type WorkFolder struct {
+	Path    string      `json:"path"`
+	Exact   bool        `json:"exactFile,omitempty"`
+	Files   int         `json:"files,omitempty"`
+	Bytes   int64       `json:"bytes,omitempty"`
+	Skipped string      `json:"skipped,omitempty"`
+	Origin  *WorkOrigin `json:"origin,omitempty"`
+}
+
+// WorkOrigin names the machine and path a folder was first archived from.
+type WorkOrigin struct {
+	Machine string `json:"machine"`
+	Path    string `json:"path"`
+}
+
 type Shard struct {
 	SchemaVersion int                `json:"schemaVersion"`
 	Machine       string             `json:"machine"`
@@ -101,6 +118,11 @@ type Shard struct {
 	// RelatedIndexed records that every transcript has been scanned for related
 	// repositories once, so later pushes only scan the transcripts that changed.
 	RelatedIndexed bool `json:"relatedIndexed,omitempty"`
+
+	// WorkFolders are the folders archived under work/<machine>/; WorkIndexed records
+	// that the transcripts have been scanned for them once.
+	WorkFolders []WorkFolder `json:"workFolders,omitempty"`
+	WorkIndexed bool         `json:"workIndexed,omitempty"`
 
 	// ToolVersion is the claude-sessions build that wrote the shard. Mixed versions
 	// fail silently - an older machine pushes no profile - so doctor names them. A

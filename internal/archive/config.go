@@ -35,7 +35,24 @@ type Config struct {
 	// archive still carry them; taken for another machine's, they came back to it as
 	// forks, and its memory was merged as a stranger's.
 	FormerMachines []string `json:"formerMachines,omitempty"`
+
+	// WorkBackup is "off" to stop archiving the folders Claude worked in outside
+	// ~/.claude and git repositories; "" and "on" mean on.
+	WorkBackup string `json:"workBackup,omitempty"`
+
+	// WorkPlacement is where import files a folder with no local counterpart: "home"
+	// (the default) or "machine".
+	WorkPlacement string `json:"workPlacement,omitempty"`
+
+	// WorkMap says where an archived work folder lives here, by its original path.
+	WorkMap map[string]string `json:"workMap,omitempty"`
+
+	// WorkExclude lists folders that are never archived.
+	WorkExclude []string `json:"workExclude,omitempty"`
 }
+
+// WorkOn reports whether work folders are archived.
+func (c Config) WorkOn() bool { return c.WorkBackup != "off" }
 
 // Mapped is the local folder the user mapped an archived bucket to, if any. Bucket
 // names compare case-insensitively, as everywhere else.
@@ -134,6 +151,18 @@ func SaveConfig(claudeRoot string, c Config) error {
 	}
 	if c.FormerMachines != nil {
 		merged["formerMachines"] = c.FormerMachines
+	}
+	if c.WorkBackup != "" {
+		merged["workBackup"] = c.WorkBackup
+	}
+	if c.WorkPlacement != "" {
+		merged["workPlacement"] = c.WorkPlacement
+	}
+	if c.WorkMap != nil { // empty non-nil clears: written as {}
+		merged["workMap"] = c.WorkMap
+	}
+	if c.WorkExclude != nil {
+		merged["workExclude"] = c.WorkExclude
 	}
 
 	data, err := json.MarshalIndent(merged, "", "  ")
