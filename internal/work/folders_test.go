@@ -112,3 +112,16 @@ func TestFoldersCaseVariantOrderIndependent(t *testing.T) {
 		t.Fatalf("x=%v y=%v", x, y)
 	}
 }
+
+func TestFoldersDotSegment(t *testing.T) {
+	env := fakeEnv("/h/.ssh/config", "/h/.config/app", "/h/Desktop/.env", "/h/w/.hidden/x.md", "/h/SQL/po/.env")
+	got := Folders([]Candidate{{"/h/.ssh/config", true}, {"/h/.config/app", false}, {"/h/Desktop/.env", true},
+		{"/h/w/.hidden/x.md", true}, {"/h/SQL/po/.env", true}}, env)
+	// The dot file in an ordinary folder leaves the folder; Collect skips the file.
+	if want := []Folder{{"/h/SQL/po", false}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v", got)
+	}
+	if got := Folders([]Candidate{{`C:\Users\a\.aws\config`, true}}, fakeWinEnv()); len(got) != 0 {
+		t.Fatalf("windows: got %v", got)
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,14 +50,17 @@ func workEnv(root string) work.Env {
 
 // pushWork archives the folders this machine's sessions worked in to
 // work/<machine>/ and records them in shard. It looks for folders only in scan, the
-// transcripts that changed; those found before come from prev. The caller holds the
-// push lock.
+// transcripts that changed; those found before come from this machine's local record
+// (prev is not read for folders). The caller holds the push lock.
 func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan []string, cfg archive.Config, dryRun bool, budget time.Duration, logf func(string, ...any)) workPushResult {
 	var res workPushResult
+	// The previous folders come from this machine's own record, never from prev: the
+	// shard is shared archive data, and a path added there must not get walked.
+	known, _ := loadWorkFolders(root)
 	if !cfg.WorkOn() {
 		// Off stops copying, not the record of what the archive holds. WorkIndexed stays
 		// unset, so turning it back on rescans every transcript.
-		shard.WorkFolders = prev.WorkFolders
+		shard.WorkFolders = known
 		return res
 	}
 	env := workEnv(root)
@@ -72,14 +76,18 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 		c, _ := work.Candidates(t, env.Home) // a transcript that fails part way still gives what it read
 		cands = append(cands, c...)
 	}
-	prevBy := map[string]archive.WorkFolder{}
-	for _, f := range prev.WorkFolders {
-		if excluded(f.Path) {
-			if !dryRun {
-				if _, err := purgeWork(dest, shard.Machine, f.Path); err != nil {
-					logf("WARN: work folder %s: %v", f.Path, err)
-				}
+	// Repeated every push, so an exclusion made while the archive was away - a whole
+	// folder or a part of one - is removed too. purgeWork is idempotent.
+	if !dryRun {
+		for _, x := range cfg.WorkExclude {
+			if _, err := purgeWork(dest, shard.Machine, x); err != nil {
+				logf("WARN: excluded folder %s: %v", x, err)
 			}
+		}
+	}
+	prevBy := map[string]archive.WorkFolder{}
+	for _, f := range known {
+		if excluded(f.Path) {
 			continue
 		}
 		prevBy[f.Path] = f
@@ -90,7 +98,7 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 	// A folder found before and not now - deleted, moved, become a repository - keeps
 	// its entry unchanged: its copy is still in the archive.
 	var out []archive.WorkFolder
-	for _, p := range prev.WorkFolders {
+	for _, p := range known {
 		if _, ok := prevBy[p.Path]; ok && !slices.ContainsFunc(folders, func(f work.Folder) bool { return work.Within(p.Path, f.Path, fold(p.Path)) }) {
 			out = append(out, p)
 		}
@@ -176,7 +184,30 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 	}
 	slices.SortFunc(out, func(a, b archive.WorkFolder) int { return strings.Compare(a.Path, b.Path) })
 	shard.WorkFolders, shard.WorkIndexed = out, true
+	if !dryRun {
+		data, _ := json.MarshalIndent(out, "", "  ")
+		if err := archive.WriteFileAtomic(workFoldersPath(root), append(data, '\n'), 0o644); err != nil {
+			logf("WARN: work folders record: %v", err)
+		}
+	}
 	return res
+}
+
+// workFoldersPath is this machine's record of its work folders, the source of its
+// shard's list. It stays local: the archive is untrusted.
+func workFoldersPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "work-folders.json")
+}
+
+// loadWorkFolders reads that record. An error means it is missing or unreadable, and
+// every transcript must be scanned again to rebuild it.
+func loadWorkFolders(root string) ([]archive.WorkFolder, error) {
+	raw, err := os.ReadFile(workFoldersPath(root))
+	if err != nil {
+		return nil, err
+	}
+	var f []archive.WorkFolder
+	return f, json.Unmarshal(raw, &f)
 }
 
 // workDir is where a work folder lives in the archive: work/<machine>/<Encode(p)>.

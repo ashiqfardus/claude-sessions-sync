@@ -114,6 +114,17 @@ func IsBroad(dir string, env Env) bool {
 	return false
 }
 
+// dotted reports a segment past the root or drive that starts with ".": .ssh, .aws,
+// .config. Push never copies a dot entry, and a backup root is no exception.
+func dotted(p string) bool {
+	for _, s := range segs(p) {
+		if strings.HasPrefix(s, ".") {
+			return true
+		}
+	}
+	return false
+}
+
 // Folders turns raw candidates into the folders to back up, sorted by Path.
 func Folders(cands []Candidate, env Env) []Folder {
 	var all []Folder
@@ -141,6 +152,9 @@ func Folders(cands []Candidate, env Env) []Folder {
 				continue
 			}
 			f = Folder{p, true}
+		}
+		if dotted(f.Path) {
+			continue
 		}
 		all = append(all, f)
 	}

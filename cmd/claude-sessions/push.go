@@ -282,6 +282,8 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	// Transcripts to look for work folders in: those changed since the last full push
 	// - not only those copied now, as the per-reply hook has usually copied them.
 	var workScan []string
+	_, werr := loadWorkFolders(root)
+	scanAllWork := !prevShard.WorkIndexed || werr != nil
 
 	for _, b := range buckets {
 		destBucket := filepath.Join(archive.ProjectsDir(dest), b.Name)
@@ -298,7 +300,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 				res.Skipped = append(res.Skipped, t.ID)
 				continue
 			}
-			if !prevShard.WorkIndexed || changedSincePush(pushed, b.Name, t.ID, srcInfo) {
+			if scanAllWork || changedSincePush(pushed, b.Name, t.ID, srcInfo) {
 				workScan = append(workScan, t.Path)
 				for _, rel := range t.Extras {
 					if filepath.Dir(rel) == "subagents" && strings.EqualFold(filepath.Ext(rel), ".jsonl") {

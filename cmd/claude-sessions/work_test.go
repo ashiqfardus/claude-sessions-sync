@@ -367,6 +367,9 @@ func TestPushWorkDryRun(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(m.archive, "work")); !os.IsNotExist(err) {
 		t.Fatalf("dry run wrote work/: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(m.claudeDir, "session-sync-base", "work-folders.json")); !os.IsNotExist(err) {
+		t.Fatalf("dry run wrote the local record: %v", err)
+	}
 	for _, f := range []string{"r.md", "out.csv"} {
 		if !strings.Contains(out, "would copy "+filepath.Join(po, f)) {
 			t.Errorf("%s not listed: %s", f, out)
@@ -436,29 +439,85 @@ func TestPushWorkAfterHook(t *testing.T) {
 	}
 }
 
-// A folder excluded while the archive was away: the next push removes its copy.
+// A folder excluded while the archive was away, or a part of one: the next push
+// removes its copy.
 func TestPushWorkPurgesExcluded(t *testing.T) {
+	for _, sub := range []string{"", "private"} {
+		m := newMachine(t, "MAC", t.TempDir())
+		home, po, _ := poSession(t, m)
+		mustWrite(t, filepath.Join(po, "private", "s.md"), "x")
+		m.workRun(t, home, "push", "--no-html")
+		x := filepath.Join(po, sub)
+		if _, err := os.Stat(workCopy(m, x)); err != nil {
+			t.Fatal(err)
+		}
+
+		cfgPath := filepath.Join(m.claudeDir, "session-sync.json")
+		cfg := map[string]any{}
+		if raw, err := os.ReadFile(cfgPath); err == nil {
+			json.Unmarshal(raw, &cfg)
+		}
+		cfg["workExclude"] = []string{x}
+		b, _ := json.Marshal(cfg)
+		mustWrite(t, cfgPath, string(b))
+
+		m.workRun(t, home, "push", "--no-html")
+		if _, err := os.Stat(workCopy(m, x)); !os.IsNotExist(err) {
+			t.Fatalf("%s: excluded copy remains: %v", x, err)
+		}
+		wf := workShard(t, m)
+		if sub == "" && len(wf) != 0 {
+			t.Fatalf("shard: %+v", wf)
+		}
+		if sub != "" {
+			if len(wf) != 1 || wf[0].Path != po {
+				t.Fatalf("parent entry dropped: %+v", wf)
+			}
+			if _, err := os.Stat(filepath.Join(workCopy(m, po), "r.md")); err != nil {
+				t.Fatalf("parent content lost: %v", err)
+			}
+		}
+	}
+}
+
+// A dot folder is never a backup root: an edit of ~/.ssh/config must not carry the
+// keys beside it to the archive.
+func TestPushWorkSkipsDotFolder(t *testing.T) {
 	m := newMachine(t, "MAC", t.TempDir())
-	home, po, _ := poSession(t, m)
-	m.workRun(t, home, "push", "--no-html")
-	if _, err := os.Stat(workCopy(m, po)); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgPath := filepath.Join(m.claudeDir, "session-sync.json")
-	cfg := map[string]any{}
-	if raw, err := os.ReadFile(cfgPath); err == nil {
-		json.Unmarshal(raw, &cfg)
-	}
-	cfg["workExclude"] = []string{po}
-	b, _ := json.Marshal(cfg)
-	mustWrite(t, cfgPath, string(b))
+	home := t.TempDir()
+	mustWrite(t, filepath.Join(home, ".ssh", "config"), "Host x\n")
+	mustWrite(t, filepath.Join(home, ".ssh", "deploy"), "PRIVATE KEY\n")
+	workSession(t, m, home, []string{filepath.Join(home, ".ssh", "config")})
 
 	m.workRun(t, home, "push", "--no-html")
-	if _, err := os.Stat(workCopy(m, po)); !os.IsNotExist(err) {
-		t.Fatalf("excluded copy remains: %v", err)
+	if got := workFiles(m.archive); len(got) != 0 {
+		t.Fatalf("archived %v", got)
 	}
 	if wf := workShard(t, m); len(wf) != 0 {
 		t.Fatalf("shard: %+v", wf)
+	}
+}
+
+// The shard is shared archive data. A folder added to it by hand is not walked: only
+// folders this machine's sessions named are.
+func TestPushWorkIgnoresShardEntries(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, _, _ := poSession(t, m)
+	docs := filepath.Join(home, "private-docs")
+	mustWrite(t, filepath.Join(docs, "tax-2025.txt"), "x")
+	m.workRun(t, home, "push", "--no-html")
+
+	shardPath := filepath.Join(m.archive, "manifest", "MAC.json")
+	var shard map[string]any
+	if err := json.Unmarshal([]byte(mustRead(t, shardPath)), &shard); err != nil {
+		t.Fatal(err)
+	}
+	shard["workFolders"] = append(shard["workFolders"].([]any), map[string]any{"path": docs})
+	b, _ := json.Marshal(shard)
+	mustWrite(t, shardPath, string(b))
+
+	m.workRun(t, home, "push", "--no-html")
+	if _, err := os.Stat(workCopy(m, docs)); !os.IsNotExist(err) {
+		t.Fatalf("hand-added folder copied: %v", err)
 	}
 }
