@@ -20,16 +20,16 @@ var skipDirs = map[string]bool{
 	"__pycache__": true, ".cache": true, "dist": true, "build": true, "target": true, ".gradle": true,
 }
 
-// SkipDir reports a folder name push never copies. It ignores case: on macOS and
-// Windows Node_Modules is node_modules.
-func SkipDir(name string) bool { return skipDirs[strings.ToLower(name)] }
+// skipDir ignores case: on macOS and Windows Node_Modules is node_modules.
+func skipDir(name string) bool { return skipDirs[strings.ToLower(name)] }
 
 var deniedExt = map[string]bool{}
 
 func init() {
 	for _, e := range strings.Fields(`.png .jpg .jpeg .gif .webp .bmp .tif .tiff .heic .ico .svg
 .mp4 .mov .webm .avi .mkv .mp3 .wav .m4a .zip .gz .tgz .tar .7z .rar .bz2 .xz
-.apk .aab .ipa .exe .dll .so .dylib .jar .class .o .a .bin .sqlite .sqlite3 .db .bak .dump`) {
+.apk .aab .ipa .exe .dll .so .dylib .jar .class .o .a .bin .sqlite .sqlite3 .db .bak .dump
+.pth`) { // .pth: Python runs its import lines at every start
 		deniedExt[e] = true
 	}
 }
@@ -44,7 +44,7 @@ func Allowed(rel string, size int64) (bool, string) {
 		if strings.HasPrefix(p, ".") {
 			return false, "dot"
 		}
-		if i < len(parts)-1 && SkipDir(p) {
+		if i < len(parts)-1 && skipDir(p) {
 			return false, "folder"
 		}
 	}
@@ -114,7 +114,7 @@ func Collect(f Folder, exclude []string) (Collected, error) {
 			if p == f.Path {
 				return nil
 			}
-			if SkipDir(d.Name()) || strings.HasPrefix(d.Name(), ".") {
+			if skipDir(d.Name()) || strings.HasPrefix(d.Name(), ".") {
 				return fs.SkipDir
 			}
 			if _, e := os.Lstat(filepath.Join(p, ".git")); e == nil {

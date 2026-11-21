@@ -556,6 +556,13 @@ func inJSON(s string) string { return strings.Trim(quoted(s), `"`) }
 
 func TestImportWorkAcrossHomes(t *testing.T) {
 	p := newWorkPair(t)
+	p.b.workRun(t, p.homeB, "import", "--no-plugins", "--dry-run")
+	if _, err := os.Stat(filepath.Join(p.b.claudeDir, "session-sync-base", "work-held.json")); !os.IsNotExist(err) {
+		t.Fatalf("dry run wrote the record: %v", err)
+	}
+	if _, err := os.Stat(p.placed()); !os.IsNotExist(err) {
+		t.Fatalf("dry run placed files: %v", err)
+	}
 	out := p.b.workRun(t, p.homeB, "import", "--no-plugins")
 
 	if got := mustRead(t, filepath.Join(p.placed(), "রিপোর্ট.md")); got != "report v1\n" {
@@ -663,20 +670,36 @@ func TestRestoredNotPushedBack(t *testing.T) {
 	mustWrite(t, filepath.Join(p.placed(), "b.md"), "B's own\n")
 	p.b.workRun(t, p.homeB, "push", "--no-html")
 
-	var mine []string
-	for _, f := range workFiles(p.b.archive) {
-		if strings.HasPrefix(f, "MAC/") {
-			mine = append(mine, f)
+	mine := func() (out []string) {
+		for _, f := range workFiles(p.b.archive) {
+			if strings.HasPrefix(f, "MAC/") {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	enc := "MAC/" + work.Encode(p.placed())
+	if got, want := mine(), []string{enc + "/b.md"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("B archived %v, want %v", got, want)
+	}
+	for _, f := range workShard(t, p.b) {
+		if f.Path == p.placed() && f.Files != 1 {
+			t.Fatalf("restored files counted as B's: %+v", f)
 		}
 	}
-	if want := []string{"MAC/" + work.Encode(p.placed()) + "/b.md"}; !reflect.DeepEqual(mine, want) {
-		t.Fatalf("B archived %v, want %v", mine, want)
+
+	// Edited here, it is B's now.
+	mustWrite(t, filepath.Join(p.placed(), "রিপোর্ট.md"), "report, edited on B\n")
+	p.b.workRun(t, p.homeB, "push", "--no-html")
+	if got, want := mine(), []string{enc + "/b.md", enc + "/রিপোর্ট.md"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the edit B archived %v, want %v", got, want)
 	}
 }
 
 // Hostile shards: a root home, a folder in ~/.ssh, a ".." path, archive files a push
-// never sends, an origin aimed into node_modules in one of B's own folders, an ancestor
-// of the home, and a machine name that makes a copy beside an .exe. Only the plain files of the one folder
+// never sends, an origin aimed into node_modules in one of B's own folders, folders
+// that Python and Node load code from (R21, R22), an ancestor of the home, and a machine
+// name that makes a copy beside an .exe. Only the plain files of the one folder
 // B mapped land, and not executable.
 func TestImportWorkHostileShard(t *testing.T) {
 	arch := t.TempDir()
@@ -695,8 +718,10 @@ func TestImportWorkHostileShard(t *testing.T) {
 	ownRecord, _ := json.Marshal([]map[string]any{{"path": own}})
 	mustWrite(t, filepath.Join(b.claudeDir, "session-sync-base", "work-folders.json"), string(ownRecord))
 
-	evil, evil2, evil3, exe := machine{name: "EVIL", archive: arch}, machine{name: "EVIL2", archive: arch},
-		machine{name: "EVIL3", archive: arch}, machine{name: "exe", archive: arch}
+	evil, evil2, evil3, evil4, exe := machine{name: "EVIL", archive: arch}, machine{name: "EVIL2", archive: arch},
+		machine{name: "EVIL3", archive: arch}, machine{name: "EVIL4", archive: arch}, machine{name: "exe", archive: arch}
+	code := []string{"/zz/proj2/venv/lib/python3.12/site-packages", "/zz/proj/node_modules/lodash",
+		"/zz/miniconda3/lib/python3.12/site-packages", "/zz/env/etc/conda/activate.d"}
 	ssh := filepath.Join(homeB, ".ssh")
 	put := func(m machine, folder, rel, body string) string {
 		f := filepath.Join(workCopy(m, folder), filepath.FromSlash(rel))
@@ -716,6 +741,12 @@ func TestImportWorkHostileShard(t *testing.T) {
 	put(evil3, filepath.Dir(homeB), "x.md", "x")
 	put(evil, "/x/y", "index.js", "evil()\n")
 	put(exe, "/evil/proj", "tool", "MZ")
+	evil4Folders := []any{"/zz/ok"}
+	put(evil4, "/zz/ok", "zz.pth", "import os\n")
+	for _, f := range code {
+		put(evil4, f, "sitecustomize.py", "import os\n")
+		evil4Folders = append(evil4Folders, f)
+	}
 	// Links in the archive are never read through, as a file or on the way to a folder
 	// (no symlinks on some Windows runners).
 	outside := t.TempDir()
@@ -740,6 +771,7 @@ func TestImportWorkHostileShard(t *testing.T) {
 	shard("EVIL2", "x", "/evil/proj") // a relative home: the whole shard is ignored
 	shard("EVIL3", homeB, filepath.Dir(homeB))
 	shard("exe", "/", "/evil/proj")
+	shard("EVIL4", "/zz", evil4Folders...)
 
 	out := b.workRun(t, homeB, "import", "--no-plugins", "--update")
 
@@ -754,11 +786,17 @@ func TestImportWorkHostileShard(t *testing.T) {
 	if want := []string{"evil/proj/ok.md", "evil/proj/run.sh", "evil/proj/tool"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("wrote %v, want %v\n%s", got, want, out)
 	}
+	for _, f := range append(code, "/x/y") {
+		if !strings.Contains(out, f+": refused: ") {
+			t.Errorf("%s not refused: %s", f, out)
+		}
+	}
 	if fi, err := os.Stat(filepath.Join(mapped, "proj", "run.sh")); runtime.GOOS != "windows" && (err != nil || fi.Mode().Perm() != 0o644) {
 		t.Fatalf("run.sh mode: %v %v", fi, err)
 	}
 	if !strings.Contains(out, "work folders from EVIL: ") || !strings.Contains(out, "7 refused") || !strings.Contains(out, "contains ..") ||
-		!strings.Contains(out, "/x/y: refused: in a skipped folder") || !strings.Contains(out, "a broad folder") ||
+		!strings.Contains(out, "in a folder code is loaded from") || !strings.Contains(out, "/zz/ok/zz.pth: refused: type") ||
+		!strings.Contains(out, "a broad folder") ||
 		!strings.Contains(out, "tool: refused: type") || strings.Contains(out, "EVIL2") {
 		t.Fatalf("output: %s", out)
 	}
@@ -935,5 +973,32 @@ func TestImportWorkHomeProjectKeepsMoves(t *testing.T) {
 	}
 	if s := mustRead(t, b.session(repo)); !strings.Contains(s, inJSON(filepath.Join(dir, "r.md"))) || strings.Contains(s, inJSON(po)) {
 		t.Fatalf("move dropped:\n%s\n%s", s, out)
+	}
+}
+
+// --update replaces only a file held from the same machine. One held from another
+// machine is that machine's: the newcomer is written beside it.
+func TestImportWorkUpdateOtherMachine(t *testing.T) {
+	p := newWorkPair(t)
+	c := newMachine(t, "LNX", p.a.archive)
+	homeC := t.TempDir()
+	repoC := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	folderC := filepath.Join(homeC, "w")
+	mustWrite(t, filepath.Join(folderC, "রিপোর্ট.md"), "LNX's report\n")
+	workSession(t, c, repoC, []string{filepath.Join(folderC, "রিপোর্ট.md")})
+	c.workRun(t, homeC, "push", "--no-html")
+
+	dir := filepath.Join(p.homeB, "shared")
+	mustMkdir(t, dir)
+	configAs(t, p.b.claudeDir, "MAC", "map-folder", p.folder, dir)
+	configAs(t, p.b.claudeDir, "MAC", "map-folder", folderC, dir)
+	p.b.workRun(t, p.homeB, "import", "--no-plugins") // LNX sorts first: its copy is filed
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins", "--update")
+
+	if got := mustRead(t, filepath.Join(dir, "রিপোর্ট.md")); got != "LNX's report\n" {
+		t.Fatalf("replaced by another machine's copy: %q\n%s", got, out)
+	}
+	if got := mustRead(t, filepath.Join(dir, "রিপোর্ট.WIN.md")); got != "report v1\n" {
+		t.Fatalf("copy beside: %q\n%s", got, out)
 	}
 }

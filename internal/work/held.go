@@ -2,6 +2,8 @@ package work
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"time"
 
@@ -22,13 +24,20 @@ type HeldFile struct {
 type Held struct {
 	Files  map[string]HeldFile `json:"files"`
 	Placed map[string]string   `json:"placed"`
+	// Err is why an existing record could not be read; callers warn, and the record
+	// starts again empty.
+	Err error `json:"-"`
 }
 
 // LoadHeld reads the record at path. Missing or unreadable gives empty maps.
 func LoadHeld(path string) Held {
 	var h Held
-	if raw, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(raw, &h)
+	raw, err := os.ReadFile(path)
+	if err == nil {
+		err = json.Unmarshal(raw, &h)
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		h = Held{Err: err}
 	}
 	if h.Files == nil {
 		h.Files = map[string]HeldFile{}

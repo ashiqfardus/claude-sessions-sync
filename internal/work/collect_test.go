@@ -148,8 +148,8 @@ func TestEncode(t *testing.T) {
 }
 
 // Restore runs Allowed on a file's path in its folder: a skipped folder anywhere in it
-// refuses the file, whatever its case.
-func TestAllowedSkippedFolders(t *testing.T) {
+// refuses the file, whatever its case. A .pth file is a denied type (R22).
+func TestAllowedArchivePaths(t *testing.T) {
 	for rel, want := range map[string]string{
 		"Users/a/p/r.md":                 "",
 		"Users/a/p/build.md":             "",
@@ -158,6 +158,7 @@ func TestAllowedSkippedFolders(t *testing.T) {
 		"E/SQL/__pycache__/m.cpython.py": "folder",
 		"Users/a/p/.git/config":          "dot",
 		"Users/a/p/tool.EXE":             "type",
+		"Users/a/p/zz.PTH":               "type",
 	} {
 		if ok, why := Allowed(rel, 1); ok != (want == "") || why != want {
 			t.Errorf("Allowed(%q) = %v, %q; want %q", rel, ok, why, want)

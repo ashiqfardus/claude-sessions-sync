@@ -1,6 +1,7 @@
 package work
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -21,5 +22,11 @@ func TestHeldRoundTrip(t *testing.T) {
 	}
 	if got := LoadHeld(path); !reflect.DeepEqual(got, h) {
 		t.Fatalf("round trip: %+v, want %+v", got, h)
+	}
+	if err := os.WriteFile(path, []byte("not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadHeld(path); got.Err == nil || len(got.Files)+len(got.Placed) != 0 || got.Files == nil {
+		t.Fatalf("corrupt record: %+v", got)
 	}
 }

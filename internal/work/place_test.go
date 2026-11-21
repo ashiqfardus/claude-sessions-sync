@@ -305,7 +305,8 @@ func TestSafeJoin(t *testing.T) {
 		t.Fatalf("got %q, %v", got, err)
 	}
 	// I-1: the folder rules apply to every archive segment too.
-	for _, rel := range []string{"vimfiles/plugin/x.vim", "w/_vimrc", "AppData/x", "pkg/mod/m@v1/x.go"} {
+	for _, rel := range []string{"vimfiles/plugin/x.vim", "w/_vimrc", "AppData/x", "pkg/mod/m@v1/x.go",
+		"lib/Site-Packages/x.py", "lib/dist-packages/x.py", "env/etc/conda/activate.d/x.sh"} { // R22
 		if got, err := SafeJoin(filepath.Join(target, "go"), rel); !errors.Is(err, ErrRefused) {
 			t.Errorf("SafeJoin(go, %q) = %q, %v", rel, got, err)
 		}
@@ -340,4 +341,34 @@ func TestSafeJoinNestedRepo(t *testing.T) {
 	if _, err := SafeJoin(target, "notes/r.md"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// R21: below the folder each rule builds on, the archive chose every name; one a
+// runtime loads code from is refused whichever rule placed it. build, dist and target
+// stay allowed (R18).
+func TestPlaceRefusesCodeFolders(t *testing.T) {
+	l := testLocal(t)
+	own, mapped := filepath.Join(l.Home, "mine"), filepath.Join(l.Home, "mapped")
+	l.Own = []string{own}
+	l.Map = map[string]string{"/m": mapped}
+	// By home (any case, and R22's site-packages), map, claude-work and origin (rule 0).
+	for _, src := range []Source{
+		{Machine: "WIN", Home: "/zz", Path: "/zz/proj/node_modules/lodash"},
+		{Machine: "WIN", Home: "/zz", Path: "/zz/proj2/VENV/lib/python3.12"},
+		{Machine: "WIN", Home: "/zz", Path: "/zz/miniconda3/lib/python3.12/site-packages"},
+		{Machine: "WIN", Home: "/zz", Path: "/m/php/vendor/x"},
+		{Machine: "WIN", Home: `C:\Users\a`, Path: `E:\py\__pycache__`},
+		{Machine: "WIN", Home: "/zz", Path: "/q", Origin: &archive.WorkOrigin{Machine: "MAC", Path: filepath.Join(own, "node_modules", "x")}},
+	} {
+		if got, err := Place(src, l); !errors.Is(err, ErrRefused) {
+			t.Errorf("Place(%s) = %q, %v", src.Path, got, err)
+		}
+	}
+	same := l
+	same.SameLayout = true
+	if got, err := Place(Source{Machine: "WIN", Path: filepath.Join(l.Home, "p", "dist-packages", "x")}, same); !errors.Is(err, ErrRefused) {
+		t.Errorf("same layout: %q, %v", got, err)
+	}
+	mustPlace(t, Source{Machine: "WIN", Home: "/zz", Path: "/zz/build/report"}, l, filepath.Join(l.Home, "build", "report"))
+	mustPlace(t, Source{Machine: "WIN", Home: "/zz", Path: "/m/target/x"}, l, filepath.Join(mapped, "target", "x"))
 }

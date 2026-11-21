@@ -59,6 +59,10 @@ func Place(src Source, l Local) (string, error) {
 	why := "not an absolute path"
 	if filepath.IsAbs(target) {
 		why = refused(target, src.Exact, l.Env)
+		// Below base the archive chose every name, whichever rule placed it.
+		if t := segs(target); why == "" && len(t) >= len(segs(base)) && slices.ContainsFunc(t[len(segs(base)):], codeDir) {
+			why = "in a folder code is loaded from"
+		}
 		if why == "" { // after the name checks, so a refused name is never stat'ed
 			why = onTheWay(target, base, false)
 		}
@@ -144,6 +148,13 @@ func onTheWay(p, base string, repo bool) string {
 	return ""
 }
 
+// codeDir reports a folder a language runtime loads code from on its own: a module
+// planted there runs with no step by the user. build, dist and target are not: push
+// skips them below a root only, and a work folder may live under one.
+func codeDir(name string) bool {
+	return anyFold(name, "node_modules", "venv", "vendor", "__pycache__", "site-packages", "dist-packages")
+}
+
 func anyFold(s string, names ...string) bool {
 	return slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(s, n) })
 }
@@ -194,7 +205,7 @@ func badNames(names []string, win bool) string {
 		switch {
 		case strings.HasPrefix(s, "."):
 			return "a dot folder or file"
-		case anyFold(s, "AppData", "vimfiles", "_vimrc", "_gvimrc") ||
+		case anyFold(s, "AppData", "vimfiles", "_vimrc", "_gvimrc", "site-packages", "dist-packages", "activate.d") ||
 			win && anyFold(s, "ProgramData", "WindowsPowerShell", "PowerShell"):
 			return "in a folder that runs or configures programs"
 		case win && (strings.ContainsAny(s, ":~") || strings.TrimRight(s, ". ") != s):

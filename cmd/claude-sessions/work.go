@@ -109,7 +109,11 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 		}
 	}
 
-	held := work.LoadHeld(heldWorkPath(root)).Files
+	hr := work.LoadHeld(heldWorkPath(root))
+	if hr.Err != nil {
+		logf("WARN: restored work record: %v", hr.Err)
+	}
+	held := hr.Files
 	start := time.Now()
 	// copyFolder backs up one folder. It returns false when the budget ran out part way.
 	copyFolder := func(f work.Folder) (archive.WorkFolder, bool) {
@@ -123,6 +127,20 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 			logf("WARN: work folder %s: %v", f.Path, err)
 			return prevBy[f.Path], true
 		}
+		// Restored from another machine and unchanged since: that machine's, not ours. Not
+		// copied, and not counted toward the cap either.
+		c.Files = slices.DeleteFunc(c.Files, func(p string) bool {
+			h, ok := held[p]
+			if !ok {
+				return false
+			}
+			st, err := os.Stat(p)
+			if err != nil || h.Size != st.Size() || !archive.SameMTime(h.MTime, st.ModTime()) {
+				return false
+			}
+			c.Bytes -= st.Size()
+			return true
+		})
 		e := archive.WorkFolder{Path: f.Path, Exact: f.Exact}
 		if c.Bytes > work.MaxFolderBytes {
 			logf("WARN: work folder %s is over 250 MB after filtering; not backed up (exclude parts with config exclude-folder)", f.Path)
@@ -140,10 +158,6 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 			}
 			src, err := os.Stat(p)
 			if err != nil {
-				continue
-			}
-			// Restored from another machine and unchanged since: that machine's, not ours.
-			if h, ok := held[p]; ok && h.Size == src.Size() && archive.SameMTime(h.MTime, src.ModTime()) {
 				continue
 			}
 			// Unlike a transcript, a file may shrink: an edit within the mtime tolerance
@@ -335,6 +349,9 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 		l.Own = append(l.Own, f.Path)
 	}
 	held := work.LoadHeld(heldWorkPath(root))
+	if held.Err != nil {
+		res.Notes = append(res.Notes, fmt.Sprintf("WARN: restored work record unreadable, starting a new one: %v", held.Err))
+	}
 	now := time.Now()
 	var moves []rewrite.Move
 	// Push never archives a home, an ancestor of one or a root; a hostile shard that
@@ -390,7 +407,6 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			n.Refused++
 			notes = append(notes, fmt.Sprintf("  ! %s: refused: %v", p, why))
 		}
-	folders:
 		for _, wf := range s.WorkFolders {
 			dir, err := workDir(dest, s.Machine, wf.Path)
 			if err != nil {
@@ -410,17 +426,6 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				continue
 			} else if err != nil {
 				continue // not a path on this machine: pull's same layout does not fit
-			}
-			// Rule 0 puts a folder where its origin says, inside one of this machine's
-			// own: below that folder, the archive chose the names, so push's skipped
-			// folders are refused there too.
-			if o := wf.Origin; o != nil && target == filepath.Clean(o.Path) {
-				for _, own := range l.Own {
-					if work.Within(target, own, true) && slices.ContainsFunc(pathSegs(target)[len(pathSegs(own)):], work.SkipDir) {
-						refuse(wf.Path, "in a skipped folder")
-						continue folders
-					}
-				}
 			}
 			held.Placed[s.Machine+"|"+wf.Path] = target
 			went = append(went, wf.Path+" -> "+target)
@@ -488,7 +493,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 					if write(dst) {
 						n.Filed++
 					}
-				case err != nil || !update || !st.Mode().IsRegular() || mine(dst, st) || sameContent(src, dst):
+				case err != nil || !update || !st.Mode().IsRegular() || mine(dst, st) || st.Size() == fi.Size() && sameContent(src, dst):
 					n.Kept++ // add-only; never through a link
 				default:
 					// Kept, theirs beside it: replacing it would push theirs over ours everywhere.
@@ -584,7 +589,7 @@ func copyRestored(src, dst string, want fs.FileInfo) error {
 	}
 	defer f.Close()
 	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() || st.Size() != want.Size() {
+	if err != nil || !st.Mode().IsRegular() || st.Size() != want.Size() || !os.SameFile(st, want) {
 		return fmt.Errorf("changed in the archive while restoring")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, work.MaxFileBytes+1))
