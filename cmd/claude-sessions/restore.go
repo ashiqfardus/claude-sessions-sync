@@ -94,8 +94,20 @@ func cmdRestore(args []string) error {
 	}
 	defer lock.Release()
 
+	// The source may be an archive's bucket: recorded as import records, so push reads
+	// folders only from lines added here. With no archive reachable push has none to
+	// send to, and the first push that has one rebuilds the record from it.
+	var imported map[string]int64
+	if dest, _, _ := archive.ResolveDestination(root, ""); dest != "" {
+		if st, err := os.Stat(dest); err == nil && st.IsDir() {
+			imported = startFiling(root, dest, *dryRun)
+		}
+	}
 	res, err := restoreInto(root, *source, *projectPath, *rewriteFrom, nil,
-		restoreOpts{BareName: *bareName, DryRun: *dryRun, Update: *update})
+		restoreOpts{BareName: *bareName, DryRun: *dryRun, Update: *update, Imported: imported})
+	if imported != nil {
+		finishFiling(root, imported, *dryRun)
+	}
 	if err != nil {
 		return err
 	}

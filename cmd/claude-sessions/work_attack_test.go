@@ -6,12 +6,14 @@ package main_test
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
@@ -279,4 +281,28 @@ func TestHeldFileIgnoresCase(t *testing.T) {
 			t.Errorf("A's restored file pushed as B's: %s", f)
 		}
 	}
+}
+
+// restore from an archive bucket files transcripts too: the same record holds.
+func TestRestoredTranscriptCannotExfiltrate(t *testing.T) {
+	arch := t.TempDir()
+	evil, mac := newMachine(t, "EVIL", arch), newMachine(t, "MAC", arch)
+	homeE, homeM := t.TempDir(), t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	configAs(t, mac.claudeDir, "MAC", "set-destination", arch)
+	mac.workRun(t, homeM, "push", "--no-html") // MAC keeps a record already
+	configAs(t, evil.claudeDir, "EVIL", "work", "off")
+	workSession(t, evil, private, nil, "ls")
+	evil.workRun(t, homeE, "push", "--no-html")
+
+	cmd := exec.Command(binary, "restore", "--claude-dir", mac.claudeDir,
+		"--source", filepath.Join(arch, "projects", claude.Slug(private)), "--project-path", private)
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR=", "CLAUDE_SESSIONS_MACHINE=MAC", "HOME="+homeM, "USERPROFILE="+homeM,
+		"CLAUDE_SESSIONS_TEMP_DIRS="+filepath.Join(homeM, "no-temp"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("restore: %v\n%s", err, out)
+	}
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
 }
