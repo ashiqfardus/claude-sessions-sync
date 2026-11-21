@@ -678,6 +678,8 @@ func TestRestoredNotPushedBack(t *testing.T) {
 	p := newWorkPair(t)
 	p.b.workRun(t, p.homeB, "import", "--no-plugins")
 	mustWrite(t, filepath.Join(p.placed(), "b.md"), "B's own\n")
+	// Worked on here: A's conversation filed here never makes it B's (C2).
+	workSession(t, p.b, gitRepo(t, filepath.Join(t.TempDir(), "dev", "web")), []string{filepath.Join(p.placed(), "b.md")})
 	p.b.workRun(t, p.homeB, "push", "--no-html")
 
 	mine := func() (out []string) {
@@ -995,7 +997,11 @@ func TestImportWorkUpdateOtherMachine(t *testing.T) {
 	repoC := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
 	folderC := filepath.Join(homeC, "w")
 	mustWrite(t, filepath.Join(folderC, "রিপোর্ট.md"), "LNX's report\n")
-	workSession(t, c, repoC, []string{filepath.Join(folderC, "রিপোর্ট.md")})
+	tr := workSession(t, c, repoC, []string{filepath.Join(folderC, "রিপোর্ট.md")})
+	// A session id of its own: WIN's, the same id, reads as one LNX filed from WIN.
+	if err := os.Rename(tr, filepath.Join(filepath.Dir(tr), "77777777-7777-7777-7777-777777777777.jsonl")); err != nil {
+		t.Fatal(err)
+	}
 	c.workRun(t, homeC, "push", "--no-html")
 
 	dir := filepath.Join(p.homeB, "shared")
@@ -1209,6 +1215,9 @@ func TestRepointRemap(t *testing.T) {
 	if !strings.Contains(first, inJSON(p.placed())) || !strings.Contains(mustRead(t, agent), inJSON(p.placed())) {
 		t.Fatalf("first repoint:\n%s", first)
 	}
+	// B works in it, which makes it one of B's own; A's conversation filed here does not (C2).
+	mustWrite(t, filepath.Join(p.placed(), "b.md"), "B's own\n")
+	aged(t, workSession(t, p.b, gitRepo(t, filepath.Join(t.TempDir(), "dev", "web")), []string{filepath.Join(p.placed(), "b.md")}))
 	p.b.workRun(t, p.homeB, "push", "--no-html")
 	if own := mustRead(t, filepath.Join(p.b.claudeDir, "session-sync-base", "work-folders.json")); !strings.Contains(own, quoted(p.placed())) {
 		t.Fatalf("the placed folder is not one of B's own after a push: %s", own)

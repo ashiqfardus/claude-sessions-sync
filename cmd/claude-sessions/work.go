@@ -78,8 +78,10 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 	}
 
 	var cands []work.Candidate
+	// What import or pull filed here names folders only from lines added here since.
+	imported := loadImported(root, dest, dryRun)
 	for _, t := range scan {
-		c, _ := work.Candidates(t, env.Home) // a transcript that fails part way still gives what it read
+		c, _ := work.Candidates(t, env.Home, imported[importedKey(root, t)]) // a transcript that fails part way still gives what it read
 		cands = append(cands, c...)
 	}
 	// Repeated every push, so an exclusion made while the archive was away - a whole
@@ -811,6 +813,139 @@ func saveRepointed(root string, m map[string]repointedStat) error {
 	return archive.WriteFileAtomic(repointedPath(root), append(data, '\n'), 0o644)
 }
 
+// importedPath records the size each transcript had when import or pull last filed it
+// here, by importedKey. Push looks for work folders only past that size: the bytes
+// before it came from the archive, where anyone who can write it could name any local
+// folder for the next push to upload.
+func importedPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "imported.json")
+}
+
+// importedKey is a transcript's path below the projects folder, lower-cased and
+// "/"-separated.
+func importedKey(root, p string) string {
+	if rel, err := filepath.Rel(claude.ProjectsDir(root), p); err == nil {
+		p = rel
+	}
+	return strings.ToLower(filepath.ToSlash(p))
+}
+
+// noteFiled records the transcript just filed at p, at its size now. m is nil where
+// nothing is recorded (restore, --dry-run).
+func noteFiled(m map[string]int64, root, p string) {
+	if m == nil || !strings.EqualFold(filepath.Ext(p), ".jsonl") {
+		return
+	}
+	if st, err := os.Lstat(p); err == nil {
+		m[importedKey(root, p)] = st.Size()
+	}
+}
+
+// loadImported reads that record. When it is missing or unreadable, or a run that
+// was filing died before saving it (the .pending mark), what that run filed is not
+// in it: the transcripts the archive says another machine wrote are added at their
+// size now (seedImported), and unless dryRun the result is saved.
+func loadImported(root, dest string, dryRun bool) map[string]int64 {
+	var m map[string]int64
+	raw, err := os.ReadFile(importedPath(root))
+	_, pending := os.Lstat(importedPath(root) + ".pending")
+	if err == nil && json.Unmarshal(raw, &m) == nil && m != nil && pending != nil {
+		return m
+	}
+	if m == nil {
+		m = map[string]int64{}
+	}
+	for k, n := range seedImported(root, dest) {
+		m[k] = max(m[k], n)
+	}
+	if !dryRun {
+		_ = endFiling(root, m)
+	}
+	return m
+}
+
+// seedImported finds the transcripts filed here before the record existed: each one,
+// with its subagent transcripts, of a session the archive says another machine wrote,
+// and each fork filed here. Its bytes so far are all taken as filed.
+func seedImported(root, dest string) map[string]int64 {
+	m := map[string]int64{}
+	if dest == "" {
+		return m
+	}
+	writer := sessionWriters(dest)
+	theirs := map[string]bool{}
+	names, _ := archive.BucketNames(dest)
+	for _, b := range names {
+		entries, _ := os.ReadDir(filepath.Join(archive.ProjectsDir(dest), b))
+		for _, e := range entries {
+			id, ok := strings.CutSuffix(e.Name(), ".jsonl")
+			if info, err := e.Info(); ok && err == nil && e.Type().IsRegular() && writer(b, id, info) != "" {
+				theirs[strings.ToLower(id)] = true
+			}
+		}
+	}
+	buckets, _ := claude.ListBuckets(claude.ProjectsDir(root))
+	for _, b := range buckets {
+		forks := loadFiledForks(filedForksPath(root, b.Dir))
+		for _, t := range b.Transcripts {
+			if _, fork := forks[strings.ToLower(t.ID)]; !fork && !theirs[strings.ToLower(t.ID)] {
+				continue
+			}
+			noteFiled(m, root, t.Path)
+			for _, x := range t.Extras {
+				if filepath.Dir(x) == "subagents" {
+					noteFiled(m, root, filepath.Join(b.Dir, t.ID, x))
+				}
+			}
+		}
+	}
+	return m
+}
+
+// beginFiling marks the record as out of date until endFiling saves it: a run killed
+// in between leaves the mark, and the next load rebuilds what it filed.
+func beginFiling(root string) error {
+	return archive.WriteFileAtomic(importedPath(root)+".pending", nil, 0o644)
+}
+
+// startFiling loads the record for a run that files transcripts, and marks it out of
+// date until finishFiling. nil under dryRun: nothing is filed.
+func startFiling(root, dest string, dryRun bool) map[string]int64 {
+	if dryRun {
+		return nil
+	}
+	m := loadImported(root, dest, false)
+	if err := beginFiling(root); err != nil {
+		fmt.Printf("  x %s: %v\n", importedPath(root), err)
+	}
+	return m
+}
+
+// finishFiling saves what startFiling began.
+func finishFiling(root string, m map[string]int64, dryRun bool) {
+	if dryRun {
+		return
+	}
+	if err := endFiling(root, m); err != nil {
+		fmt.Printf("  x %s: %v (the next run rebuilds it from the archive)\n", importedPath(root), err)
+	}
+}
+
+// endFiling saves the record and clears the mark.
+func endFiling(root string, m map[string]int64) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := archive.WriteFileAtomic(importedPath(root), append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	if err := os.Remove(importedPath(root) + ".pending"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // errLive is a transcript that changed while it was rewritten: a session in use.
 var errLive = errors.New("changed while being rewritten")
 
@@ -819,7 +954,7 @@ var errLive = errors.New("changed while being rewritten")
 // to a live session and is left alone. Each original is copied to
 // <root>/repoint-backup/<yyyymmdd-hhmm>/<bucket>/ before the rewrite replaces it, and
 // with dryRun nothing at all is written. The caller holds the lock.
-func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool) repointResult {
+func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool, imported map[string]int64) repointResult {
 	var res repointResult
 	rules := rewrite.RulesForMoves(moves)
 	if len(rules) == 0 {
@@ -872,6 +1007,10 @@ func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool)
 					if st, err := os.Lstat(p); err == nil && i == 0 {
 						rec[b.Name+"/"+t.ID], recorded = repointedStat{Size: st.Size(), MTime: st.ModTime()}, true
 					}
+					// Rewritten whole, it may have grown: what was filed is now all of it.
+					if _, ok := imported[importedKey(root, p)]; ok {
+						noteFiled(imported, root, p)
+					}
 				}
 			}
 		}
@@ -887,7 +1026,7 @@ func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool)
 // countPointing is how many transcripts here a --repoint would rewrite: the same files
 // and the same hour's grace, read without writing.
 func countPointing(root string, moves []rewrite.Move) int {
-	return repointLocal(root, moves, time.Now(), true).Rewritten
+	return repointLocal(root, moves, time.Now(), true, nil).Rewritten
 }
 
 // pointing reports whether a rule would change the file at p. It reads a line at a

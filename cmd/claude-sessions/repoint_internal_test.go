@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 )
@@ -84,5 +85,28 @@ func TestRemapMovesNested(t *testing.T) {
 	}
 	if len(notes) != 2 || !strings.Contains(notes[0], "/u/b/w") || !strings.Contains(notes[1], "/u/b/c/d") || !strings.Contains(notes[0], "by hand") {
 		t.Fatalf("notes %q", notes)
+	}
+}
+
+// A filed transcript --repoint rewrites longer is filed in whole: its old size would
+// leave archive bytes past the mark, where push reads folders.
+func TestRepointMovesFiledMark(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "projects", "-b", "11111111-1111-1111-1111-111111111111.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(`{"cwd":"/old/x"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().Add(-2 * time.Hour)
+	_ = os.Chtimes(p, at, at)
+	imported := map[string]int64{}
+	noteFiled(imported, root, p)
+	before := imported[importedKey(root, p)]
+	res := repointLocal(root, []rewrite.Move{{From: "/old", To: "/a/much/longer/new"}}, time.Now(), false, imported)
+	st, _ := os.Stat(p)
+	if res.Rewritten != 1 || imported[importedKey(root, p)] != st.Size() || st.Size() <= before {
+		t.Fatalf("rewritten %d, mark %d, size %d (was %d)", res.Rewritten, imported[importedKey(root, p)], st.Size(), before)
 	}
 }

@@ -56,6 +56,10 @@ type restoreOpts struct {
 	// Archive is the archive's root, where each machine's own memory copy lives; ""
 	// for a restore from a folder outside an archive.
 	Archive string
+
+	// Imported is the record of transcripts filed from the archive (importedPath),
+	// updated with each one filed; nil records nothing.
+	Imported map[string]int64
 }
 
 const updateHelp = "also refresh sessions already here that continued on another machine, and memory files that are newer in the archive"
@@ -233,7 +237,8 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 			res.Skipped++
 			continue
 		}
-		restoreSessionFiles(source, res.Bucket, strings.TrimSuffix(name, filepath.Ext(name)), opts.DryRun)
+		restoreSessionFiles(source, res.Bucket, strings.TrimSuffix(name, filepath.Ext(name)), opts.DryRun,
+			func(p string) { noteFiled(opts.Imported, root, p) })
 		if exists && !opts.Update {
 			res.Skipped++
 			continue
@@ -253,6 +258,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 				res.Failed = append(res.Failed, fmt.Sprintf("%s: %v", name, err))
 				continue
 			}
+			noteFiled(opts.Imported, root, dst)
 			res.add(out)
 			res.Copied++
 			continue
@@ -262,6 +268,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		case err != nil:
 			res.Failed = append(res.Failed, fmt.Sprintf("%s: %v", name, err))
 		case state == extended:
+			noteFiled(opts.Imported, root, dst)
 			res.add(out)
 			res.Updated++
 		case state == diverged:
@@ -493,11 +500,12 @@ func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.
 			}
 		}
 		for _, rel := range claude.SessionFiles(sessionDir) {
-			if to := filepath.Join(bucketDir, fid, rel); archive.StatOrNil(to) == nil {
-				_ = archive.CopyFile(filepath.Join(sessionDir, rel), to)
+			if to := filepath.Join(bucketDir, fid, rel); archive.StatOrNil(to) == nil && archive.CopyFile(filepath.Join(sessionDir, rel), to) == nil {
+				noteFiled(opts.Imported, root, to)
 			}
 		}
 		if outcome != forkUnchanged {
+			noteFiled(opts.Imported, root, dst)
 			remember(fid, dst)
 		}
 		return fid, outcome, nil
@@ -872,18 +880,20 @@ func mergeIndex(base, theirs, mine string, theirsNewer bool, held map[string]boo
 }
 
 // restoreSessionFiles copies a session's own folder - subagent transcripts and saved
-// tool output - adding only files that are not here yet. A local file belongs to a
-// live or newer session and is never replaced.
+// tool output - adding only files that are not here yet, and passes each to filed. A
+// local file belongs to a live or newer session and is never replaced.
 //
 // ponytail: paths inside subagent transcripts are not rewritten; add it if a
 // subagent's recorded cwd ever matters to Claude Code.
-func restoreSessionFiles(srcBucket, dstBucket, id string, dryRun bool) {
+func restoreSessionFiles(srcBucket, dstBucket, id string, dryRun bool, filed func(string)) {
 	for _, rel := range claude.SessionFiles(filepath.Join(srcBucket, id)) {
 		dst := filepath.Join(dstBucket, id, rel)
 		if dryRun || archive.StatOrNil(dst) != nil {
 			continue
 		}
-		_ = archive.CopyFile(filepath.Join(srcBucket, id, rel), dst)
+		if archive.CopyFile(filepath.Join(srcBucket, id, rel), dst) == nil {
+			filed(dst)
+		}
 	}
 }
 

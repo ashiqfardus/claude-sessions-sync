@@ -10,8 +10,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-
-	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 )
 
 // Candidate is a path a transcript suggests Claude worked at. File is true for a
@@ -40,11 +38,17 @@ var (
 	absRe = regexp.MustCompile(`^(?:/|[A-Za-z]:[\\/])`)
 )
 
-// Candidates lists the cwds, cd targets and written files in a transcript,
-// deduplicated by exact string in first-seen order. home expands a leading "~/".
-func Candidates(transcript, home string) ([]Candidate, error) {
-	cwds, err := claude.Cwds(transcript)
+// Candidates lists the cwds, cd targets and written files in a transcript from byte
+// offset on, deduplicated by exact string in first-seen order. home expands a leading
+// "~/". The bytes before offset are ones this machine did not write - a transcript
+// another machine's import filed here - and never name a folder to back up.
+func Candidates(transcript, home string, offset int64) ([]Candidate, error) {
+	f, err := os.Open(transcript)
 	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
 	var out []Candidate
@@ -56,18 +60,16 @@ func Candidates(transcript, home string) ([]Candidate, error) {
 			out = append(out, c)
 		}
 	}
-	for _, c := range cwds {
-		add(c, false)
-	}
-
-	f, err := os.Open(transcript)
-	if err != nil {
-		return out, err
-	}
-	defer f.Close()
+	cwdKey := []byte(`"cwd":"`)
 	r := bufio.NewReaderSize(f, 256*1024)
 	for {
 		line, readErr := r.ReadBytes('\n')
+		if i := bytes.Index(line, cwdKey); i >= 0 {
+			var cwd string
+			if json.NewDecoder(bytes.NewReader(line[i+len(cwdKey)-1:])).Decode(&cwd) == nil {
+				add(cwd, false)
+			}
+		}
 		if bytes.Contains(line, []byte(`"tool_use"`)) {
 			var tl toolLine
 			if json.Unmarshal(line, &tl) == nil {

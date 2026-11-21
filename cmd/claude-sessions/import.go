@@ -224,6 +224,7 @@ func cmdImport(args []string) error {
 	moves = append(moves, workMoves...)
 	writers := sessionWriters(dest)
 	former := formerNames(dest)
+	imported := startFiling(root, dest, *dryRun)
 
 	var rows []importRow
 	var filed, updated, sameLayout, notFound, ambiguous int
@@ -328,7 +329,8 @@ func cmdImport(args []string) error {
 
 		res, err := restoreInto(root, archived, match.Path, rewriteFrom, moves,
 			restoreOpts{BareName: *bareName, DryRun: *dryRun, Update: *update,
-				Owner: p.Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", bucket), Archive: dest, FormerNames: former})
+				Owner: p.Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", bucket), Archive: dest, FormerNames: former,
+				Imported: imported})
 		if err != nil {
 			row.Note = err.Error()
 			rows = append(rows, row)
@@ -376,13 +378,14 @@ func cmdImport(args []string) error {
 	// own files (spec §7a). Work-folder moves only, never project moves.
 	var rp repointResult
 	if *repoint {
-		rp = repointLocal(root, workMoves, time.Now(), *dryRun)
+		rp = repointLocal(root, workMoves, time.Now(), *dryRun, imported)
 		if !*dryRun && rp.Recent == 0 && rp.Skipped == 0 {
 			if err := forgetPrevious(root, workRes.ByMachine); err != nil {
 				rp.Notes = append(rp.Notes, fmt.Sprintf("  x restored work record: %v", err))
 			}
 		}
 	}
+	finishFiling(root, imported, *dryRun)
 
 	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
 
@@ -570,6 +573,7 @@ func cmdPull(args []string) error {
 	projectsDir := claude.ProjectsDir(root)
 	manifest, _, _ := archive.Merged(dest)
 	writers := sessionWriters(dest)
+	imported := startFiling(root, dest, *dryRun)
 	var pulled, updated, already, memory int
 	var forked, failed []string
 
@@ -593,7 +597,7 @@ func cmdPull(args []string) error {
 		res, err := restoreInto(root, srcDir, "", "", nil, restoreOpts{
 			DryRun: *dryRun, Update: *update, Bucket: targetName,
 			Owner: manifest[name].Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", name), Archive: dest,
-			FormerNames: formerNames(dest),
+			FormerNames: formerNames(dest), Imported: imported,
 		})
 		if err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %v", name, err))
@@ -606,6 +610,7 @@ func cmdPull(args []string) error {
 		forked = append(forked, res.Diverged...)
 		failed = append(failed, res.Failed...)
 	}
+	finishFiling(root, imported, *dryRun)
 
 	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
 	// Work folders at their recorded paths, under the same safety rules as import.
