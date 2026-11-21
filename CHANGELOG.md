@@ -11,7 +11,11 @@ All notable changes to this project are documented here. This project follows
   the archive. Only text-like files go in. Images, video and audio, archives, binaries,
   databases, secret-shaped names, anything over 10 MB and every dot file or folder are
   never copied, and a folder over 250 MB after filtering is not backed up. On by
-  default; `config work off` stops it.
+  default; `config work off` stops it. Folders come only from what sessions on this
+  computer wrote, never from conversations imported from another computer.
+- **`push --scan-history`** looks for work folders in every earlier conversation, once,
+  after upgrading. It reads imported conversations too: use it only if you trust
+  everyone who can write to the archive.
 - **`import` and `pull` put work folders back** under your home folder or a folder you
   have mapped. `import` also rewrites the paths in the conversations to match; `pull`
   restores the files at their recorded paths and leaves the conversations alone.

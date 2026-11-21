@@ -649,9 +649,25 @@ so a hand-written `build/` folder is not backed up. A folder over 250 MB after t
 filtering is not backed up at all; `doctor` names it.
 
 **What it skips.** Git repositories (your remote has those), `~/.claude`, and temp
-folders. A folder is backed up only when a session on this computer worked in it: a
-conversation imported from another computer never adds one, so whoever can write to
-the archive cannot make your next push upload a folder of yours.
+folders.
+
+**Which conversations count.** Push looks for folders only in what sessions on this
+computer wrote. A conversation filed from another computer by `import`, `pull` or
+`restore` adds no folder, though lines you add here by continuing it do. That way
+someone who can write to your archive cannot plant a conversation that makes your next
+push upload a folder of yours. The one exception is `push --scan-history`.
+
+**After upgrading.** The first run marks every conversation already on this computer as
+read, and does not look for folders in them. To back up the work folders of earlier
+conversations, run this once:
+
+```sh
+claude-sessions push --scan-history
+```
+
+It reads every conversation in full, including ones imported from other computers, so a
+folder named in one of those is uploaded too. Use it only if you trust everyone who can
+write to your archive.
 
 **On another computer.** `import` and `pull` put the files back under your home folder,
 or under a folder you have mapped, and `import` rewrites the paths in the
@@ -820,6 +836,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `--include-bare-name` | `import`, `restore` | Also replace the bare folder name in transcripts (it can hit package names and prose) |
 | `--source`, `--project-path`, `--rewrite-from` | `restore` | The folder to file, the project here, and the old path to rewrite |
 | `--no-html` | `push` | Do not write pages |
+| `--scan-history` | `push` | This run only, look for work folders in every conversation, imported ones too; once after upgrading, and only if you trust everyone who can write to the archive |
 | `--quiet` | `push` | Hook mode: log instead of printing, and never fail |
 | `--lock-wait <time>` | `push` | With `--quiet`, how long to wait for another push, like `45s` or `2m` (default 45s) |
 | `--from-hook` | `push` | Used by the per-reply hook: copy only the session named on stdin |
