@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -336,6 +337,9 @@ func cmdImport(args []string) error {
 			restoreOpts{BareName: *bareName, DryRun: *dryRun, Update: *update,
 				Owner: p.Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", bucket), Archive: dest, FormerNames: former,
 				Imported: imported})
+		if errors.Is(err, errRecord) {
+			return err // never file what cannot be recorded
+		}
 		if err != nil {
 			row.Note = err.Error()
 			rows = append(rows, row)
@@ -384,13 +388,16 @@ func cmdImport(args []string) error {
 	var rp repointResult
 	if *repoint {
 		rp = repointLocal(root, workMoves, time.Now(), *dryRun, imported)
+		if rp.Err != nil {
+			return rp.Err
+		}
 		if !*dryRun && rp.Recent == 0 && rp.Skipped == 0 {
 			if err := forgetPrevious(root, workRes.ByMachine); err != nil {
 				rp.Notes = append(rp.Notes, fmt.Sprintf("  x restored work record: %v", err))
 			}
 		}
 	}
-	imported.report()
+	imported.finish()
 
 	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
 
@@ -604,6 +611,9 @@ func cmdPull(args []string) error {
 			Owner: manifest[name].Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", name), Archive: dest,
 			FormerNames: formerNames(dest), Imported: imported,
 		})
+		if errors.Is(err, errRecord) {
+			return err // never file what cannot be recorded
+		}
 		if err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %v", name, err))
 			continue
@@ -615,7 +625,7 @@ func cmdPull(args []string) error {
 		forked = append(forked, res.Diverged...)
 		failed = append(failed, res.Failed...)
 	}
-	imported.report()
+	imported.finish()
 
 	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
 	// Work folders at their recorded paths, under the same safety rules as import.

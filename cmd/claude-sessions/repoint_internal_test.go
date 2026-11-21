@@ -101,7 +101,7 @@ func TestRepointMovesFiledMark(t *testing.T) {
 	}
 	at := time.Now().Add(-2 * time.Hour)
 	_ = os.Chtimes(p, at, at)
-	imported := loadImported(root, false) // a first run: marks p
+	imported := loadImported(root, true) // a first run: marks p
 	before := imported.offset(p)
 	res := repointLocal(root, []rewrite.Move{{From: "/old", To: "/a/much/longer/new"}}, time.Now(), false, imported)
 	st, _ := os.Stat(p)
@@ -120,43 +120,93 @@ func TestOriginOfTieBreak(t *testing.T) {
 	}
 }
 
-// A mark only grows: a transcript noted again smaller - or another whose key is the
-// same - never lowers it (R25).
-func TestRecordMarkOnlyGrows(t *testing.T) {
-	root := t.TempDir()
-	p := filepath.Join(root, "projects", "-b", "11111111-1111-1111-1111-111111111111.jsonl")
+// writeTranscript writes content to the transcript at projects/-b/<id>.jsonl in root.
+func writeTranscript(t *testing.T, root, id, content string) string {
+	t.Helper()
+	p := filepath.Join(root, "projects", "-b", id+".jsonl")
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p, []byte(strings.Repeat("x", 100)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := loadImported(root, false)
-	r.note(p)
-	if err := os.WriteFile(p, []byte("y\n"), 0o644); err != nil {
+	return p
+}
+
+// A mark only grows: a transcript settled again smaller never lowers it (R25).
+func TestRecordMarkOnlyGrows(t *testing.T) {
+	root := t.TempDir()
+	p := writeTranscript(t, root, "11111111-1111-1111-1111-111111111111", strings.Repeat("x", 100)+"\n")
+	r := loadImported(root, true) // a first run: marks p at 101
+	writeTranscript(t, root, "11111111-1111-1111-1111-111111111111", "y\n")
+	if err := r.settle(p, true); err != nil {
 		t.Fatal(err)
 	}
-	r.note(p)
 	if got := r.offset(p); got != 101 {
 		t.Fatalf("mark %d, want 101", got)
 	}
 }
 
-// Each transcript noted is on disk at once: a run killed after it leaves nothing it
-// filed unrecorded (R26).
-func TestRecordSavedOnEachNote(t *testing.T) {
+// The journal after a run killed part way: a transcript pended and never settled
+// counts whole, at its size now; one settled, at the size journaled, so lines added
+// here since are read (R28).
+func TestJournalPendingCountsWhole(t *testing.T) {
 	root := t.TempDir()
-	p := filepath.Join(root, "projects", "-b", "11111111-1111-1111-1111-111111111111.jsonl")
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	r := loadImported(root, true) // a first run, with nothing here yet
+	a := filepath.Join(root, "projects", "-b", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jsonl")
+	b := filepath.Join(root, "projects", "-b", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.jsonl")
+	if err := r.pend(a, b); err != nil {
 		t.Fatal(err)
 	}
-	r := loadImported(root, true)
-	if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+	writeTranscript(t, root, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", strings.Repeat("a", 99)+"\n")
+	writeTranscript(t, root, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", strings.Repeat("b", 49)+"\n")
+	if err := r.settle(b, true); err != nil {
 		t.Fatal(err)
 	}
-	r.note(p)
-	raw, _ := os.ReadFile(importedPath(root))
-	if !strings.Contains(string(raw), `"-b/11111111-1111-1111-1111-111111111111.jsonl": 2`) {
-		t.Fatalf("not saved: %s", raw)
+	// Killed here: a's size never journaled, nothing folded into imported.json.
+	f, _ := os.OpenFile(b, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("continued here\n")
+	f.Close()
+	again := loadImported(root, false)
+	if got := again.offset(a); got != 100 {
+		t.Errorf("pending a: mark %d, want 100", got)
+	}
+	if got := again.offset(b); got != 50 {
+		t.Errorf("settled b: mark %d, want 50", got)
+	}
+	// Folded at the next load that saves: the journal goes, the marks stay.
+	loadImported(root, true)
+	if _, err := os.Stat(importedLog(root)); !os.IsNotExist(err) {
+		t.Errorf("journal left: %v", err)
+	}
+	if got := loadImported(root, false).offset(a); got != 100 {
+		t.Errorf("after folding, a: mark %d, want 100", got)
+	}
+}
+
+// A lookup takes the larger of the exact key and the case-folded one, on every OS;
+// a nil record reads everything (R28, N6).
+func TestRecordFoldedLookup(t *testing.T) {
+	root := t.TempDir()
+	r := loadImported(root, false)
+	r.set("-b/A.jsonl", 300)
+	r.set("-b/a.jsonl", 10)
+	for _, name := range []string{"A.jsonl", "a.jsonl"} {
+		if got := r.offset(filepath.Join(root, "projects", "-b", name)); got != 300 {
+			t.Errorf("%s: mark %d, want 300", name, got)
+		}
+	}
+	if got := r.offset(filepath.Join(root, "projects", "-b", "x.jsonl")); got != 0 {
+		t.Errorf("unrecorded: mark %d", got)
+	}
+	var none *importRecord
+	if none.offset(filepath.Join(root, "x.jsonl")) != 0 || none.has(filepath.Join(root, "x.jsonl")) {
+		t.Error("a nil record holds something")
+	}
+	p := writeTranscript(t, root, "11111111-1111-1111-1111-111111111111", `{"cwd":"/old/x"}`+"\n")
+	at := time.Now().Add(-2 * time.Hour)
+	_ = os.Chtimes(p, at, at)
+	if res := repointLocal(root, []rewrite.Move{{From: "/old", To: "/new"}}, time.Now(), false, nil); res.Rewritten != 1 {
+		t.Errorf("repoint with no record: %+v", res)
 	}
 }

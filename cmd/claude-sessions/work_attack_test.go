@@ -385,19 +385,6 @@ func TestRecordLostWriterAmbiguous(t *testing.T) {
 	noExfil(t, mac.archive)
 }
 
-// Each transcript is recorded as it is filed, from local facts only: with the
-// archive's writer info gone afterwards, and a mark an earlier build left, push still
-// reads nothing of it (R26).
-func TestImportRecordNeedsNoArchive(t *testing.T) {
-	mac, homeM, _ := exfilSetup(t)
-	rec := filepath.Join(mac.claudeDir, "session-sync-base", "imported.json")
-	mustWrite(t, rec+".pending", "")
-	_ = os.Remove(filepath.Join(mac.archive, "index", "EVIL.json"))
-	_ = os.Remove(filepath.Join(mac.archive, "manifest", "EVIL.json"))
-	mac.workRun(t, homeM, "push", "--no-html")
-	noExfil(t, mac.archive)
-}
-
 // restore --source from a copy of the archive while the archive is offline records
 // what it files all the same (R26).
 func TestRestoreArchiveOffline(t *testing.T) {
@@ -612,4 +599,183 @@ func TestRemapNeverMovesOwnUnpushed(t *testing.T) {
 	if after := mustRead(t, own); after != before {
 		t.Errorf("own conversation rewritten:\n%s\n%s", after, out)
 	}
+}
+
+// importedKeyOf is how the record names a transcript: its path below projects/.
+func importedKeyOf(m machine, p string) string {
+	rel, _ := filepath.Rel(filepath.Join(m.claudeDir, "projects"), p)
+	return filepath.ToSlash(rel)
+}
+
+// An import killed after a transcript landed and before its size was journaled leaves
+// it pending in imported.log: the whole file counts as filed (R28).
+func TestKillWindowState(t *testing.T) {
+	mac, homeM, filed := exfilSetup(t)
+	base := filepath.Join(mac.claudeDir, "session-sync-base")
+	mustWrite(t, filepath.Join(base, "imported.json"), "{}\n") // as compacted before that transcript
+	line, _ := json.Marshal(map[string]string{"pending": importedKeyOf(mac, filed)})
+	mustWrite(t, filepath.Join(base, "imported.log"), string(line)+"\n")
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, mac.archive)
+}
+
+// A run that finishes folds its journal into the record: no journal left, and each
+// transcript filed at its size (R28).
+func TestImportJournalCompacted(t *testing.T) {
+	mac, _, filed := exfilSetup(t)
+	base := filepath.Join(mac.claudeDir, "session-sync-base")
+	if _, err := os.Stat(filepath.Join(base, "imported.log")); !os.IsNotExist(err) {
+		t.Errorf("journal left after a finished import: %v", err)
+	}
+	var marks map[string]int64
+	if err := json.Unmarshal([]byte(mustRead(t, filepath.Join(base, "imported.json"))), &marks); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := os.Stat(filed)
+	if got := marks[importedKeyOf(mac, filed)]; got != st.Size() {
+		t.Errorf("mark %d, want %d: %v", got, st.Size(), marks)
+	}
+}
+
+// Nothing is filed that the journal could not record: the import stops with an error
+// (R28).
+func TestImportAbortsWhenJournalFails(t *testing.T) {
+	arch := t.TempDir()
+	evil, mac := newMachine(t, "EVIL", arch), newMachine(t, "MAC", arch)
+	homeE, homeM := t.TempDir(), t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	configAs(t, evil.claudeDir, "EVIL", "work", "off")
+	workSession(t, evil, private, nil, "ls")
+	evil.workRun(t, homeE, "push", "--no-html")
+	// A folder where the journal goes: no append can succeed.
+	mustWrite(t, filepath.Join(mac.claudeDir, "session-sync-base", "imported.log", "x"), "x")
+	out, err := mac.workCmd(homeM, "import", "--no-plugins").CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "imported.log") {
+		t.Errorf("import went on: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(mac.session(private)); !os.IsNotExist(err) {
+		t.Errorf("filed without a record: %v", err)
+	}
+}
+
+// What the record says about itself goes to stderr, and says what is true: import
+// --json stays one JSON document (R28, N4/N5).
+func TestImportJSONWhenRecordFails(t *testing.T) {
+	mac, homeM, _ := exfilSetup(t)
+	rec := filepath.Join(mac.claudeDir, "session-sync-base", "imported.json")
+	if err := os.Remove(rec); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(rec, "x"), "x") // a folder: it can be neither read nor saved
+	cmd := mac.workCmd(homeM, "import", "--no-plugins", "--json")
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("import: %v\n%s%s", err, stdout.String(), stderr.String())
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(stdout.String()), &rows); err != nil {
+		t.Errorf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "imported.json") || strings.Contains(stderr.String(), "already read") {
+		t.Errorf("stderr: %q", stderr.String())
+	}
+}
+
+// Subagent transcripts whose names differ only in case: the short one's size must not
+// become the long one's mark (R25, subagent half).
+func TestSubagentCaseCollidingMarks(t *testing.T) {
+	arch := t.TempDir()
+	caseSensitive(t, arch)
+	evil, mac := newMachine(t, "EVIL", arch), newMachine(t, "MAC", arch)
+	homeE, homeM := t.TempDir(), t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "m1"))
+	mac.workRun(t, homeM, "push", "--no-html")
+
+	configAs(t, evil.claudeDir, "EVIL", "work", "off")
+	repoE := gitRepo(t, filepath.Join(t.TempDir(), "dev", "evil"))
+	tr := workSession(t, evil, repoE, nil, "ls")
+	dir := filepath.Join(strings.TrimSuffix(tr, ".jsonl"), "subagents")
+	pad := `{"type":"user","uuid":"p0","cwd":"` + repoE + `","message":{"role":"user","content":"` + strings.Repeat("x", 400) + `"}}` + "\n"
+	mustWrite(t, filepath.Join(dir, "agent-A.jsonl"), pad+toolLineJSON(private, "s1", filepath.Join(private, "salary.txt")))
+	mustWrite(t, filepath.Join(dir, "agent-a.jsonl"), `{"type":"user","uuid":"t1","cwd":"`+repoE+`"}`+"\n")
+	evil.workRun(t, homeE, "push", "--no-html")
+	mac.workRun(t, homeM, "import", "--no-plugins")
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
+}
+
+// A first run that is a dry run writes no record, and the real run after it still
+// marks what was here.
+func TestFirstRunDryRunThenPush(t *testing.T) {
+	mac, homeM, _ := exfilSetup(t)
+	rec := filepath.Join(mac.claudeDir, "session-sync-base", "imported.json")
+	_ = os.Remove(rec)
+	mac.workRun(t, homeM, "import", "--no-plugins", "--dry-run")
+	mac.workRun(t, homeM, "push", "--no-html", "--dry-run")
+	if _, err := os.Stat(rec); err == nil {
+		t.Errorf("dry runs wrote the record")
+	}
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, mac.archive)
+}
+
+// Filed by an older build with no record, a session's hostile subagent transcript is
+// marked by the first run too.
+func TestFirstRunMarksSubagent(t *testing.T) {
+	arch := t.TempDir()
+	evil, mac := newMachine(t, "EVIL", arch), newMachine(t, "MAC", arch)
+	homeE, homeM := t.TempDir(), t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "m1"))
+	mac.workRun(t, homeM, "push", "--no-html")
+	configAs(t, evil.claudeDir, "EVIL", "work", "off")
+	repoE := gitRepo(t, filepath.Join(t.TempDir(), "dev", "evil"))
+	tr := workSession(t, evil, repoE, nil, "ls")
+	mustWrite(t, filepath.Join(strings.TrimSuffix(tr, ".jsonl"), "subagents", "agent-1.jsonl"), toolLineJSON(private, "s1", filepath.Join(private, "salary.txt")))
+	evil.workRun(t, homeE, "push", "--no-html")
+	mac.workRun(t, homeM, "import", "--no-plugins")
+	_ = os.Remove(filepath.Join(mac.claudeDir, "session-sync-base", "imported.json"))
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
+}
+
+// A first run with work off still marks what is here, so turning work on later reads
+// none of it.
+func TestFirstRunWorkOffThenOn(t *testing.T) {
+	mac, homeM, _ := exfilSetup(t)
+	_ = os.Remove(filepath.Join(mac.claudeDir, "session-sync-base", "imported.json"))
+	configAs(t, mac.claudeDir, "MAC", "work", "off")
+	mac.workRun(t, homeM, "push", "--no-html")
+	configAs(t, mac.claudeDir, "MAC", "work", "on")
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, mac.archive)
+}
+
+// A fork copy planted under forks/<bucket>/<id>/EVIL.jsonl, with a subagent planted in
+// the archived session folder, for a session MAC holds.
+func TestPlantedForkCopyCannotExfiltrate(t *testing.T) {
+	arch := t.TempDir()
+	mac := newMachine(t, "MAC", arch)
+	homeM := t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "m1"))
+	aged(t, mac.session(repo))
+	mac.workRun(t, homeM, "push", "--no-html")
+	b := claude.Slug(repo)
+	mustWrite(t, filepath.Join(arch, "forks", b, forkSession, "EVIL.jsonl"),
+		sessionLines(repo, "m1")+toolLineJSON(private, "f1", filepath.Join(private, "salary.txt")))
+	mustWrite(t, filepath.Join(arch, "projects", b, forkSession, "subagents", "agent-7.jsonl"),
+		toolLineJSON(private, "s7", filepath.Join(private, "salary.txt")))
+	mac.workRun(t, homeM, "import", "--no-plugins", "--update")
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
 }

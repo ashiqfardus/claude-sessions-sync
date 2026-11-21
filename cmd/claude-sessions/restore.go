@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -99,7 +100,7 @@ func cmdRestore(args []string) error {
 	imported := loadImported(root, !*dryRun)
 	res, err := restoreInto(root, *source, *projectPath, *rewriteFrom, nil,
 		restoreOpts{BareName: *bareName, DryRun: *dryRun, Update: *update, Imported: imported})
-	imported.report()
+	imported.finish()
 	if err != nil {
 		return err
 	}
@@ -224,6 +225,27 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		}
 	}
 
+	// What may land here - each transcript not here yet, and each subagent transcript -
+	// is journaled first, in one fsync'd write: a run killed at any point leaves each of
+	// them counted as filed in whole.
+	if !opts.DryRun {
+		var landing []string
+		for _, src := range transcripts {
+			id := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+			if dst := filepath.Join(res.Bucket, filepath.Base(src)); archive.StatOrNil(dst) == nil {
+				landing = append(landing, dst)
+			}
+			for _, rel := range claude.SessionFiles(filepath.Join(source, id)) {
+				if dst := filepath.Join(res.Bucket, id, rel); archive.StatOrNil(dst) == nil {
+					landing = append(landing, dst)
+				}
+			}
+		}
+		if err := opts.Imported.pend(landing...); err != nil {
+			return res, err
+		}
+	}
+
 	filed := loadFiledForks(filedForksPath(root, res.Bucket))
 	for _, src := range transcripts {
 		name := filepath.Base(src)
@@ -241,8 +263,9 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 			res.Skipped++
 			continue
 		}
-		restoreSessionFiles(source, res.Bucket, strings.TrimSuffix(name, filepath.Ext(name)), opts.DryRun,
-			opts.Imported.note)
+		if err := restoreSessionFiles(source, res.Bucket, strings.TrimSuffix(name, filepath.Ext(name)), opts.DryRun, opts.Imported); err != nil {
+			return res, err
+		}
 		if exists && !opts.Update {
 			res.Skipped++
 			continue
@@ -258,21 +281,24 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 
 		if !exists {
 			out, err := fileTranscript(src, dst, rules, bareLeaf)
+			if lerr := opts.Imported.settle(dst, true); lerr != nil {
+				return res, lerr
+			}
 			if err != nil {
 				res.Failed = append(res.Failed, fmt.Sprintf("%s: %v", name, err))
 				continue
 			}
-			opts.Imported.note(dst)
 			res.add(out)
 			res.Copied++
 			continue
 		}
 
-		switch out, state, err := updateTranscript(src, dst, rules, bareLeaf); {
+		switch out, state, err := landUpdate(opts.Imported, src, dst, rules, bareLeaf); {
+		case errors.Is(err, errRecord):
+			return res, err
 		case err != nil:
 			res.Failed = append(res.Failed, fmt.Sprintf("%s: %v", name, err))
 		case state == extended:
-			opts.Imported.note(dst)
 			res.add(out)
 			res.Updated++
 		case state == diverged:
@@ -292,6 +318,9 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 			}
 			fid, outcome, err := fileFork(root, src, filepath.Join(source, id), res.Bucket, id,
 				forkTag(filepath.Base(source), owner), rules, bareLeaf, opts)
+			if errors.Is(err, errRecord) {
+				return res, err
+			}
 			if err != nil {
 				res.Failed = append(res.Failed, fmt.Sprintf("%s: fork: %v", name, err))
 				continue
@@ -322,6 +351,9 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 				}
 				fid, outcome, err := fileFork(root, filepath.Join(opts.Forks, d.Name(), c.Name()), filepath.Join(source, d.Name()),
 					res.Bucket, d.Name(), forkTag(filepath.Base(source), machine), rules, bareLeaf, opts)
+				if errors.Is(err, errRecord) {
+					return res, err
+				}
 				if err != nil {
 					res.Failed = append(res.Failed, fmt.Sprintf("%s: fork from %s: %v", d.Name(), printable(machine), err))
 					continue
@@ -384,7 +416,9 @@ const (
 // the local one, or the same conversation in other bytes, is left alone; one where
 // both sides have turns the other lacks is reported as diverged. The two are compared
 // by entry, not by bytes: the local copy may itself have been rewritten by an import.
-func updateTranscript(src, dst string, rules []rewrite.Rule, bareLeaf string) (rewrite.Result, updateState, error) {
+//
+// replacing, when not nil, runs just before dst is replaced; its error stops it.
+func updateTranscript(src, dst string, rules []rewrite.Rule, bareLeaf string, replacing func() error) (rewrite.Result, updateState, error) {
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".tmp-update-*")
 	if err != nil {
 		return rewrite.Result{}, unchanged, err
@@ -392,6 +426,14 @@ func updateTranscript(src, dst string, rules []rewrite.Rule, bareLeaf string) (r
 	tmpName := tmp.Name()
 	tmp.Close()
 	defer os.Remove(tmpName) // already gone when it was renamed into place
+	replace := func() error {
+		if replacing != nil {
+			if err := replacing(); err != nil {
+				return err
+			}
+		}
+		return os.Rename(tmpName, dst)
+	}
 
 	out, err := fileTranscript(src, tmpName, rules, bareLeaf)
 	if err != nil {
@@ -403,7 +445,7 @@ func updateTranscript(src, dst string, rules []rewrite.Rule, bareLeaf string) (r
 	case claude.Forked:
 		return out, diverged, nil
 	case claude.Extends:
-		return out, extended, os.Rename(tmpName, dst)
+		return out, extended, replace()
 	}
 
 	// No entry ids to go by: a byte prefix is the only evidence of a continuation.
@@ -421,7 +463,26 @@ func updateTranscript(src, dst string, rules []rewrite.Rule, bareLeaf string) (r
 	case len(fresh) < len(current) || !bytes.HasPrefix(fresh, current):
 		return out, diverged, nil
 	}
-	return out, extended, os.Rename(tmpName, dst)
+	return out, extended, replace()
+}
+
+// landUpdate is updateTranscript journaled: dst is pended just before it is replaced,
+// and settled after, at its new size only if it was replaced.
+func landUpdate(r *importRecord, src, dst string, rules []rewrite.Rule, bareLeaf string) (rewrite.Result, updateState, error) {
+	pended := false
+	out, state, err := updateTranscript(src, dst, rules, bareLeaf, func() error {
+		if err := r.pend(dst); err != nil {
+			return err
+		}
+		pended = true
+		return nil
+	})
+	if pended {
+		if lerr := r.settle(dst, state == extended && err == nil); lerr != nil {
+			return out, state, lerr
+		}
+	}
+	return out, state, err
 }
 
 // forkTag names where a forked copy came from - the archived bucket and the machine
@@ -486,11 +547,11 @@ func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.
 		case opts.DryRun || (exists && !opts.Update):
 			return fid, forkUnchanged, nil
 		case !exists:
-			if _, err := fileTranscript(src, dst, forkRules, bareLeaf); err != nil {
+			if err := opts.Imported.land(dst, func() error { _, err := fileTranscript(src, dst, forkRules, bareLeaf); return err }); err != nil {
 				return "", forkUnchanged, err
 			}
 		default:
-			_, state, err := updateTranscript(src, dst, forkRules, bareLeaf)
+			_, state, err := landUpdate(opts.Imported, src, dst, forkRules, bareLeaf)
 			if err != nil {
 				return "", forkUnchanged, err
 			}
@@ -504,12 +565,14 @@ func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.
 			}
 		}
 		for _, rel := range claude.SessionFiles(sessionDir) {
-			if to := filepath.Join(bucketDir, fid, rel); archive.StatOrNil(to) == nil && archive.CopyFile(filepath.Join(sessionDir, rel), to) == nil {
-				opts.Imported.note(to)
+			if to := filepath.Join(bucketDir, fid, rel); archive.StatOrNil(to) == nil {
+				err := opts.Imported.land(to, func() error { return archive.CopyFile(filepath.Join(sessionDir, rel), to) })
+				if errors.Is(err, errRecord) {
+					return "", forkUnchanged, err
+				}
 			}
 		}
 		if outcome != forkUnchanged {
-			opts.Imported.note(dst)
 			remember(fid, dst)
 		}
 		return fid, outcome, nil
@@ -884,21 +947,24 @@ func mergeIndex(base, theirs, mine string, theirsNewer bool, held map[string]boo
 }
 
 // restoreSessionFiles copies a session's own folder - subagent transcripts and saved
-// tool output - adding only files that are not here yet, and passes each to filed. A
-// local file belongs to a live or newer session and is never replaced.
+// tool output - adding only files that are not here yet. A local file belongs to a
+// live or newer session and is never replaced. Each subagent transcript was pended in
+// r before; its size is journaled once it lands, and a journal error stops it.
 //
 // ponytail: paths inside subagent transcripts are not rewritten; add it if a
 // subagent's recorded cwd ever matters to Claude Code.
-func restoreSessionFiles(srcBucket, dstBucket, id string, dryRun bool, filed func(string)) {
+func restoreSessionFiles(srcBucket, dstBucket, id string, dryRun bool, r *importRecord) error {
 	for _, rel := range claude.SessionFiles(filepath.Join(srcBucket, id)) {
 		dst := filepath.Join(dstBucket, id, rel)
 		if dryRun || archive.StatOrNil(dst) != nil {
 			continue
 		}
-		if archive.CopyFile(filepath.Join(srcBucket, id, rel), dst) == nil {
-			filed(dst)
+		_ = archive.CopyFile(filepath.Join(srcBucket, id, rel), dst)
+		if err := r.settle(dst, true); err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
 // olderThanArchive dates a rewritten transcript just before its archived source.
