@@ -580,3 +580,36 @@ func TestPurgeFinalLinkOnly(t *testing.T) {
 		t.Errorf("followed the final link: %v", err)
 	}
 }
+
+// MAC works in ~/notes but has not pushed since, so the folder is in no local record
+// when EVIL's folder is placed there: it was there before, and is never the old end
+// of a remap (R27).
+func TestRemapNeverMovesOwnUnpushed(t *testing.T) {
+	arch := t.TempDir()
+	mac := newMachine(t, "MAC", arch)
+	homeM := t.TempDir()
+	notes := filepath.Join(homeM, "notes")
+	mustWrite(t, filepath.Join(notes, "x.md"), "mine\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	own := workSession(t, mac, repo, []string{filepath.Join(notes, "x.md")})
+	aged(t, own)
+	before := mustRead(t, own)
+	other := newMachine(t, "OTHER", arch)
+	repoO := gitRepo(t, filepath.Join(t.TempDir(), "dev", "other"))
+	mustWrite(t, other.session(repoO), sessionLines(repoO, "o1"))
+	other.workRun(t, t.TempDir(), "push", "--no-html")
+	writeEvil := func(home string) {
+		b, _ := json.Marshal(map[string]any{"schemaVersion": 1, "machine": "EVIL", "home": home, "projects": map[string]any{},
+			"workFolders": []map[string]any{{"path": "/evilhome/notes"}}})
+		mustWrite(t, filepath.Join(arch, "manifest", "EVIL.json"), string(b))
+	}
+	mustWrite(t, filepath.Join(arch, "work", "EVIL", "evilhome", "notes", "a.md"), "a\n")
+	writeEvil("/evilhome")
+	mac.workRun(t, homeM, "import", "--no-plugins")
+	writeEvil("/elsewhere")
+	mac.workRun(t, homeM, "import", "--no-plugins")
+	out := mac.workRun(t, homeM, "import", "--no-plugins", "--repoint")
+	if after := mustRead(t, own); after != before {
+		t.Errorf("own conversation rewritten:\n%s\n%s", after, out)
+	}
+}

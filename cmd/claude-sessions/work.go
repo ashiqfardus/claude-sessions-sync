@@ -593,8 +593,11 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				delete(held.Prev, key)
 			}
 			if !ok || !samePath(old, target) || sameLayout {
-				// Decided when first placed: once worked in here, every target is an own path.
-				held.NoPrev[key] = sameLayout || ownPath(target)
+				// Decided when first placed, before any file lands: once worked in here, every
+				// target is an own path. One already on disk may be this machine's own not yet
+				// in any record - worked in, never pushed.
+				_, err := os.Lstat(target)
+				held.NoPrev[key] = sameLayout || ownPath(target) || err == nil
 			}
 			held.Placed[key] = target
 			res.ByMachine[key] = target
