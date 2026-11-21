@@ -643,8 +643,10 @@ on by default.
 like. **Never copied:** images, video and audio, archives, binaries, databases,
 `.pth` files, files whose names look like secrets (`.env`, keys, tokens), anything over
 10 MB, and every dot file and dot folder. `node_modules`, `venv`, `vendor`,
-`__pycache__` and `site-packages` are never work folders. A folder over 250 MB after
-that filtering is not backed up at all; `doctor` names it.
+`__pycache__`, `site-packages` and `dist-packages` are never work folders. Inside a
+work folder, subfolders named `dist`, `build`, `target` and `.cache` are skipped too,
+so a hand-written `build/` folder is not backed up. A folder over 250 MB after that
+filtering is not backed up at all; `doctor` names it.
 
 **What it skips.** Git repositories (your remote has those), `~/.claude`, and temp
 folders.
@@ -661,7 +663,7 @@ claude-sessions import
 ```
 
 For a folder outside your home on the computer you restore to, map it to itself:
-`config map-folder E:\SQL E:\SQL`. Restore never writes outside your home or a mapped
+`config map-folder 'E:\SQL' 'E:\SQL'`. Restore never writes outside your home or a mapped
 folder.
 
 Restoring only adds. A file already there is left alone. With `--update`, a file is

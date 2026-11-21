@@ -13,7 +13,9 @@ All notable changes to this project are documented here. This project follows
   never copied, and a folder over 250 MB after filtering is not backed up. On by
   default; `config work off` stops it.
 - **`import` and `pull` put work folders back** under your home folder or a folder you
-  have mapped, and rewrite the paths in the conversations to match. Restoring only
+  have mapped. `import` also rewrites the paths in the conversations to match; `pull`
+  restores the files at their recorded paths and leaves the conversations alone.
+  Restoring only
   adds files, and never writes dot files, system or startup folders, code folders or
   git repositories.
 - **`config map-folder`, `unmap-folder`, `work-placement`, `exclude-folder` and
