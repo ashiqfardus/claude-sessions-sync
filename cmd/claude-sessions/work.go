@@ -116,6 +116,7 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 	}
 	held := hr.Files
 	start := time.Now()
+	real := map[string]bool{}
 	// copyFolder backs up one folder. It returns false when the budget ran out part way.
 	copyFolder := func(f work.Folder) (archive.WorkFolder, bool) {
 		dir, err := workDir(dest, shard.Machine, f.Path)
@@ -148,6 +149,7 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 			e.Skipped = "over 250 MB"
 			return e, true
 		}
+		linked := false
 		for _, p := range c.Files {
 			if budget > 0 && time.Since(start) > budget {
 				return e, false
@@ -156,6 +158,13 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 			if !f.Exact {
 				rel, _ := filepath.Rel(f.Path, p)
 				target = filepath.Join(dir, rel)
+			}
+			if !realWorkDirs(dest, filepath.Dir(target), real) {
+				if !linked {
+					logf("WARN: work folder %s: its archive copy is reached through a link; not written", f.Path)
+					linked = true
+				}
+				continue
 			}
 			src, err := os.Stat(p)
 			if err != nil {
@@ -293,23 +302,50 @@ func workDir(dest, machine, p string) (string, error) {
 	return dir, nil
 }
 
+// realWorkDirs reports whether every folder from dest/work down to dir that exists is
+// a real folder, not a link or anything else. The archive is shared: a link planted
+// in it would make a write or a delete there land in a local folder. real caches the
+// folders already found real in this run.
+func realWorkDirs(dest, dir string, real map[string]bool) bool {
+	base := filepath.Join(dest, "work")
+	rel, err := filepath.Rel(base, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	q := base
+	for _, s := range append([]string{"."}, strings.Split(rel, string(filepath.Separator))...) {
+		if q = filepath.Join(q, s); real[q] {
+			continue
+		}
+		if _, err := os.Lstat(q); errors.Is(err, fs.ErrNotExist) {
+			return true // nothing below it to follow
+		}
+		if !archive.IsRealDir(q) {
+			return false
+		}
+		real[q] = true
+	}
+	return true
+}
+
 // purgeWork removes this machine's archived copies of folder: every shard entry inside
 // it, and, when folder lies inside an archived entry, just that subfolder (the entry
-// stays). It returns the folders removed. Entries workDir refuses are never deleted.
-// The caller holds the push lock.
+// stays). It returns the folders removed. What workDir refuses, or a link reaches, is
+// never deleted. The caller holds the push lock.
 func purgeWork(dest, machine, folder string) ([]string, error) {
 	shard := readShard(dest, machine)
 	var keep []archive.WorkFolder
 	var removed []string
+	real := map[string]bool{}
 	drop := func(p string) error {
 		dir, err := workDir(dest, machine, p)
-		if err != nil {
+		if err != nil || !realWorkDirs(dest, filepath.Dir(dir), real) {
 			return nil // hostile or malformed: skip, never delete
 		}
-		if _, err := os.Stat(dir); err != nil {
+		if _, err := os.Lstat(dir); err != nil {
 			return nil
 		}
-		if err := os.RemoveAll(dir); err != nil {
+		if err := os.RemoveAll(dir); err != nil { // never follows a link: removes the link
 			return err
 		}
 		removed = append(removed, p)
