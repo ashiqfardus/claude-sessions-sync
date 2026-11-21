@@ -279,6 +279,9 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	scanAll := !prevShard.RelatedIndexed
 	shard.RelatedIndexed = true
 	pushed := pushedBefore(dest, shard.Machine)
+	// Transcripts to look for work folders in: those changed since the last full push
+	// - not only those copied now, as the per-reply hook has usually copied them.
+	var workScan []string
 
 	for _, b := range buckets {
 		destBucket := filepath.Join(archive.ProjectsDir(dest), b.Name)
@@ -294,6 +297,14 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 			if statErr != nil {
 				res.Skipped = append(res.Skipped, t.ID)
 				continue
+			}
+			if !prevShard.WorkIndexed || changedSincePush(pushed, b.Name, t.ID, srcInfo) {
+				workScan = append(workScan, t.Path)
+				for _, rel := range t.Extras {
+					if filepath.Dir(rel) == "subagents" && strings.EqualFold(filepath.Ext(rel), ".jsonl") {
+						workScan = append(workScan, filepath.Join(b.Dir, t.ID, rel))
+					}
+				}
 			}
 			switch archiveTranscript(dest, b.Name, t.ID, t.Path, srcInfo, pushed, dryRun, logf) {
 			case copyFailed:
@@ -373,6 +384,21 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		}
 	}
 
+	// The folders those sessions worked in. A config that cannot be read may have lost
+	// its exclusions, so nothing is copied until it is fixed.
+	cfg, cerr := archive.LoadConfig(root)
+	if cerr != nil {
+		logf("WARN: work folders not backed up: %v", cerr)
+		cfg.WorkBackup = "off"
+	}
+	workBudget := time.Duration(0)
+	if quiet {
+		workBudget = quietWorkBudget
+	}
+	wr := pushWork(root, dest, &shard, prevShard, workScan, cfg, dryRun, workBudget, logf)
+	res.Copied += wr.Copied
+	res.Unchanged += wr.Unchanged
+
 	// Global rules, skills and the plugin list, so another machine behaves the same.
 	pc, pu := pushProfile(root, dest, dryRun, logf)
 	res.Copied += pc
@@ -421,6 +447,12 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		return enc.Encode(res)
 	}
 	if !quiet {
+		for _, n := range wr.New {
+			fmt.Printf("now backing up %s\n", n)
+		}
+		for _, p := range wr.Would {
+			fmt.Printf("would copy %s\n", p)
+		}
 		verb := "copied"
 		if dryRun {
 			verb = "would copy"

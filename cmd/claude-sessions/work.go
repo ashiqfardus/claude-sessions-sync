@@ -5,12 +5,179 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
+
+// quietWorkBudget bounds work-folder copying in an unattended push, as
+// quietRenderBudget does for pages. Files left over are copied by the next run.
+const quietWorkBudget = 30 * time.Second
+
+// workPushResult is what pushWork did. New holds "<folder> (<n> files, <size>)" for
+// each folder backed up for the first time; Would, under --dry-run, the files a real
+// run would copy.
+type workPushResult struct {
+	Folders, Copied, Unchanged int
+	Bytes                      int64
+	New                        []string
+	Deferred                   bool
+	Would                      []string
+}
+
+// workEnv is what choosing work folders needs to know about this machine.
+// CLAUDE_SESSIONS_TEMP_DIRS replaces the temp list; the tests need it, as every test
+// folder lives under the system temp folder.
+func workEnv(root string) work.Env {
+	temp := []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"}
+	if v := os.Getenv("CLAUDE_SESSIONS_TEMP_DIRS"); v != "" {
+		temp = filepath.SplitList(v)
+	}
+	// An empty entry contains every path, and would silently drop every folder.
+	temp = slices.DeleteFunc(temp, func(s string) bool { return s == "" })
+	return work.Env{
+		Home: userHome(), ClaudeRoot: root, Temp: temp, Windows: runtime.GOOS == "windows",
+		RepoRoot: identity.RepoRoot,
+		Exists:   func(p string) bool { _, err := os.Stat(p); return err == nil },
+	}
+}
+
+// pushWork archives the folders this machine's sessions worked in to
+// work/<machine>/ and records them in shard. It looks for folders only in scan, the
+// transcripts that changed; those found before come from prev. The caller holds the
+// push lock.
+func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan []string, cfg archive.Config, dryRun bool, budget time.Duration, logf func(string, ...any)) workPushResult {
+	var res workPushResult
+	if !cfg.WorkOn() {
+		// Off stops copying, not the record of what the archive holds. WorkIndexed stays
+		// unset, so turning it back on rescans every transcript.
+		shard.WorkFolders = prev.WorkFolders
+		return res
+	}
+	env := workEnv(root)
+	fold := func(p string) bool { return env.Windows || work.WindowsPath(p) }
+	// The archive is never copied into its own work/ folder.
+	exclude := append(slices.Clone(cfg.WorkExclude), dest)
+	excluded := func(p string) bool {
+		return slices.ContainsFunc(exclude, func(x string) bool { return work.Within(p, x, fold(p)) })
+	}
+
+	var cands []work.Candidate
+	for _, t := range scan {
+		c, _ := work.Candidates(t, env.Home) // a transcript that fails part way still gives what it read
+		cands = append(cands, c...)
+	}
+	prevBy := map[string]archive.WorkFolder{}
+	for _, f := range prev.WorkFolders {
+		if excluded(f.Path) {
+			if !dryRun {
+				if _, err := purgeWork(dest, shard.Machine, f.Path); err != nil {
+					logf("WARN: work folder %s: %v", f.Path, err)
+				}
+			}
+			continue
+		}
+		prevBy[f.Path] = f
+		cands = append(cands, work.Candidate{Path: f.Path, File: f.Exact})
+	}
+	folders := slices.DeleteFunc(work.Folders(cands, env), func(f work.Folder) bool { return excluded(f.Path) })
+
+	// A folder found before and not now - deleted, moved, become a repository - keeps
+	// its entry unchanged: its copy is still in the archive.
+	var out []archive.WorkFolder
+	for _, p := range prev.WorkFolders {
+		if _, ok := prevBy[p.Path]; ok && !slices.ContainsFunc(folders, func(f work.Folder) bool { return work.Within(p.Path, f.Path, fold(p.Path)) }) {
+			out = append(out, p)
+		}
+	}
+
+	start := time.Now()
+	// copyFolder backs up one folder. It returns false when the budget ran out part way.
+	copyFolder := func(f work.Folder) (archive.WorkFolder, bool) {
+		dir, err := workDir(dest, shard.Machine, f.Path)
+		if err != nil {
+			logf("WARN: work folder %s: %v", f.Path, err)
+			return archive.WorkFolder{}, true
+		}
+		c, err := work.Collect(f, exclude)
+		if err != nil {
+			logf("WARN: work folder %s: %v", f.Path, err)
+			return prevBy[f.Path], true
+		}
+		e := archive.WorkFolder{Path: f.Path, Exact: f.Exact}
+		if c.Bytes > work.MaxFolderBytes {
+			logf("WARN: work folder %s is over 250 MB after filtering; not backed up (exclude parts with config exclude-folder)", f.Path)
+			e.Skipped = "over 250 MB"
+			return e, true
+		}
+		for _, p := range c.Files {
+			if budget > 0 && time.Since(start) > budget {
+				return e, false
+			}
+			target := dir
+			if !f.Exact {
+				rel, _ := filepath.Rel(f.Path, p)
+				target = filepath.Join(dir, rel)
+			}
+			src, err := os.Stat(p)
+			if err != nil {
+				continue
+			}
+			// Unlike a transcript, a file may shrink: an edit within the mtime tolerance
+			// that changed its size is copied too.
+			if dst := archive.StatOrNil(target); !archive.NeedsCopy(src, dst) &&
+				!(dst != nil && src.Size() != dst.Size() && archive.SameMTime(src.ModTime(), dst.ModTime())) {
+				res.Unchanged++
+				continue
+			}
+			if dryRun {
+				res.Would = append(res.Would, p)
+			} else if err := archive.CopyFile(p, target); err != nil {
+				logf("WARN: %s: %v", p, err)
+				continue
+			}
+			res.Copied++
+		}
+		e.Files, e.Bytes = len(c.Files), c.Bytes
+		res.Folders++
+		res.Bytes += c.Bytes
+		if prevBy[f.Path].Files == 0 && e.Files > 0 && !dryRun {
+			n := fmt.Sprintf("%s (%d files, %s)", f.Path, e.Files, humanSize(c.Bytes))
+			logf("WORK: now backing up %s", n)
+			res.New = append(res.New, n)
+		}
+		return e, true
+	}
+
+	for i, f := range folders {
+		e, done := copyFolder(f)
+		if !done {
+			// Unfinished folders keep their last entry, or a bare one, so the next run
+			// finds them again without rescanning a transcript.
+			for _, g := range folders[i:] {
+				old, ok := prevBy[g.Path]
+				if !ok {
+					old = archive.WorkFolder{Path: g.Path, Exact: g.Exact}
+				}
+				out = append(out, old)
+			}
+			res.Deferred = true
+			logf("WORK: %d folder(s) left for the next run", len(folders)-i)
+			break
+		}
+		if e.Path != "" {
+			out = append(out, e)
+		}
+	}
+	slices.SortFunc(out, func(a, b archive.WorkFolder) int { return strings.Compare(a.Path, b.Path) })
+	shard.WorkFolders, shard.WorkIndexed = out, true
+	return res
+}
 
 // workDir is where a work folder lives in the archive: work/<machine>/<Encode(p)>.
 // It is the one place that turns a path from shared archive data into a disk path, so
