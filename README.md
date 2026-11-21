@@ -649,7 +649,9 @@ so a hand-written `build/` folder is not backed up. A folder over 250 MB after t
 filtering is not backed up at all; `doctor` names it.
 
 **What it skips.** Git repositories (your remote has those), `~/.claude`, and temp
-folders.
+folders. A folder is backed up only when a session on this computer worked in it: a
+conversation imported from another computer never adds one, so whoever can write to
+the archive cannot make your next push upload a folder of yours.
 
 **On another computer.** `import` and `pull` put the files back under your home folder,
 or under a folder you have mapped, and `import` rewrites the paths in the
@@ -660,7 +662,16 @@ conversations to match. A folder that was outside the other computer's home goes
 # On MAC, where the other computer (WIN) kept E:\SQL:
 claude-sessions config map-folder 'E:\SQL' ~/SQL
 claude-sessions import
+
+# On WIN, the same pair the other way round:
+claude-sessions config map-folder /Users/a/SQL 'E:\SQL'
+claude-sessions import
 ```
+
+Map both ways. A folder placed from WIN goes back where it came from, and so does
+anything inside it, but a folder around it does not: if MAC works in all of `~/SQL`
+while only `E:\SQL\po` came from WIN, WIN files MAC's `~/SQL` in its own home, not at
+`E:\SQL`.
 
 For a folder outside your home on the computer you restore to, map it to itself:
 `config map-folder 'E:\SQL' 'E:\SQL'`. Restore never writes outside your home or a mapped
