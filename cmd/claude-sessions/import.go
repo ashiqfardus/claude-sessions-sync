@@ -243,6 +243,12 @@ func cmdImport(args []string) error {
 	}
 
 	for _, bucket := range buckets {
+		// Named like a file kept beside a project - imported.log - its memory base would
+		// take that file's path.
+		if !claude.IsSlug(bucket) {
+			report(importRow{Bucket: printable(bucket), Note: notSlug}, "!")
+			continue
+		}
 		p, known := manifest[bucket]
 		archived := filepath.Join(archive.ProjectsDir(dest), bucket)
 		if _, mapped := cfg.Mapped(bucket); !known && mapped {
@@ -590,6 +596,10 @@ func cmdPull(args []string) error {
 	var forked, failed []string
 
 	for _, name := range archivedBuckets {
+		if !claude.IsSlug(name) { // as in import
+			fmt.Printf("! %s: %s\n", printable(name), notSlug)
+			continue
+		}
 		srcDir := filepath.Join(archive.ProjectsDir(dest), name)
 
 		// Match an existing local bucket case-insensitively before creating one.
@@ -700,6 +710,10 @@ func sessionWriters(dest string) func(bucket, id string, info os.FileInfo) strin
 		return other
 	}
 }
+
+// notSlug is why an archive folder is not filed: Claude Code names no project folder
+// with a dot or a space in it.
+const notSlug = "not a project folder name (Claude Code's have only letters, digits and dashes); skipped"
 
 // mappedMissing is a project the user mapped to a folder that is no longer there.
 const mappedMissing identity.How = "mapped folder missing"

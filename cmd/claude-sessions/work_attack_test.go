@@ -779,3 +779,73 @@ func TestPlantedForkCopyCannotExfiltrate(t *testing.T) {
 	mac.workRun(t, homeM, "push", "--no-html")
 	noExfil(t, arch)
 }
+
+// An archive written on a case-sensitive file system holds AAAA.jsonl and aaaa.jsonl,
+// each with a session folder. Where this machine ignores case, aaaa's subagent
+// transcript lands in AAAA's folder and push lists it under AAAA: only the lookup
+// under the lower-cased key finds its mark (R28, N6). It needs a case-sensitive
+// archive: Linux, or CLAUDE_SESSIONS_TEST_CS naming a folder on a case-sensitive volume.
+func TestMixedCaseSubagent(t *testing.T) {
+	arch := t.TempDir()
+	if cs := os.Getenv("CLAUDE_SESSIONS_TEST_CS"); cs != "" {
+		var err error
+		if arch, err = os.MkdirTemp(cs, "arch"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(arch) })
+	}
+	caseSensitive(t, arch)
+	mac := newMachine(t, "MAC", arch)
+	homeM := t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "m1"))
+	aged(t, mac.session(repo))
+	mac.workRun(t, homeM, "push", "--no-html")
+	b := filepath.Join(arch, "projects", claude.Slug(repo))
+	up, lo := "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	mustWrite(t, filepath.Join(b, up+".jsonl"), sessionLines(repo, "u1"))
+	mustWrite(t, filepath.Join(b, up, "subagents", "agent-1.jsonl"), sessionLines(repo, "s1"))
+	mustWrite(t, filepath.Join(b, lo+".jsonl"), sessionLines(repo, "l1"))
+	mustWrite(t, filepath.Join(b, lo, "subagents", "agent-2.jsonl"), toolLineJSON(private, "s2", filepath.Join(private, "salary.txt")))
+	mac.workRun(t, homeM, "import", "--no-plugins")
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
+}
+
+// An archive bucket named like a file this tool keeps - imported.log, work-held.json -
+// is no project folder: Claude Code's folder names hold no dot. Filed, its memory base
+// would turn that file's path into a folder and stop every later import (R30).
+func TestBucketNamedLikeRecordSkipped(t *testing.T) {
+	arch := t.TempDir()
+	mac := newMachine(t, "MAC", arch)
+	homeM := t.TempDir()
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "m1"))
+	mac.workRun(t, homeM, "push", "--no-html")
+	for _, n := range []string{"imported.log", "work-held.json"} {
+		mustWrite(t, filepath.Join(arch, "projects", n, "memory", "MEMORY.md"), "- [x](x.md) - x\n")
+	}
+	// A transcript after them: filing it needs the journal.
+	mustWrite(t, filepath.Join(arch, "projects", "zz", forkSession+".jsonl"), sessionLines(repo, "z1"))
+	for _, cmd := range []string{"pull", "import"} {
+		out, err := mac.workCmd(homeM, cmd, "--no-plugins").CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", cmd, err, out)
+		}
+		if !strings.Contains(string(out), "imported.log") || !strings.Contains(string(out), "skipped") {
+			t.Errorf("%s: no note:\n%s", cmd, out)
+		}
+	}
+	base := filepath.Join(mac.claudeDir, "session-sync-base")
+	for _, n := range []string{"imported.log", "work-held.json"} {
+		if st, err := os.Stat(filepath.Join(base, n)); err == nil && st.IsDir() {
+			t.Errorf("%s is a folder now", n)
+		}
+		if _, err := os.Stat(filepath.Join(mac.claudeDir, "projects", n)); !os.IsNotExist(err) {
+			t.Errorf("bucket %s filed: %v", n, err)
+		}
+	}
+	mac.workRun(t, homeM, "import", "--no-plugins") // still works
+}
