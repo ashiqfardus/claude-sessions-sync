@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
@@ -303,11 +304,24 @@ flags:
 			fmt.Println("The archive is not reachable; the next push removes the archived copy.")
 			return nil
 		}
-		n, err := purgeWork(dest, machineName(), folder)
+		lock, err := archive.AcquireLockWait(root, 45*time.Second)
+		if err != nil { // a push is running and rewrites the shard: let it do the removal
+			fmt.Println("A push is running; the next push removes the archived copy.")
+			return nil
+		}
+		defer lock.Release()
+		gone, err := purgeWork(dest, machineName(), folder)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%d archived folder(s) removed from the archive. They may still be in the sync service's trash or version history.\n", n)
+		for _, g := range gone {
+			fmt.Printf("removed %s\n", g)
+		}
+		if len(gone) > 0 {
+			fmt.Println("They may still be in the sync service's trash or version history.")
+		} else {
+			fmt.Println("Nothing archived under that folder.")
+		}
 		return nil
 
 	case "unexclude-folder":

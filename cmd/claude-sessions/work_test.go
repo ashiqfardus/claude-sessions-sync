@@ -75,7 +75,7 @@ func TestExcludeFolderPurges(t *testing.T) {
 	mustWrite(t, filepath.Join(arch, "manifest", "MAC.json"), string(shard))
 
 	out := configAs(t, m.claudeDir, "MAC", "exclude-folder", dir)
-	if !strings.Contains(out, "removed") || !strings.Contains(out, "trash or version history") {
+	if !strings.Contains(out, "removed "+dir) || !strings.Contains(out, "trash or version history") {
 		t.Fatalf("output: %s", out)
 	}
 	if _, err := os.Stat(mine); !os.IsNotExist(err) {
@@ -87,5 +87,57 @@ func TestExcludeFolderPurges(t *testing.T) {
 	raw, _ := os.ReadFile(filepath.Join(arch, "manifest", "MAC.json"))
 	if strings.Contains(string(raw), dir) {
 		t.Fatalf("shard entry remains: %s", raw)
+	}
+}
+
+func seedShard(t *testing.T, arch string, paths ...string) {
+	t.Helper()
+	var wf []map[string]any
+	for _, p := range paths {
+		wf = append(wf, map[string]any{"path": p})
+	}
+	b, _ := json.Marshal(map[string]any{"schemaVersion": 1, "machine": "MAC", "projects": map[string]any{}, "workFolders": wf})
+	mustWrite(t, filepath.Join(arch, "manifest", "MAC.json"), string(b))
+}
+
+func TestExcludeFolderIgnoresTraversal(t *testing.T) {
+	arch := t.TempDir()
+	m := newMachine(t, "MAC", arch)
+	dir := t.TempDir()
+	configAs(t, m.claudeDir, "MAC", "set-destination", arch)
+	sentinel := filepath.Join(arch, "work", "OTHER", "keep.md")
+	mustWrite(t, sentinel, "x")
+	seedShard(t, arch, dir+strings.Repeat("/..", 40), dir+"/../../..")
+
+	configAs(t, m.claudeDir, "MAC", "exclude-folder", dir)
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("deleted outside work/MAC: %v", err)
+	}
+}
+
+func TestExcludeSubfolderOfArchivedFolder(t *testing.T) {
+	arch := t.TempDir()
+	m := newMachine(t, "MAC", arch)
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "private")
+	configAs(t, m.claudeDir, "MAC", "set-destination", arch)
+	root := filepath.Join(arch, "work", "MAC", filepath.FromSlash(work.Encode(dir)))
+	mustWrite(t, filepath.Join(root, "private", "s.md"), "x")
+	mustWrite(t, filepath.Join(root, "a.md"), "x")
+	seedShard(t, arch, dir)
+
+	out := configAs(t, m.claudeDir, "MAC", "exclude-folder", sub)
+	if !strings.Contains(out, "removed "+sub) {
+		t.Fatalf("output: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "private")); !os.IsNotExist(err) {
+		t.Fatal("subfolder remains")
+	}
+	if _, err := os.Stat(filepath.Join(root, "a.md")); err != nil {
+		t.Fatal("parent content lost")
+	}
+	raw, _ := os.ReadFile(filepath.Join(arch, "manifest", "MAC.json"))
+	if !strings.Contains(string(raw), dir) {
+		t.Fatalf("parent entry dropped: %s", raw)
 	}
 }
