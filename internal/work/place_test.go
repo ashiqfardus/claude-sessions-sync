@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
@@ -98,6 +99,14 @@ func TestPlaceSameLayout(t *testing.T) {
 	if got, err := Place(Source{Machine: "WIN", Home: "/Users/a", Path: other}, l); err == nil {
 		t.Fatalf("got %q", got)
 	}
+	// R14: outside the home only inside a folder the user mapped. zsh loads site-functions.
+	sf := filepath.Join(filepath.VolumeName(l.Home)+string(filepath.Separator), "opt", "homebrew", "share", "zsh", "site-functions")
+	src := Source{Machine: "MAC2", Home: "/Users/a", Path: filepath.Join(sf, "_x")}
+	if got, err := Place(src, l); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "map-folder") {
+		t.Fatalf("unmapped outside home: %q, %v", got, err)
+	}
+	l.Map = map[string]string{"/Users/a/elsewhere": sf}
+	mustPlace(t, src, l, src.Path)
 }
 
 func TestPlaceRefused(t *testing.T) {
@@ -192,6 +201,8 @@ func TestPlaceRefusedTargets(t *testing.T) {
 		// PowerShell profiles run at every start, like ~/.zshrc; Documents may sit in OneDrive.
 		{fakeWinEnv(), `C:\Users\a\Documents\WindowsPowerShell`, false},
 		{fakeWinEnv(), `C:\Users\a\OneDrive\Documents\PowerShell\x`, false},
+		{fakeWinEnv(), `C:\Users\a\vimfiles\plugin`, false}, // R15: Vim loads plugins from here
+		{fakeEnv(), "/h/VimFiles/x", false},
 	} {
 		if why := refused(c.target, false, c.env); (why == "") != c.ok {
 			t.Errorf("refused(%q) = %q, want ok=%v", c.target, why, c.ok)

@@ -76,7 +76,15 @@ func rule(src Source, l Local) (target, base string, err error) {
 		if Within(target, l.Home, true) {
 			return target, l.Home, nil
 		}
-		return target, filepath.VolumeName(target) + string(filepath.Separator), nil
+		for _, v := range l.Map { // outside the home only inside a folder the user mapped
+			if len(segs(v)) > len(segs(base)) && Within(target, v, true) {
+				base = v
+			}
+		}
+		if base == "" {
+			return "", "", fmt.Errorf("%w: %s: outside the home and no mapped folder (claude-sessions config map-folder)", ErrRefused, target)
+		}
+		return target, base, nil
 	}
 	if o := src.Origin; o != nil && o.Machine == l.Machine && absSource(o.Path) && filepath.IsAbs(o.Path) {
 		for _, own := range l.Own {
@@ -161,8 +169,8 @@ func refused(target string, exact bool, env Env) string {
 		switch {
 		case strings.HasPrefix(s, "."):
 			return "a dot folder or file"
-		case anyFold(s, "AppData") || win && anyFold(s, "ProgramData", "WindowsPowerShell", "PowerShell"):
-			return "in AppData, ProgramData or a PowerShell profile folder"
+		case anyFold(s, "AppData", "vimfiles") || win && anyFold(s, "ProgramData", "WindowsPowerShell", "PowerShell"):
+			return "in a folder that runs or configures programs"
 		case win && (strings.ContainsAny(s, ":~") || strings.TrimRight(s, ". ") != s):
 			// Win32 drops a trailing dot or space, reads APPDAT~1 as AppData, and
 			// "AppData::$INDEX_ALLOCATION" as the folder itself.
