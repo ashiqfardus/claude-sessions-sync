@@ -306,3 +306,51 @@ func TestRestoredTranscriptCannotExfiltrate(t *testing.T) {
 	mac.workRun(t, homeM, "push", "--no-html")
 	noExfil(t, arch)
 }
+
+// toolLineJSON is one assistant line in cwd whose Write targets write.
+func toolLineJSON(cwd, uuid, write string) string {
+	l, _ := json.Marshal(map[string]any{"type": "assistant", "cwd": cwd, "uuid": uuid, "sessionId": forkSession,
+		"message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "name": "Write",
+			"input": map[string]string{"file_path": write, "content": "x"}}}}})
+	return string(l) + "\n"
+}
+
+// caseSensitive skips unless dir keeps case (Linux, or a case-sensitive volume).
+func caseSensitive(t *testing.T, dir string) {
+	t.Helper()
+	p := filepath.Join(dir, "Probe")
+	mustWrite(t, p, "x")
+	_, err := os.Stat(filepath.Join(dir, "probe"))
+	_ = os.Remove(p)
+	if err == nil {
+		t.Skip("this file system ignores case")
+	}
+}
+
+// Two archived transcripts whose names differ only in case: where the file system
+// keeps case both are filed, and the short one's size must not become the long
+// one's mark (R25).
+func TestCaseCollidingMarks(t *testing.T) {
+	arch := t.TempDir()
+	caseSensitive(t, arch)
+	evil, mac := newMachine(t, "EVIL", arch), newMachine(t, "MAC", arch)
+	homeE, homeM := t.TempDir(), t.TempDir()
+	private := filepath.Join(homeM, "Private")
+	mustWrite(t, filepath.Join(private, "salary.txt"), "very private\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "m1"))
+	mac.workRun(t, homeM, "push", "--no-html")
+
+	configAs(t, evil.claudeDir, "EVIL", "work", "off")
+	pub := filepath.Join(homeM, "Public")
+	mustMkdir(t, pub)
+	workSession(t, evil, pub, nil, "ls")
+	evil.workRun(t, homeE, "push", "--no-html")
+	bucket := filepath.Join(arch, "projects", claude.Slug(pub))
+	pad := `{"type":"user","uuid":"p0","cwd":"` + pub + `","message":{"role":"user","content":"` + strings.Repeat("x", 200) + `"}}` + "\n"
+	mustWrite(t, filepath.Join(bucket, "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA.jsonl"), pad+toolLineJSON(private, "h1", filepath.Join(private, "salary.txt")))
+	mustWrite(t, filepath.Join(bucket, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jsonl"), `{"type":"user","uuid":"t1","cwd":"`+pub+`"}`+"\n")
+	mac.workRun(t, homeM, "import", "--no-plugins")
+	mac.workRun(t, homeM, "push", "--no-html")
+	noExfil(t, arch)
+}

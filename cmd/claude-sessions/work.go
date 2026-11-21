@@ -844,23 +844,26 @@ func importedPath(root string) string {
 	return filepath.Join(root, "session-sync-base", "imported.json")
 }
 
-// importedKey is a transcript's path below the projects folder, lower-cased and
-// "/"-separated.
+// importedKey is a transcript's path below the projects folder, "/"-separated, its
+// case folded only where the file system ignores case: on Linux A.jsonl and a.jsonl
+// are two transcripts with two marks.
 func importedKey(root, p string) string {
 	if rel, err := filepath.Rel(claude.ProjectsDir(root), p); err == nil {
 		p = rel
 	}
-	return strings.ToLower(filepath.ToSlash(p))
+	return work.FoldKey(filepath.ToSlash(p))
 }
 
-// noteFiled records the transcript just filed at p, at its size now. m is nil where
-// nothing is recorded (restore, --dry-run).
+// noteFiled records the transcript just filed at p, at its size now. A mark only
+// grows: another file with the same key, or this one shorter, never lowers it. m is
+// nil where nothing is recorded (--dry-run).
 func noteFiled(m map[string]int64, root, p string) {
 	if m == nil || !strings.EqualFold(filepath.Ext(p), ".jsonl") {
 		return
 	}
 	if st, err := os.Lstat(p); err == nil {
-		m[importedKey(root, p)] = st.Size()
+		k := importedKey(root, p)
+		m[k] = max(m[k], st.Size())
 	}
 }
 

@@ -120,3 +120,25 @@ func TestOriginOfTieBreak(t *testing.T) {
 		}
 	}
 }
+
+// A mark only grows: a transcript noted again smaller - or another whose key is the
+// same - never lowers it (R25).
+func TestRecordMarkOnlyGrows(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "projects", "-b", "11111111-1111-1111-1111-111111111111.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(strings.Repeat("x", 100)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]int64{}
+	noteFiled(m, root, p)
+	if err := os.WriteFile(p, []byte("y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noteFiled(m, root, p)
+	if got := m[importedKey(root, p)]; got != 101 {
+		t.Fatalf("mark %d, want 101", got)
+	}
+}
