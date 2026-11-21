@@ -56,7 +56,7 @@ func Within(child, parent string, fold bool) bool {
 
 // norm returns an absolute, cleaned path; ok is false for relative or UNC paths.
 func norm(p string, windows bool) (string, bool) {
-	if strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, `//`) {
+	if len(p) > 1 && strings.ContainsRune(`/\`, rune(p[0])) && strings.ContainsRune(`/\`, rune(p[1])) { // UNC, any mix
 		return "", false
 	}
 	if windows && !WindowsPath(p) && len(p) >= 3 && p[0] == '/' && p[2] == '/' &&
