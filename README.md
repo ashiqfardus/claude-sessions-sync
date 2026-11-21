@@ -53,6 +53,9 @@ Three things go wrong with that:
   iCloud, Syncthing, a NAS or a USB drive all work, because it only writes files.
 - Also backs up your global rules (`CLAUDE.md` and the `.md` files beside it), personal
   skills, agents, commands, output styles, and which plugins are enabled.
+- Backs up the **folders Claude worked in outside git**: a notes folder, a scripts
+  folder, a project with no repository. Text-like files only; see
+  [Work folders](#work-folders).
 - Runs by itself once installed: when a session ends, **after every reply**, and on a
   sweep every 30 minutes.
 - Copies only what changed. It never deletes a transcript from the archive, and never
@@ -72,6 +75,8 @@ Three things go wrong with that:
 - The memory index (`MEMORY.md`) is merged entry by entry: what either computer
   added arrives, and what either deleted stays deleted. Other memory files take the
   newer copy.
+- Work folders come too, filed under the matching folder on this computer, and the
+  paths in the conversations are repointed to where they landed.
 - Rules, skills and plugins come too. Plugins enabled on the other computer are
   installed for you. A rule or skill you delete, or a plugin you turn off, on this
   computer stays that way here.
@@ -85,7 +90,8 @@ Three things go wrong with that:
 **Tells you when something is wrong**
 - `doctor` checks retention, the archive, the hooks, the sweep, sessions that never
   reached the archive, macOS privacy refusals, computers on other versions, and
-  credentials that ended up in the archive. Most warnings say what to do.
+  credentials that ended up in the archive, and work folders that are too big to back
+  up. Most warnings say what to do.
 
 **Other tools**
 - `backup` writes the whole profile to one zip, for a move with no synced folder;
@@ -93,6 +99,8 @@ Three things go wrong with that:
 - `pull` is a plain copy for computers with identical paths. `restore` files one folder
   of transcripts by hand.
 - `machines` lists, and forgets, the computers that push to the archive.
+- `import --repoint` fixes conversations already on this computer whose paths still
+  name another computer's work folders.
 
 ---
 
@@ -624,6 +632,62 @@ you to delete if you want:
 
 ---
 
+## Work folders
+
+Some of what Claude works on is not in a git repository: a folder of notes, a scripts
+folder, a project you never ran `git init` in. `push` finds those folders from your
+sessions and copies their text-like files to `work/<computer>/` in the archive. It is
+on by default.
+
+**What is copied.** Text and code: Markdown, source, SQL, JSON, config, CSV and the
+like. **Never copied:** images, video and audio, archives, binaries, databases,
+`.pth` files, files whose names look like secrets (`.env`, keys, tokens), anything over
+10 MB, and every dot file and dot folder. `node_modules`, `venv`, `vendor`,
+`__pycache__` and `site-packages` are never work folders. A folder over 250 MB after
+that filtering is not backed up at all; `doctor` names it.
+
+**What it skips.** Git repositories (your remote has those), `~/.claude`, and temp
+folders.
+
+**On another computer.** `import` and `pull` put the files back under your home folder,
+or under a folder you have mapped, and `import` rewrites the paths in the
+conversations to match. A folder that was outside the other computer's home goes to
+`~/claude-work/<computer>/...` unless you map it:
+
+```sh
+# On MAC, where the other computer (WIN) kept E:\SQL:
+claude-sessions config map-folder 'E:\SQL' ~/SQL
+claude-sessions import
+```
+
+For a folder outside your home on the computer you restore to, map it to itself:
+`config map-folder E:\SQL E:\SQL`. Restore never writes outside your home or a mapped
+folder.
+
+Restoring only adds. A file already there is left alone. With `--update`, a file is
+replaced only if it came from that same computer and you have not changed it since;
+otherwise the new copy is written beside it as `<name>.<computer>.<ext>`. Restored
+files are never executable.
+
+**Conversations already here.** If you imported before work folders existed, or
+conversations still point at another computer's folders, run
+`claude-sessions import --repoint --dry-run` to see what would change, then without
+`--dry-run`. It is opt-in. It skips conversations touched in the last hour, and copies
+each one to `<claude-root>/repoint-backup/<date-time>/` before changing it.
+
+**Commands.**
+
+| Command | What it does |
+|---|---|
+| `config work on\|off` | Turn work folder backup on or off |
+| `config work-placement home\|machine` | Where a folder with no local counterpart goes: under your home (default), or always under `~/claude-work/<computer>/` |
+| `config map-folder <path> <folder>` | Say where another computer's work folder lives here |
+| `config unmap-folder <path>` | Remove that mapping |
+| `config exclude-folder <folder>` | Never back up this folder, and remove this computer's archived copy (your sync provider's trash or version history may still hold it) |
+| `config unexclude-folder <folder>` | Back it up again |
+
+---
+
 ## Privacy
 
 Read this before pointing the tool at a shared or cloud folder.
@@ -643,6 +707,21 @@ Read this before pointing the tool at a shared or cloud folder.
   account, and no third-party code. The one exception is `import` installing a missing
   plugin by running `claude plugin install`, which downloads it; `--no-plugins` turns
   that off.
+- **Work folders are copied too, on by default.** Only text-like files, and never
+  secret-shaped names, dot files or dot folders. A notes folder can still hold
+  something private: `config work off` stops it all, and `config exclude-folder
+  <folder>` keeps one folder out and removes its archived copy.
+- **Restoring work folders trusts the archive as little as possible.** It never writes
+  dot files or folders, `~/Library`, `AppData`, `ProgramData`, Windows system folders,
+  PowerShell profile folders, `vimfiles`, `_vimrc`, `_gvimrc`, the Go module cache,
+  conda `activate.d` and `deactivate.d`, Python `site-packages`, `dist-packages` and
+  `.pth` files, code folders, git repositories, the Claude folder or temp folders. It
+  only adds files and never overwrites one that is there. **A deny-list can never be
+  complete.** Someone who can write to your synced archive folder could still add *new*
+  files in other places under your home that some tool loads, such as a project folder
+  without `.git`, or `~/perl5`. On Windows, a restored `.bat` or `.ps1` runs when
+  opened whatever its permissions. Write access to the archive is as good as access to
+  your cloud account: protect it the same way.
 - **Credentials are never copied.** `.credentials.json` and `.claude.json` are never
   archived or backed up, and `doctor` fails if it finds either anywhere in the archive
   outside the generated pages.
@@ -693,7 +772,7 @@ remotes are read by parsing `.git/config`; git itself is never run (see
 | Command | What it does |
 |---|---|
 | `doctor` | Check everything; exits non-zero on a real problem |
-| `config` | `show` (default), `set-destination <folder>`, `map [<project> <folder>]`, `unmap <project>`, `set-machine <name>` |
+| `config` | `show` (default), `set-destination <folder>`, `map [<project> <folder>]`, `unmap <project>`, `set-machine <name>`, `work on\|off`, `work-placement home\|machine`, `map-folder <path> <folder>`, `unmap-folder <path>`, `exclude-folder <folder>`, `unexclude-folder <folder>` |
 | `push` | Copy new and changed sessions, memory, rules, skills and the plugin list to the archive, then write the pages |
 | `install` / `uninstall` | Turn automatic archiving on or off |
 | `import` | Bring an archive onto this computer, matching projects by identity |
@@ -720,6 +799,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | Flag | On | What it does |
 |---|---|---|
 | `--dry-run` | `push`, `import`, `pull`, `restore`, `backup` | Show what would happen; write nothing |
+| `--repoint` | `import` | Fix conversations already on this computer that name another computer's work folders; skips any touched in the last hour and backs each up first |
 | `--update` | `import`, `pull`, `restore` | Also bring in sessions continued elsewhere and newer memory; with `import` and `pull`, newer rules and skills too |
 | `--no-plugins` | `import`, `pull` | Do not install plugins enabled on another computer |
 | `--search-root <dirs>` | `import` | Where to look for projects (comma-separated; default: the parents of known projects, and your home) |
@@ -760,6 +840,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `archive access` | A push was refused access, for example by macOS privacy settings, and by which run |
 | `versions` | Other computers run a different version |
 | `profile` | Rule and skill files that differ between computers, or are not archived |
+| `work folders` | Off, or how many folders and files are archived; warns over 500 MB, or when a folder is too large to back up |
 | `secrets` | `.credentials.json` or `.claude.json` anywhere in the archive outside the pages |
 
 It exits non-zero when any check fails, so it can be monitored. `doctor --json` prints
@@ -790,6 +871,7 @@ claude-sessions completion powershell | Out-String | Add-Content $PROFILE
   profile/machines/<computer>/              each computer's own copy
   profile/replaced/<computer>/<time>/       rule files an import replaced on that computer
   profile/plugins/<computer>.json           each computer's enabled plugins
+  work/<computer>/<folder path>/            each computer's work folders (text-like files only)
   manifest/<computer>.json                  each computer's projects: path, git remote, home, version
   index/<computer>.json                     each computer's list of sessions
   projects.json                             a merged view, for the older PowerShell scripts
@@ -798,7 +880,7 @@ claude-sessions completion powershell | Out-String | Add-Content $PROFILE
 ```
 
 Each computer writes only its own files under `memory/<computer>/`, `profile/machines/`,
-`manifest/`, `index/` and `forks/…/<computer>.jsonl`, so two computers pushing at once
+`manifest/`, `index/`, `work/<computer>/` and `forks/…/<computer>.jsonl`, so two computers pushing at once
 cannot overwrite each other's.
 
 ---

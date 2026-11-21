@@ -1375,3 +1375,51 @@ func TestRepointRemapLater(t *testing.T) {
 		}
 	}
 }
+
+// doctorWorkLine returns the doctor lines about work folders, from --json.
+func doctorWorkLine(t *testing.T, m machine) (level, detail, advice string) {
+	t.Helper()
+	var rep struct {
+		Checks []struct{ Name, Level, Detail, Advice string }
+	}
+	if err := json.Unmarshal([]byte(m.run(t, "doctor", "--json", "--no-write-probe")), &rep); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range rep.Checks {
+		if c.Name == "work folders" {
+			return c.Level, c.Detail, c.Advice
+		}
+	}
+	t.Fatal("no work folders check")
+	return
+}
+
+func TestDoctorWork(t *testing.T) {
+	arch := t.TempDir()
+	m := newMachine(t, "MAC", arch)
+	shard := func(wf ...map[string]any) {
+		b, _ := json.Marshal(map[string]any{"schemaVersion": 1, "machine": "MAC", "projects": map[string]any{}, "workFolders": wf})
+		mustWrite(t, filepath.Join(arch, "manifest", "MAC.json"), string(b))
+	}
+
+	configAs(t, m.claudeDir, "MAC", "work", "off")
+	if l, d, _ := doctorWorkLine(t, m); l != "info" || !strings.Contains(d, "off") {
+		t.Fatalf("off: %s %s", l, d)
+	}
+
+	configAs(t, m.claudeDir, "MAC", "work", "on")
+	shard(map[string]any{"path": "/w/a", "files": 3, "bytes": 100})
+	if l, d, _ := doctorWorkLine(t, m); l != "ok" || !strings.Contains(d, "1 folder(s), 3 file(s)") {
+		t.Fatalf("on: %s %s", l, d)
+	}
+
+	shard(map[string]any{"path": "/w/a", "files": 3, "bytes": work.WarnBytes + 1})
+	if l, _, a := doctorWorkLine(t, m); l != "warn" || !strings.Contains(a, "config exclude-folder") {
+		t.Fatalf("big: %s %s", l, a)
+	}
+
+	shard(map[string]any{"path": "/w/huge", "skipped": "over 250 MB"})
+	if l, d, _ := doctorWorkLine(t, m); l != "warn" || !strings.Contains(d, "/w/huge") {
+		t.Fatalf("skipped: %s %s", l, d)
+	}
+}

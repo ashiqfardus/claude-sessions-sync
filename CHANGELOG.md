@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Work folders are backed up.** Folders Claude worked in outside `~/.claude` and git
+  repositories, such as a notes or scripts folder, are copied to `work/<computer>/` in
+  the archive. Only text-like files go in. Images, video and audio, archives, binaries,
+  databases, secret-shaped names, anything over 10 MB and every dot file or folder are
+  never copied, and a folder over 250 MB after filtering is not backed up. On by
+  default; `config work off` stops it.
+- **`import` and `pull` put work folders back** under your home folder or a folder you
+  have mapped, and rewrite the paths in the conversations to match. Restoring only
+  adds files, and never writes dot files, system or startup folders, code folders or
+  git repositories.
+- **`config map-folder`, `unmap-folder`, `work-placement`, `exclude-folder` and
+  `unexclude-folder`.** `exclude-folder` also removes this computer's archived copy.
+- **`import --repoint`** fixes conversations already on this computer that still name
+  another computer's folders. It is opt-in, skips conversations touched in the last
+  hour and backs each one up first.
+- **`doctor` has a `work folders` check:** it warns when the archived work folders
+  total over 500 MB or a folder was too large to back up.
+
 ## [0.3.1] - 2026-11-21
 
 Upgrading: run `claude-sessions install` again after updating the binary, on every

@@ -108,6 +108,7 @@ Notes on the surface:
   projects/<bucket>/<session-id>/subagents/...     subagent transcripts
   projects/<bucket>/<session-id>/tool-results/...  oversized tool output
   projects/<bucket>/memory/*.md
+  work/<machine>/<encoded path>/...  <- work folders: text-like files outside git
   manifest/<machine>.json        <- CHANGED: was a single projects.json
   index/<machine>.json           <- each machine's INDEX.md rows
   projects.json                  <- kept, generated, read-only compatibility view
@@ -122,6 +123,17 @@ Notes on the surface:
 `<machine>` is the host name and user name, so two accounts on one computer each own a
 file.
 
+`work/<machine>/` holds the folders Claude worked in that no git repository or
+`~/.claude` covers. The folder's absolute path is encoded as `/`-separated segments
+with a Windows drive's colon dropped (`E:\SQL` -> `E/SQL`), so the archive reads the
+same on every OS. Only text-like files go in: never media, archives, binaries,
+databases, `.pth`, secret-shaped names, files over 10 MB or any dot file or folder;
+code folders (`node_modules`, `venv`, `vendor`, `__pycache__`, `site-packages`,
+`dist-packages`) are never work folders. A folder over 250 MB after filtering is not
+copied and is reported. Each machine writes only its own `work/<machine>/`. The archive
+is untrusted when restoring: see the deny-list and its residual risk in the README's
+Privacy section.
+
 ### Local
 
 - Claude root: `$CLAUDE_CONFIG_DIR` if set, else `~/.claude`. **Always resolve through
@@ -131,6 +143,13 @@ file.
   `destination` key, so an existing install keeps working).
 - Log: `<claude-root>/session-sync.log`, a few lines per run, rotated to
   `session-sync.log.1` at 1 MB.
+- Work folder state, in `<claude-root>/session-sync-base/`: `work-folders.json` is the
+  list of this machine's work folders and is the only thing push trusts for it (the
+  shard merely publishes it); `work-held.json` records each restored file, with earlier
+  placements under `prev`, so `--update` can tell a file it wrote from one you changed;
+  `repointed.json` records what `import --repoint` rewrote. Repoint backups go to
+  `<claude-root>/repoint-backup/<yyyymmdd-hhmm>[-n]/`. Config adds `workBackup`,
+  `workPlacement`, `workMap` and `workExclude`.
 - Tools/binary: `<claude-root>/bin/claude-sessions` (+`.exe`), and on Windows
   `claude-sessionsw.exe` beside it for the sweep (see §7). The hook and the sweep
   point at this **local** copy on purpose — pointing them into the synced folder would
@@ -192,6 +211,13 @@ folder by hand.
   }
 }
 ```
+
+`workFolders` lists the folders archived under `work/<machine>/`, each a `WorkFolder`:
+`path`, `exactFile` (the path is one file, not a folder), `files`, `bytes`, `skipped`
+(set, for example `over 250 MB`, when the folder was not copied) and `origin`, a
+`WorkOrigin` `{machine, path}` naming where a restored folder first came from.
+`workIndexed` records that every transcript has been scanned for work folders once, so
+later pushes scan only the ones that changed. Both are omitted when empty.
 
 `related` lists the other git repositories the project's sessions worked in — a
 multi-folder workspace — so `import` can repoint paths into them too, found by remote

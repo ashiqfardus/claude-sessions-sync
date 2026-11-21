@@ -17,6 +17,7 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/hostagent"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/render"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
 type level string
@@ -233,6 +234,33 @@ func cmdDoctor(args []string) error {
 			add(check{"profile", levelWarn, "global rules and skills are not archived yet", "Run `claude-sessions push`."})
 		} else {
 			add(check{"profile", levelOK, fmt.Sprintf("%d rule/skill file(s) archived", n), ""})
+		}
+	}
+
+	// Work folders: what this machine's shard says is archived outside git repos.
+	if cfg, _ := archive.LoadConfig(root); !cfg.WorkOn() {
+		add(check{"work folders", levelInfo, "off", "`claude-sessions config work on` backs up the folders Claude worked in outside git."})
+	} else {
+		folders := readShard(dest, machineName()).WorkFolders
+		var files int
+		var bytes int64
+		var skipped []string
+		for _, f := range folders {
+			files += f.Files
+			bytes += f.Bytes
+			if f.Skipped != "" {
+				skipped = append(skipped, f.Path+" ("+f.Skipped+")")
+			}
+		}
+		switch {
+		case len(skipped) > 0:
+			add(check{"work folders", levelWarn, "not backed up: " + strings.Join(skipped, ", "),
+				"Too large to archive. Keep it out of the way with `claude-sessions config exclude-folder <folder>`, or move the big files out."})
+		case bytes > work.WarnBytes:
+			add(check{"work folders", levelWarn, fmt.Sprintf("%d folder(s), %d file(s), %d MB archived", len(folders), files, bytes>>20),
+				"The archive is growing large. Drop a folder you do not need with `claude-sessions config exclude-folder <folder>`."})
+		default:
+			add(check{"work folders", levelOK, fmt.Sprintf("%d folder(s), %d file(s)", len(folders), files), ""})
 		}
 	}
 
