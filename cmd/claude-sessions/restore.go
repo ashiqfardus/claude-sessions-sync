@@ -227,20 +227,22 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 
 	// What may land here - each transcript not here yet, and each subagent transcript -
 	// is journaled first, in one fsync'd write: a run killed at any point leaves each of
-	// them counted as filed in whole.
-	if !opts.DryRun {
-		var landing []string
-		for _, src := range transcripts {
-			id := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
-			if dst := filepath.Join(res.Bucket, filepath.Base(src)); archive.StatOrNil(dst) == nil {
+	// them counted as filed in whole. Each session's files are listed once, here.
+	var landing []string
+	sessionFiles := map[string][]string{}
+	for _, src := range transcripts {
+		id := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+		if dst := filepath.Join(res.Bucket, filepath.Base(src)); archive.StatOrNil(dst) == nil {
+			landing = append(landing, dst)
+		}
+		sessionFiles[id] = claude.SessionFiles(filepath.Join(source, id))
+		for _, rel := range sessionFiles[id] {
+			if dst := filepath.Join(res.Bucket, id, rel); archive.StatOrNil(dst) == nil {
 				landing = append(landing, dst)
 			}
-			for _, rel := range claude.SessionFiles(filepath.Join(source, id)) {
-				if dst := filepath.Join(res.Bucket, id, rel); archive.StatOrNil(dst) == nil {
-					landing = append(landing, dst)
-				}
-			}
 		}
+	}
+	if !opts.DryRun {
 		if err := opts.Imported.pend(landing...); err != nil {
 			return res, err
 		}
@@ -263,7 +265,8 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 			res.Skipped++
 			continue
 		}
-		if err := restoreSessionFiles(source, res.Bucket, strings.TrimSuffix(name, filepath.Ext(name)), opts.DryRun, opts.Imported); err != nil {
+		id := strings.TrimSuffix(name, filepath.Ext(name))
+		if err := restoreSessionFiles(source, res.Bucket, id, sessionFiles[id], opts.DryRun, opts.Imported); err != nil {
 			return res, err
 		}
 		if exists && !opts.Update {
@@ -946,15 +949,16 @@ func mergeIndex(base, theirs, mine string, theirsNewer bool, held map[string]boo
 	return strings.Join(out, "\n") + "\n"
 }
 
-// restoreSessionFiles copies a session's own folder - subagent transcripts and saved
-// tool output - adding only files that are not here yet. A local file belongs to a
-// live or newer session and is never replaced. Each subagent transcript was pended in
-// r before; its size is journaled once it lands, and a journal error stops it.
+// restoreSessionFiles copies a session's own folder - rels, its subagent transcripts
+// and saved tool output - adding only files that are not here yet. A local file
+// belongs to a live or newer session and is never replaced. Each subagent transcript
+// was pended in r before; its size is journaled once it lands, and a journal error
+// stops it.
 //
 // ponytail: paths inside subagent transcripts are not rewritten; add it if a
 // subagent's recorded cwd ever matters to Claude Code.
-func restoreSessionFiles(srcBucket, dstBucket, id string, dryRun bool, r *importRecord) error {
-	for _, rel := range claude.SessionFiles(filepath.Join(srcBucket, id)) {
+func restoreSessionFiles(srcBucket, dstBucket, id string, rels []string, dryRun bool, r *importRecord) error {
+	for _, rel := range rels {
 		dst := filepath.Join(dstBucket, id, rel)
 		if dryRun || archive.StatOrNil(dst) != nil {
 			continue
