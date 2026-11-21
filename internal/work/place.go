@@ -44,6 +44,9 @@ func absSource(p string) bool {
 // Place returns the local target for src: rules 0-3 of the spec, or src.Path as is
 // under SameLayout, then the safety checks.
 func Place(src Source, l Local) (string, error) {
+	if !filepath.IsAbs(l.Home) { // every rule trusts it; empty would make Within match anything
+		return "", fmt.Errorf("%w: %s: no local home", ErrRefused, src.Path)
+	}
 	if !absSource(src.Path) {
 		return "", fmt.Errorf("%w: %q is not an absolute path", ErrRefused, src.Path)
 	}
@@ -54,8 +57,8 @@ func Place(src Source, l Local) (string, error) {
 	why := "not an absolute path"
 	if filepath.IsAbs(target) {
 		why = refused(target, src.Exact, l.Env)
-		if why == "" && linked(target, base) { // after the name checks, so a refused name is never stat'ed
-			why = "a link or junction on the way"
+		if why == "" { // after the name checks, so a refused name is never stat'ed
+			why = onTheWay(target, base, false)
 		}
 	}
 	if why != "" {
@@ -117,20 +120,26 @@ func rule(src Source, l Local) (target, base string, err error) {
 	return filepath.Join(l.Home, "claude-work", src.Machine, filepath.FromSlash(Encode(src.Path))), l.Home, nil
 }
 
-// linked reports a symlink or junction below base on the way to p. Name checks
-// cannot see through one: Windows puts a "Start Menu" junction into AppData in
-// every home, and macOS has /Volumes/Macintosh HD -> /.
-func linked(p, base string) bool {
+// onTheWay returns why a folder below base on the way to p, p included, refuses
+// writes, or "". A symlink or junction: name checks cannot see through one, and
+// Windows puts a "Start Menu" junction into AppData in every home. With repo, a
+// nested git repo: a planted .go init() or conftest.py runs on the next build.
+func onTheWay(p, base string, repo bool) string {
 	for len(segs(p)) > len(segs(base)) {
 		if fi, err := os.Lstat(p); err == nil && fi.Mode().Type()&^fs.ModeDir != 0 {
-			return true
+			return "a link or junction on the way"
+		}
+		if repo {
+			if _, err := os.Lstat(filepath.Join(p, ".git")); err == nil {
+				return "inside a git repo"
+			}
 		}
 		if p == filepath.Dir(p) { // a root: stop even if base was malformed
 			break
 		}
 		p = filepath.Dir(p)
 	}
-	return false
+	return ""
 }
 
 func anyFold(s string, names ...string) bool {
@@ -140,13 +149,14 @@ func anyFold(s string, names ...string) bool {
 // refused returns why target must not be written, or "". Case is ignored throughout,
 // since the macOS and Windows file systems ignore it: ~/library is ~/Library.
 func refused(target string, exact bool, env Env) string {
-	t, win := segs(target), WindowsPath(target)
+	t, win, h := segs(target), WindowsPath(target), segs(env.Home)
 	rest := t // what the archive chose; the local home itself is trusted
-	if h := segs(env.Home); len(h) > 0 && within(t, h, true) {
+	if len(h) > 0 && within(t, h, true) {
 		rest = t[len(h):]
 	} else if win {
 		rest = t[1:]
 	}
+	top := len(t) == 0 || win && len(t) == 1 || within(h, t, true) // a root, the home or above it
 	in := func(dir string) bool { return dir != "" && Within(target, dir, true) }
 	broad := env
 	broad.Windows = true // IsBroad ignores case only for Windows
@@ -157,7 +167,7 @@ func refused(target string, exact bool, env Env) string {
 		return "in a temp folder"
 	case env.RepoRoot(target) != "":
 		return "inside a git repo"
-	case !exact && IsBroad(target, broad):
+	case IsBroad(target, broad) && (!exact || top): // Exact exempts only Desktop, Downloads, Documents
 		return "a broad folder"
 	case env.Home != "" && in(filepath.Join(env.Home, "Library")):
 		return "in ~/Library"
@@ -165,11 +175,21 @@ func refused(target string, exact bool, env Env) string {
 		win && len(t) > 1 && anyFold(t[1], "Windows", "Program Files", "Program Files (x86)"):
 		return "a system folder"
 	}
-	for _, s := range rest {
+	return badNames(rest, win)
+}
+
+// badNames returns why one of these archive-chosen names is refused, or "". win
+// means the path is a Windows one.
+func badNames(names []string, win bool) string {
+	if modCache(names) {
+		return "in the Go module cache"
+	}
+	for _, s := range names {
 		switch {
 		case strings.HasPrefix(s, "."):
 			return "a dot folder or file"
-		case anyFold(s, "AppData", "vimfiles") || win && anyFold(s, "ProgramData", "WindowsPowerShell", "PowerShell"):
+		case anyFold(s, "AppData", "vimfiles", "_vimrc", "_gvimrc") ||
+			win && anyFold(s, "ProgramData", "WindowsPowerShell", "PowerShell"):
 			return "in a folder that runs or configures programs"
 		case win && (strings.ContainsAny(s, ":~") || strings.TrimRight(s, ". ") != s):
 			// Win32 drops a trailing dot or space, reads APPDAT~1 as AppData, and
@@ -180,18 +200,39 @@ func refused(target string, exact bool, env Env) string {
 	return ""
 }
 
-// SafeJoin joins an archive-relative path (with "/") onto target, refusing anything
-// that could leave it, a dot entry, or a link on the way.
-func SafeJoin(target, rel string) (string, error) {
-	bad := rel == "" || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, `\`) ||
-		len(rel) >= 2 && rel[1] == ':' || !filepath.IsLocal(filepath.FromSlash(rel))
-	// Split on both: on Windows a backslash inside a name is a separator.
-	for _, s := range strings.FieldsFunc(rel, func(r rune) bool { return r == '/' || r == '\\' }) {
-		bad = bad || strings.HasPrefix(s, ".")
+// modCache reports go/pkg/mod, the default Go module cache: a planted module source
+// is built into the next program that needs that version.
+func modCache(s []string) bool {
+	for i := 0; i+2 < len(s); i++ {
+		if anyFold(s[i], "go") && anyFold(s[i+1], "pkg") && anyFold(s[i+2], "mod") {
+			return true
+		}
 	}
+	return false
+}
+
+// SafeJoin joins an archive-relative path (with "/") onto target. It refuses anything
+// that could leave target, every name refused() refuses, and a link or a nested repo
+// on the way.
+func SafeJoin(target, rel string) (string, error) {
 	out := filepath.Join(target, filepath.FromSlash(rel))
-	if bad || !Within(out, target, false) || linked(out, target) {
-		return "", fmt.Errorf("%w: %q under %s", ErrRefused, rel, target)
+	why := ""
+	switch {
+	case rel == "" || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, `\`) || len(rel) >= 2 && rel[1] == ':' ||
+		!filepath.IsLocal(filepath.FromSlash(rel)) || !Within(out, target, false):
+		why = "not inside the folder"
+	default:
+		// Split on both: on Windows a backslash inside a name is a separator.
+		why = badNames(strings.FieldsFunc(rel, func(r rune) bool { return r == '/' || r == '\\' }), WindowsPath(out))
+		if why == "" && modCache(segs(out)) { // go/pkg/mod may straddle target and rel
+			why = "in the Go module cache"
+		}
+		if why == "" {
+			why = onTheWay(out, target, true)
+		}
+	}
+	if why != "" {
+		return "", fmt.Errorf("%w: %q under %s: %s", ErrRefused, rel, target, why)
 	}
 	return out, nil
 }

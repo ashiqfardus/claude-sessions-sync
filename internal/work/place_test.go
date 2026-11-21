@@ -121,6 +121,8 @@ func TestPlaceRefused(t *testing.T) {
 		{Machine: "M", Home: "", Path: "/Users/a/x"},
 		{Machine: "M", Home: "/Users/b/../a", Path: "/Users/a/x"},
 		exact(mac("/Users/a/.zshrc")),
+		exact(mac("/Users/a")), // M-2: Exact never exempts the home itself
+		exact(win(`C:\Users\a`)),
 		mac("/Users/a/.ssh/x"),
 		mac("/Users/a/Library/LaunchAgents"),
 		mac("/Users/a/library/LaunchAgents"),
@@ -155,6 +157,18 @@ func TestPlaceRefused(t *testing.T) {
 			t.Errorf("Place(%+v) = %q, %v; want refused", src, got, err)
 		}
 	}
+	// M-1: no usable local home refuses everything, SameLayout included.
+	// Built at the volume root, away from macOS's /var link, which would refuse it anyway.
+	p := filepath.Join(filepath.VolumeName(l.Home)+string(filepath.Separator), "srv", "SQL", "po")
+	for _, h := range []string{"", "rel"} {
+		bad := l
+		bad.Home, bad.SameLayout = h, true
+		for _, src := range []Source{mac(p), exact(mac(p))} {
+			if got, err := Place(src, bad); !errors.Is(err, ErrRefused) {
+				t.Errorf("home %q, %+v: %q, %v", h, src, got, err)
+			}
+		}
+	}
 	// Exact files are excepted from the broad rule only.
 	mustPlace(t, exact(mac("/Users/a/Desktop/notes.md")), l, filepath.Join(l.Home, "Desktop", "notes.md"))
 	l.Map = map[string]string{`E:\SQL`: filepath.Join(l.Home, "mapped", ".x")}
@@ -165,6 +179,8 @@ func TestPlaceRefused(t *testing.T) {
 
 // Targets that only another OS produces are checked directly.
 func TestPlaceRefusedTargets(t *testing.T) {
+	winHome := fakeWinEnv()
+	winHome.Home = `C:\Users\R~1\AppData\h`
 	for _, c := range []struct {
 		env    Env
 		target string
@@ -203,10 +219,38 @@ func TestPlaceRefusedTargets(t *testing.T) {
 		{fakeWinEnv(), `C:\Users\a\OneDrive\Documents\PowerShell\x`, false},
 		{fakeWinEnv(), `C:\Users\a\vimfiles\plugin`, false}, // R15: Vim loads plugins from here
 		{fakeEnv(), "/h/VimFiles/x", false},
+		// M-3: Vim's rc files on Windows, and the Go module cache.
+		{fakeWinEnv(), `C:\Users\a\_vimrc`, false},
+		{fakeEnv(), "/h/w/_GVIMRC", false},
+		{fakeEnv(), "/h/go/pkg/mod/example.com/m@v1.0.0", false},
+		{fakeWinEnv(), `C:\Users\a\Go\PKG\mod`, false},
+		{fakeEnv(), "/h/go/src/x", true},
+		{fakeEnv(), "/h/go/pkg/x", true},
+		// M-4(b): a home whose own path holds refused names; only the part below it counts.
+		{winHome, `C:\Users\R~1\AppData\h\SQL\po`, true},
+		{winHome, `C:\Users\R~1\AppData\h\AppData\x`, false},
+		{winHome, `C:\Users\R~1\AppData\h\x~1`, false},
+		{winHome, `C:\Users\R~1\AppData\other`, false},
 	} {
 		if why := refused(c.target, false, c.env); (why == "") != c.ok {
 			t.Errorf("refused(%q) = %q, want ok=%v", c.target, why, c.ok)
 		}
+	}
+	// M-4(a): a Claude root without a dot, so that rule alone decides.
+	env := fakeEnv()
+	env.ClaudeRoot = "/h/claude-data"
+	if why := refused("/h/Claude-Data/x", false, env); why != "inside the Claude folder" {
+		t.Errorf("claude root: %q", why)
+	}
+	// M-2: Exact exempts Desktop, Downloads and Documents, never the home, above it, or a root.
+	for target, ok := range map[string]bool{`C:\Users\a\Desktop`: true, `C:\Users\a\documents`: true,
+		`C:\Users\a`: false, `C:\Users`: false, `C:\`: false, `D:\`: false} {
+		if why := refused(target, true, fakeWinEnv()); (why == "") != ok {
+			t.Errorf("exact %q = %q, want ok=%v", target, why, ok)
+		}
+	}
+	if why := refused("/", true, fakeEnv()); why == "" {
+		t.Error("exact / accepted")
 	}
 }
 
@@ -241,5 +285,41 @@ func TestSafeJoin(t *testing.T) {
 	}
 	if got, err := SafeJoin(target, "sub/r.md"); err != nil || got != filepath.Join(target, "sub", "r.md") {
 		t.Fatalf("got %q, %v", got, err)
+	}
+	// I-1: the folder rules apply to every archive segment too.
+	for _, rel := range []string{"vimfiles/plugin/x.vim", "w/_vimrc", "AppData/x", "pkg/mod/m@v1/x.go"} {
+		if got, err := SafeJoin(filepath.Join(target, "go"), rel); !errors.Is(err, ErrRefused) {
+			t.Errorf("SafeJoin(go, %q) = %q, %v", rel, got, err)
+		}
+	}
+	docs := `C:\Users\a\OneDrive\Documents` // Windows-form, so the Windows names count on any OS
+	if why := refused(docs, false, fakeWinEnv()); why != "" {
+		t.Fatalf("documents refused: %q", why)
+	}
+	for _, rel := range []string{"PowerShell/Microsoft.PowerShell_profile.ps1", "WindowsPowerShell/profile.ps1", "x~1/y", "a./b"} {
+		if got, err := SafeJoin(docs, rel); !errors.Is(err, ErrRefused) {
+			t.Errorf("SafeJoin(docs, %q) = %q, %v", rel, got, err)
+		}
+	}
+}
+
+// I-1: a file below a placed folder must not land in a repo nested inside it.
+func TestSafeJoinNestedRepo(t *testing.T) {
+	l := testLocal(t)
+	target, err := Place(Source{Machine: "MAC2", Home: "/x", Path: "/x/Developer"}, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(target, "app", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	put(t, target, "lib/.git", 0) // a worktree or submodule has a .git file
+	for _, rel := range []string{"app/internal/zz_init.go", "app/Makefile", "lib/conftest.py"} {
+		if got, err := SafeJoin(target, rel); !errors.Is(err, ErrRefused) {
+			t.Errorf("SafeJoin(%q) = %q, %v", rel, got, err)
+		}
+	}
+	if _, err := SafeJoin(target, "notes/r.md"); err != nil {
+		t.Fatal(err)
 	}
 }
