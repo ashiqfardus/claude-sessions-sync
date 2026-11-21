@@ -653,13 +653,24 @@ folders.
 
 **Which conversations count.** Push looks for folders only in what sessions on this
 computer wrote. A conversation filed from another computer by `import`, `pull` or
-`restore` adds no folder, though lines you add here by continuing it do. That way
-someone who can write to your archive cannot plant a conversation that makes your next
-push upload a folder of yours. The one exception is `push --scan-history`.
+`restore` adds no work folder, though lines you add here by continuing it do. So a
+conversation planted in your archive does not, by itself, make your next push upload a
+folder of yours. There are two exceptions:
 
-**After upgrading.** The first run marks every conversation already on this computer as
-read, and does not look for folders in them. To back up the work folders of earlier
-conversations, run this once:
+- A fork Claude Code makes of an imported conversation (`claude --resume
+  --fork-session`) copies its lines into a new conversation, which push reads as this
+  computer's own.
+- `push --scan-history`, below.
+
+Someone who can write to your archive can reach you in other ways too: through the
+plugins, skills and rules that `import` and `pull` bring in (see
+[SECURITY.md](SECURITY.md)). Use `import --no-plugins` unless you trust every writer, and
+keep the archive in a folder only you can write to.
+
+**The first run.** The first run of this version marks every conversation already on
+this computer as read, and looks for no folders in them. That applies to an upgrade, and
+equally to a fresh install on a computer that already has Claude Code history. To back
+up the work folders of those earlier conversations, run this once:
 
 ```sh
 claude-sessions push --scan-history
@@ -836,7 +847,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `--include-bare-name` | `import`, `restore` | Also replace the bare folder name in transcripts (it can hit package names and prose) |
 | `--source`, `--project-path`, `--rewrite-from` | `restore` | The folder to file, the project here, and the old path to rewrite |
 | `--no-html` | `push` | Do not write pages |
-| `--scan-history` | `push` | This run only, look for work folders in every conversation, imported ones too; once after upgrading, and only if you trust everyone who can write to the archive |
+| `--scan-history` | `push` | This run only, look for work folders in every conversation, imported ones too; once, for conversations from before the first run, and only if you trust everyone who can write to the archive |
 | `--quiet` | `push` | Hook mode: log instead of printing, and never fail |
 | `--lock-wait <time>` | `push` | With `--quiet`, how long to wait for another push, like `45s` or `2m` (default 45s) |
 | `--from-hook` | `push` | Used by the per-reply hook: copy only the session named on stdin |

@@ -12,10 +12,14 @@ All notable changes to this project are documented here. This project follows
   databases, secret-shaped names, anything over 10 MB and every dot file or folder are
   never copied, and a folder over 250 MB after filtering is not backed up. On by
   default; `config work off` stops it. Folders come only from what sessions on this
-  computer wrote, never from conversations imported from another computer.
-- **`push --scan-history`** looks for work folders in every earlier conversation, once,
-  after upgrading. It reads imported conversations too: use it only if you trust
-  everyone who can write to the archive.
+  computer wrote. A conversation imported from another computer adds none, except
+  through a fork Claude Code makes of it (`--fork-session`). Someone who can write the
+  archive can still reach you through plugins and skills, so use `import --no-plugins`
+  and keep the archive private.
+- **`push --scan-history`** looks for work folders in every conversation that was here
+  before this version first ran, once: after upgrading, or after installing on a
+  computer that already has history. It reads imported conversations too: use it only
+  if you trust everyone who can write to the archive.
 - **`import` and `pull` put work folders back** under your home folder or a folder you
   have mapped. `import` also rewrites the paths in the conversations to match; `pull`
   restores the files at their recorded paths and leaves the conversations alone.

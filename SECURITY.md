@@ -85,6 +85,20 @@ though it needs write access to the archive. Enforced in code:
 - **Path moves read from a manifest must be absolute paths.** A move from `"e"` would
   otherwise rewrite every `e` in every imported transcript, and the result would still
   parse.
+- **Work folders: a conversation from the archive names no folder for push to
+  upload.**
+  - `import`, `pull` and `restore` record each transcript they file, journaled before
+    it lands, in `session-sync-base/`. Push looks for work folders only in what was
+    written after that mark.
+  - The first run marks every conversation already on the machine.
+  - Nothing in this record is read from the archive.
+  - Links planted under `work/` are never written or deleted through.
+  - Limits:
+    - A fork Claude Code makes of an imported conversation (`--fork-session`) copies
+      its lines into a new conversation, which push reads as the machine's own.
+    - `push --scan-history` reads every conversation in full, imported ones included.
+    - Plugins, skills and rules from the archive reach you anyway (above). Use
+      `--no-plugins` and keep the archive private.
 - **Rendered pages carry a Content-Security-Policy that forbids scripts**, and their
   links are relative and escaped, so a folder named `javascript:...` is inert.
 - **Text from the archive is sanitised before it is shown**: control characters are

@@ -42,7 +42,7 @@ func cmdPush(args []string) error {
 	lockWait := fs.Duration("lock-wait", 45*time.Second, "with --quiet, how long to wait for another run to finish before skipping")
 	fromHook := fs.Bool("from-hook", false, "Stop hook mode: archive only the session named by the hook input on stdin")
 	sweep := fs.Bool("sweep", false, "set by the scheduled sweep, which marks its log line: the one run that may lack the terminal's privacy grants")
-	scanHistory := fs.Bool("scan-history", false, "this run only, read every conversation in full for work folders, once after upgrading; this reads ones imported from other computers too: use it only if you trust everyone who can write to the archive")
+	scanHistory := fs.Bool("scan-history", false, "this run only, read every conversation in full for work folders, once, for conversations from before the first run; this reads ones imported from other computers too: use it only if you trust everyone who can write to the archive")
 	if err := parseFlags(fs, args, false); err != nil {
 		// A hook written by a newer version may pass a flag this binary does not know.
 		// That must not break the end of the session any more than a missing drive -
