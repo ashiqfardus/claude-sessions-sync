@@ -99,7 +99,8 @@ func parent(p string) string {
 }
 
 // IsBroad reports a folder too wide to back up: home, its ancestors, a root,
-// or Desktop/Downloads/Documents directly under home.
+// Desktop/Downloads/Documents directly under home, or a OneDrive folder there and the
+// Desktop/Documents/Pictures Windows moves into it ("OneDrive - <organisation>").
 func IsBroad(dir string, env Env) bool {
 	d := segs(dir)
 	fold := env.Windows || WindowsPath(dir)
@@ -111,6 +112,9 @@ func IsBroad(dir string, env Env) bool {
 		if within(d, append(append([]string{}, h...), n), fold) && len(d) == len(h)+1 {
 			return true
 		}
+	}
+	if len(d) > len(h) && len(d) <= len(h)+2 && within(d, h, fold) && strings.HasPrefix(strings.ToLower(d[len(h)]), "onedrive") {
+		return len(d) == len(h)+1 || slices.ContainsFunc([]string{"Desktop", "Documents", "Pictures"}, func(n string) bool { return strings.EqualFold(n, d[len(h)+1]) })
 	}
 	return false
 }

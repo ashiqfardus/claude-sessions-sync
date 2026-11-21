@@ -313,8 +313,9 @@ func TestSafeJoin(t *testing.T) {
 		}
 	}
 	docs := `C:\Users\a\OneDrive\Documents` // Windows-form, so the Windows names count on any OS
-	if why := refused(docs, false, fakeWinEnv()); why != "" {
-		t.Fatalf("documents refused: %q", why)
+	// Broad (I3): only files written there exactly are placed, into this folder.
+	if why := refused(docs, false, fakeWinEnv()); why != "a broad folder" {
+		t.Fatalf("documents: %q", why)
 	}
 	for _, rel := range []string{"PowerShell/Microsoft.PowerShell_profile.ps1", "WindowsPowerShell/profile.ps1", "x~1/y", "a./b"} {
 		if got, err := SafeJoin(docs, rel); !errors.Is(err, ErrRefused) {

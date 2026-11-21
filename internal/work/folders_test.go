@@ -145,3 +145,20 @@ func TestFoldersDropCodeFolders(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+// Windows moves Desktop, Documents and Pictures into OneDrive, named "OneDrive" or
+// "OneDrive - <organisation>": those are as broad as the folders they replace.
+func TestIsBroadOneDrive(t *testing.T) {
+	env := Env{Home: `C:\Users\a`, Windows: true}
+	for _, p := range []string{`C:\Users\a\OneDrive`, `C:\Users\a\OneDrive - Example`, `C:\Users\a\onedrive\Documents`,
+		`C:\Users\a\OneDrive - Example\Desktop`, `C:\Users\a\OneDrive\pictures`} {
+		if !IsBroad(p, env) {
+			t.Errorf("%s: not broad", p)
+		}
+	}
+	for _, p := range []string{`C:\Users\a\OneDrive\Documents\reports`, `C:\Users\a\OneDrive\work`, `C:\Users\a\Drive\Documents`, `C:\Users\a\SQL\OneDrive`} {
+		if IsBroad(p, env) {
+			t.Errorf("%s: broad", p)
+		}
+	}
+}
