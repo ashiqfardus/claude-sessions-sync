@@ -139,13 +139,24 @@ func cmdImport(args []string) error {
 	}
 	// The user's own mapping beats every inference: it is the answer for a project that
 	// nothing identifies, and it is what they asked for.
-	cfg, _ := archive.LoadConfig(root)
+	cfg, cerr := archive.LoadConfig(root)
+	// Other machines' work folders, placed before any transcript is filed: a project
+	// inside one lives where it landed, and their moves repoint the transcripts. A
+	// config that cannot be read may have lost "work off" or a mapping.
+	wcfg := cfg
+	if cerr != nil {
+		wcfg.WorkBackup = "off"
+	}
+	workMoves, workRes := restoreWork(root, dest, shards, wcfg, *dryRun, *update, false)
 	resolve := func(bucket string, p archive.Project) identity.Match {
 		if local, ok := cfg.Mapped(bucket); ok {
 			if st, err := os.Stat(local); err != nil || !st.IsDir() {
 				return identity.Match{How: mappedMissing, Candidates: []string{local}}
 			}
 			return identity.Match{How: identity.ByManual, Path: local}
+		}
+		if t := placedPath(workRes.Placed, p.Path); t != "" {
+			return identity.Match{How: byWorkFolder, Path: t}
 		}
 		m := identity.Resolve(p.Path, p.Leaf, p.Remote, scanner)
 		if m.How == identity.ByRecordedPath || localHome == "" {
@@ -205,6 +216,7 @@ func cmdImport(args []string) error {
 	if backupRoot != "" && !samePath(backupRoot, root) {
 		moves = append(moves, rewrite.Move{From: backupRoot, To: root})
 	}
+	moves = append(moves, workMoves...)
 	writers := sessionWriters(dest)
 	former := formerNames(dest)
 
@@ -371,6 +383,12 @@ func cmdImport(args []string) error {
 		fmt.Printf(", %d updated", updated)
 	}
 	fmt.Printf(". %d same layout, %d not found, %d ambiguous.\n", sameLayout, notFound, ambiguous)
+	for _, n := range workRes.Notes {
+		fmt.Println(n)
+	}
+	if len(workRes.Placed) > 0 {
+		fmt.Println("  to place them elsewhere: claude-sessions config map-folder '<path from above>' '<local folder>', or claude-sessions config work-placement home|machine")
+	}
 	printProfile(profile, *dryRun)
 	if !*update && sameLayout+filed > 0 {
 		fmt.Println("Sessions already here are never replaced; --update refreshes ones that continued elsewhere.")
@@ -549,9 +567,18 @@ func cmdPull(args []string) error {
 	}
 
 	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
+	// Work folders at their recorded paths, under the same safety rules as import.
+	var workRes workRestoreResult
+	if cfg, err := archive.LoadConfig(root); err == nil {
+		shards, _, _ := archive.ReadShards(dest)
+		_, workRes = restoreWork(root, dest, shards, cfg, *dryRun, *update, true)
+	}
 
 	fmt.Printf("\n%s %d transcript(s) and %d memory file(s), %d already present.\n",
 		verbFor(*dryRun), pulled, memory, already)
+	for _, n := range workRes.Notes {
+		fmt.Println(n)
+	}
 	if updated > 0 {
 		fmt.Printf("updated %d session(s) that continued on another machine\n", updated)
 	}

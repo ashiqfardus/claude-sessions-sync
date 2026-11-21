@@ -146,3 +146,21 @@ func TestEncode(t *testing.T) {
 		}
 	}
 }
+
+// Restore runs Allowed on whole archive paths: a skipped folder anywhere above the file
+// refuses it, whatever its case.
+func TestAllowedSkippedFolders(t *testing.T) {
+	for rel, want := range map[string]string{
+		"Users/a/p/r.md":                 "",
+		"Users/a/p/build.md":             "",
+		"Users/a/node_modules/x/i.js":    "folder",
+		"Users/a/p/Node_Modules/x/i.js":  "folder",
+		"E/SQL/__pycache__/m.cpython.py": "folder",
+		"Users/a/p/.git/config":          "dot",
+		"Users/a/p/tool.EXE":             "type",
+	} {
+		if ok, why := Allowed(rel, 1); ok != (want == "") || why != want {
+			t.Errorf("Allowed(%q) = %v, %q; want %q", rel, ok, why, want)
+		}
+	}
+}

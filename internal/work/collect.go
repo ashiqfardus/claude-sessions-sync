@@ -20,6 +20,9 @@ var skipDirs = map[string]bool{
 	"__pycache__": true, ".cache": true, "dist": true, "build": true, "target": true, ".gradle": true,
 }
 
+// skipDir ignores case: on macOS and Windows Node_Modules is node_modules.
+func skipDir(name string) bool { return skipDirs[strings.ToLower(name)] }
+
 var deniedExt = map[string]bool{}
 
 func init() {
@@ -31,12 +34,17 @@ func init() {
 }
 
 // Allowed decides whether a file at rel ("/"-separated) is copied. reason is
-// "dot", "secret", "type" or "large", checked in that order.
+// "dot", "folder" (under a skipped folder), "secret", "type" or "large", checked in
+// that order. Restore passes the whole archive path, so a folder push skips is
+// refused even when an archive names it as the work folder itself.
 func Allowed(rel string, size int64) (bool, string) {
 	parts := strings.Split(rel, "/")
-	for _, p := range parts {
+	for i, p := range parts {
 		if strings.HasPrefix(p, ".") {
 			return false, "dot"
+		}
+		if i < len(parts)-1 && skipDir(p) {
+			return false, "folder"
 		}
 	}
 	b := strings.ToLower(parts[len(parts)-1])
@@ -105,7 +113,7 @@ func Collect(f Folder, exclude []string) (Collected, error) {
 			if p == f.Path {
 				return nil
 			}
-			if skipDirs[d.Name()] || strings.HasPrefix(d.Name(), ".") {
+			if skipDir(d.Name()) || strings.HasPrefix(d.Name(), ".") {
 				return fs.SkipDir
 			}
 			if _, e := os.Lstat(filepath.Join(p, ".git")); e == nil {

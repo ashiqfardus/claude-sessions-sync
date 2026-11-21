@@ -2,11 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -104,6 +108,7 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 		}
 	}
 
+	held := work.LoadHeld(heldWorkPath(root)).Files
 	start := time.Now()
 	// copyFolder backs up one folder. It returns false when the budget ran out part way.
 	copyFolder := func(f work.Folder) (archive.WorkFolder, bool) {
@@ -134,6 +139,10 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 			}
 			src, err := os.Stat(p)
 			if err != nil {
+				continue
+			}
+			// Restored from another machine and unchanged since: that machine's, not ours.
+			if h, ok := held[p]; ok && h.Size == src.Size() && archive.SameMTime(h.MTime, src.ModTime()) {
 				continue
 			}
 			// Unlike a transcript, a file may shrink: an edit within the mtime tolerance
@@ -289,4 +298,283 @@ func purgeWork(dest, machine, folder string) ([]string, error) {
 		shard.Machine = machine
 	}
 	return removed, writeManifest(dest, shard)
+}
+
+// heldWorkPath is this machine's record of work files restored from other machines
+// and where their folders were placed.
+func heldWorkPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "work-held.json")
+}
+
+// byWorkFolder is a project that lies inside a placed work folder: identity.Resolve
+// cannot find folders under claude-work/.
+const byWorkFolder identity.How = "work folder"
+
+// workRestoreResult is what restoreWork did. Placed maps each placed source path to
+// its local target; Notes are the lines import and pull print.
+type workRestoreResult struct {
+	Placed                       map[string]string
+	Filed, Kept, Beside, Refused int
+	Notes                        []string
+}
+
+// restoreWork places other machines' work folders here and files their files (spec
+// §6-§7), returning the moves that repoint transcripts to them. sameLayout is pull's
+// case: recorded paths, as they are. Everything read from the archive is untrusted:
+// each folder goes through work.Place, each file through the push filter and
+// work.SafeJoin, and files are written add-only, mode 0644, never through a link.
+func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive.Config, dryRun, update, sameLayout bool) ([]rewrite.Move, workRestoreResult) {
+	res := workRestoreResult{Placed: map[string]string{}}
+	if !cfg.WorkOn() {
+		return nil, res
+	}
+	l := work.Local{Env: workEnv(root), Machine: machineName(), Placement: cfg.WorkPlacement, Map: cfg.WorkMap, SameLayout: sameLayout}
+	own, _ := loadWorkFolders(root)
+	for _, f := range own {
+		l.Own = append(l.Own, f.Path)
+	}
+	held := work.LoadHeld(heldWorkPath(root))
+	now := time.Now()
+	var moves []rewrite.Move
+	// Push never archives a home, an ancestor of one or a root; a hostile shard that
+	// lists one would turn it into a move that repoints every path under it.
+	homes := []string{l.Home}
+	for _, s := range shards {
+		homes = append(homes, s.Home)
+	}
+	broad := func(p string) bool {
+		return slices.ContainsFunc(homes, func(h string) bool { return work.IsBroad(p, work.Env{Home: h}) })
+	}
+
+	names := make([]string, 0, len(shards))
+	for n := range shards {
+		names = append(names, n)
+	}
+	sort.Strings(names) // the first machine to place a path keeps it
+	for _, name := range names {
+		s := shards[name]
+		if isMe(s.Machine) || !(strings.HasPrefix(s.Home, "/") || work.WindowsPath(s.Home)) {
+			continue
+		}
+		var n workRestoreResult // this machine's counts
+		var went, notes []string
+		refuse := func(p string, why any) {
+			n.Refused++
+			notes = append(notes, fmt.Sprintf("  ! %s: refused: %v", p, why))
+		}
+		for _, wf := range s.WorkFolders {
+			dir, err := workDir(dest, s.Machine, wf.Path)
+			if err != nil {
+				refuse(wf.Path, err)
+				continue
+			}
+			if !realArchivePath(dest, dir, wf.Exact) {
+				continue // listed with no copy (over the cap, or not pushed yet), or a link
+			}
+			if !wf.Exact && broad(wf.Path) {
+				refuse(wf.Path, "a broad folder")
+				continue
+			}
+			target, err := work.Place(work.Source{Machine: s.Machine, Home: s.Home, Path: wf.Path, Exact: wf.Exact, Origin: wf.Origin}, l)
+			if errors.Is(err, work.ErrRefused) {
+				refuse(wf.Path, strings.TrimPrefix(err.Error(), work.ErrRefused.Error()+": "))
+				continue
+			} else if err != nil {
+				continue // not a path on this machine: pull's same layout does not fit
+			}
+			held.Placed[s.Machine+"|"+wf.Path] = target
+			if _, ok := res.Placed[wf.Path]; !ok {
+				res.Placed[wf.Path] = target
+			}
+			went = append(went, wf.Path+" -> "+target)
+			if target != wf.Path {
+				moves = append(moves, rewrite.Move{From: wf.Path, To: target, ConvertTail: work.WindowsPath(wf.Path) && runtime.GOOS != "windows"})
+			}
+
+			// tdir and trel are where a file goes, for SafeJoin. The push filter runs on
+			// what lands here, the target below the home (all of it outside), plus the
+			// file's path: rule 0 and a map choose targets that are not the source path.
+			tdir, loc := target, work.Encode(target)
+			if h := work.Encode(l.Home) + "/"; strings.HasPrefix(loc, h) {
+				loc = loc[len(h):]
+			}
+			if wf.Exact {
+				tdir = filepath.Dir(target)
+			}
+			sep := "/"
+			if work.WindowsPath(wf.Path) {
+				sep = `\`
+			}
+			file := func(src, rel string, fi fs.FileInfo) {
+				from, trel, arel := wf.Path+sep+strings.ReplaceAll(rel, "/", sep), rel, loc+"/"+rel
+				if wf.Exact {
+					from, trel, arel = wf.Path, filepath.Base(target), loc
+				}
+				if ok, why := work.Allowed(arel, fi.Size()); !ok {
+					refuse(from, why)
+					return
+				}
+				if fi.ModTime().After(now.Add(time.Hour)) { // would stay "newer" than any edit here
+					refuse(from, "dated in the future")
+					return
+				}
+				dst, err := work.SafeJoin(tdir, trel)
+				if err != nil {
+					refuse(from, err)
+					return
+				}
+				same := func(a fs.FileInfo) bool { return a.Size() == fi.Size() && archive.SameMTime(a.ModTime(), fi.ModTime()) }
+				// mine: restored from this machine and unchanged since, so replaceable.
+				mine := func(p string, st fs.FileInfo) bool {
+					h, ok := held.Files[p]
+					return ok && strings.EqualFold(h.Machine, s.Machine) && h.Size == st.Size() && archive.SameMTime(h.MTime, st.ModTime())
+				}
+				write := func(p string) bool {
+					if dryRun {
+						return true
+					}
+					if err := copyRestored(src, p, fi); err != nil {
+						notes = append(notes, fmt.Sprintf("  x %s: %v", p, err))
+						return false
+					}
+					if st, err := os.Stat(p); err == nil {
+						held.Files[p] = work.HeldFile{Machine: s.Machine, From: from, Size: st.Size(), MTime: st.ModTime()}
+					}
+					return true
+				}
+				st, err := os.Lstat(dst)
+				switch {
+				case os.IsNotExist(err) || err == nil && update && st.Mode().IsRegular() && mine(dst, st) && !same(st):
+					if write(dst) {
+						n.Filed++
+					}
+				case err != nil || !update || !st.Mode().IsRegular() || mine(dst, st) || sameContent(src, dst):
+					n.Kept++ // add-only; never through a link
+				default:
+					// Kept, theirs beside it: replacing it would push theirs over ours everywhere.
+					// The machine name is archive data too: one named "dll" would turn
+					// "version" into "version.dll".
+					ext := filepath.Ext(trel)
+					name := "." + s.Machine + ext
+					if ok, why := work.Allowed(strings.TrimSuffix(arel, ext)+name, fi.Size()); !ok {
+						refuse(from, why)
+						return
+					}
+					sib, err := work.SafeJoin(tdir, strings.TrimSuffix(trel, ext)+name)
+					if err != nil {
+						refuse(from, err)
+						return
+					}
+					ss, err := os.Lstat(sib)
+					if os.IsNotExist(err) || err == nil && ss.Mode().IsRegular() && !same(ss) && mine(sib, ss) {
+						if write(sib) {
+							n.Beside++
+							notes = append(notes, fmt.Sprintf("  ~ %s kept; %s's copy written beside it as %s", dst, s.Machine, filepath.Base(sib)))
+						}
+					} else {
+						n.Kept++
+					}
+				}
+			}
+			if wf.Exact {
+				if fi, err := os.Lstat(dir); err == nil {
+					file(dir, "", fi)
+				}
+				continue
+			}
+			// WalkDir never follows a link; only regular files are read.
+			_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+				if err != nil || !d.Type().IsRegular() {
+					return nil
+				}
+				fi, err := d.Info()
+				rel, rerr := filepath.Rel(dir, p)
+				if err == nil && rerr == nil {
+					file(p, filepath.ToSlash(rel), fi)
+				}
+				return nil
+			})
+		}
+		res.Filed, res.Kept, res.Beside, res.Refused = res.Filed+n.Filed, res.Kept+n.Kept, res.Beside+n.Beside, res.Refused+n.Refused
+		if len(went) == 0 && n.Refused == 0 {
+			continue
+		}
+		where := strings.Join(went, ", ")
+		if where == "" {
+			where = "none placed"
+		}
+		res.Notes = append(res.Notes, fmt.Sprintf("work folders from %s: %s (%d file(s) %s, %d kept, %d beside, %d refused)",
+			s.Machine, where, n.Filed, verbFor(dryRun), n.Kept, n.Beside, n.Refused))
+		res.Notes = append(res.Notes, notes...)
+	}
+	if !dryRun {
+		if err := held.Save(heldWorkPath(root)); err != nil {
+			res.Notes = append(res.Notes, fmt.Sprintf("  x restored work record: %v", err))
+		}
+	}
+	return moves, res
+}
+
+// realArchivePath reports whether p, a work copy under dest/work, is a real folder
+// (with exact, a regular file) reached through real folders only. The archive is
+// shared: a link planted in it would make restore copy files from anywhere.
+func realArchivePath(dest, p string, exact bool) bool {
+	fi, err := os.Lstat(p)
+	if err != nil || exact != fi.Mode().IsRegular() || !exact && !fi.IsDir() {
+		return false
+	}
+	base := filepath.Join(dest, "work")
+	for q := filepath.Dir(p); ; q = filepath.Dir(q) {
+		if !archive.IsRealDir(q) {
+			return false
+		}
+		if q == base || q == filepath.Dir(q) {
+			return true
+		}
+	}
+}
+
+// copyRestored writes the archive file src to dst through a temp file and a rename,
+// mode 0644 whatever the archive says, keeping its time. want is src as the walk saw
+// it: a file swapped since, or grown past the cap, is not read.
+func copyRestored(src, dst string, want fs.FileInfo) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Size() != want.Size() {
+		return fmt.Errorf("changed in the archive while restoring")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, work.MaxFileBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > work.MaxFileBytes {
+		return fmt.Errorf("over %d MB", work.MaxFileBytes>>20)
+	}
+	if err := archive.WriteFileAtomic(dst, data, 0o644); err != nil {
+		return err
+	}
+	return os.Chtimes(dst, want.ModTime(), want.ModTime())
+}
+
+// placedPath is where p lives here when it lies inside a placed work folder: the
+// folder's target plus the rest of p, from the most specific folder. "" otherwise.
+func placedPath(placed map[string]string, p string) string {
+	best := ""
+	for src := range placed {
+		if work.Within(p, src, true) && (len(src) > len(best) || len(src) == len(best) && src < best) {
+			best = src
+		}
+	}
+	segs := func(s string) []string { // as work.Within counts them
+		return slices.DeleteFunc(strings.FieldsFunc(s, func(r rune) bool { return r == '/' || r == '\\' }), func(x string) bool { return x == "." })
+	}
+	all := segs(p)
+	if best == "" || slices.Contains(all, "..") {
+		return "" // archive data: a ".." here would climb out of the target
+	}
+	return filepath.Join(append([]string{placed[best]}, all[len(segs(best)):]...)...)
 }

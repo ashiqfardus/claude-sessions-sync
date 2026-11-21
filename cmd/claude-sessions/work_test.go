@@ -8,8 +8,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
@@ -519,5 +521,291 @@ func TestPushWorkIgnoresShardEntries(t *testing.T) {
 	m.workRun(t, home, "push", "--no-html")
 	if _, err := os.Stat(workCopy(m, docs)); !os.IsNotExist(err) {
 		t.Fatalf("hand-added folder copied: %v", err)
+	}
+}
+
+// workPair is two machines with different homes sharing one archive. WIN pushed a
+// session, started in a repository outside both homes, that wrote a file in
+// "<homeA>/My Work/run 1" and ran a cd into it. The repository is not a home folder,
+// so no project move can repoint those paths: only a work-folder move can.
+type workPair struct {
+	a, b         machine
+	homeA, homeB string
+	repo, folder string // folder is A's work folder
+}
+
+func newWorkPair(t *testing.T) workPair {
+	t.Helper()
+	arch := t.TempDir()
+	p := workPair{a: newMachine(t, "WIN", arch), b: newMachine(t, "MAC", arch), homeA: t.TempDir(), homeB: t.TempDir()}
+	p.repo = gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	p.folder = filepath.Join(p.homeA, "My Work", "run 1")
+	mustWrite(t, filepath.Join(p.folder, "রিপোর্ট.md"), "report v1\n")
+	mustWrite(t, filepath.Join(p.homeA, "Desktop", "todo.md"), "todo\n") // a broad folder: this one file only
+	workSession(t, p.a, p.repo, []string{filepath.Join(p.folder, "রিপোর্ট.md"), filepath.Join(p.homeA, "Desktop", "todo.md")},
+		`cd "`+p.folder+`"`)
+	p.a.workRun(t, p.homeA, "push", "--no-html")
+	return p
+}
+
+// placed is where A's work folder lands on B by default.
+func (p workPair) placed() string { return filepath.Join(p.homeB, "My Work", "run 1") }
+
+// inJSON is s as it appears inside a JSON string.
+func inJSON(s string) string { return strings.Trim(quoted(s), `"`) }
+
+func TestImportWorkAcrossHomes(t *testing.T) {
+	p := newWorkPair(t)
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins")
+
+	if got := mustRead(t, filepath.Join(p.placed(), "রিপোর্ট.md")); got != "report v1\n" {
+		t.Fatalf("restored %q", got)
+	}
+	todo := filepath.Join(p.homeB, "Desktop", "todo.md")
+	if got := mustRead(t, todo); got != "todo\n" {
+		t.Fatalf("exact file restored %q", got)
+	}
+	s := mustRead(t, p.b.session(p.repo))
+	if !strings.Contains(s, inJSON(filepath.Join(p.placed(), "রিপোর্ট.md"))) || !strings.Contains(s, inJSON(`cd "`+p.placed()+`"`)) ||
+		!strings.Contains(s, inJSON(todo)) || strings.Contains(s, inJSON(p.homeA)) {
+		t.Fatalf("transcript not repointed:\n%s", s)
+	}
+	if !strings.Contains(out, "work folders from WIN: ") || !strings.Contains(out, p.folder+" -> "+p.placed()) ||
+		!strings.Contains(out, "config map-folder") || !strings.Contains(out, "config work-placement") {
+		t.Fatalf("output: %s", out)
+	}
+}
+
+func TestImportWorkMapFolder(t *testing.T) {
+	p := newWorkPair(t)
+	dir := filepath.Join(p.homeB, "mapped")
+	mustMkdir(t, dir)
+	configAs(t, p.b.claudeDir, "MAC", "map-folder", p.folder, dir)
+	p.b.workRun(t, p.homeB, "import", "--no-plugins")
+
+	if got := mustRead(t, filepath.Join(dir, "রিপোর্ট.md")); got != "report v1\n" {
+		t.Fatalf("restored %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(p.homeB, "My Work")); !os.IsNotExist(err) {
+		t.Fatalf("also placed under the home: %v", err)
+	}
+	if s := mustRead(t, p.b.session(p.repo)); !strings.Contains(s, inJSON(filepath.Join(dir, "রিপোর্ট.md"))) {
+		t.Fatalf("transcript not repointed:\n%s", s)
+	}
+}
+
+func TestImportWorkAddOnly(t *testing.T) {
+	p := newWorkPair(t)
+	mine := filepath.Join(p.placed(), "রিপোর্ট.md")
+	mustWrite(t, mine, "B's own\n")
+	p.b.workRun(t, p.homeB, "import", "--no-plugins")
+	if got := mustRead(t, mine); got != "B's own\n" {
+		t.Fatalf("local file replaced: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(p.placed(), "রিপোর্ট.WIN.md")); !os.IsNotExist(err) {
+		t.Fatalf("copy beside written without --update: %v", err)
+	}
+}
+
+func TestImportWorkUpdate(t *testing.T) {
+	p := newWorkPair(t)
+	mustWrite(t, filepath.Join(p.folder, "notes.md"), "A's notes\n")
+	mustWrite(t, filepath.Join(p.placed(), "notes.md"), "B's notes\n")
+	p.a.workRun(t, p.homeA, "push", "--no-html")
+	future := filepath.Join(workCopy(p.a, p.folder), "future.md")
+	mustWrite(t, future, "from the future\n")
+	later := time.Now().Add(3 * time.Hour)
+	if err := os.Chtimes(future, later, later); err != nil {
+		t.Fatal(err)
+	}
+	p.b.workRun(t, p.homeB, "import", "--no-plugins")
+
+	report := filepath.Join(p.folder, "রিপোর্ট.md")
+	mustWrite(t, report, "report v2, longer\n")
+	soon := time.Now().Add(5 * time.Minute)
+	if err := os.Chtimes(report, soon, soon); err != nil {
+		t.Fatal(err)
+	}
+	p.a.workRun(t, p.homeA, "push", "--no-html")
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins", "--update")
+
+	if got := mustRead(t, filepath.Join(p.placed(), "রিপোর্ট.md")); got != "report v2, longer\n" {
+		t.Errorf("held copy not updated: %q", got)
+	}
+	if got := mustRead(t, filepath.Join(p.placed(), "notes.md")); got != "B's notes\n" {
+		t.Errorf("B's own file replaced: %q", got)
+	}
+	if got := mustRead(t, filepath.Join(p.placed(), "notes.WIN.md")); got != "A's notes\n" {
+		t.Errorf("copy beside: %q", got)
+	}
+	if !strings.Contains(out, "notes.WIN.md") {
+		t.Errorf("output does not name the copy beside: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(p.placed(), "future.md")); !os.IsNotExist(err) {
+		t.Errorf("future-dated file restored: %v", err)
+	}
+}
+
+func TestRestoredNotPushedBack(t *testing.T) {
+	p := newWorkPair(t)
+	p.b.workRun(t, p.homeB, "import", "--no-plugins")
+	mustWrite(t, filepath.Join(p.placed(), "b.md"), "B's own\n")
+	p.b.workRun(t, p.homeB, "push", "--no-html")
+
+	var mine []string
+	for _, f := range workFiles(p.b.archive) {
+		if strings.HasPrefix(f, "MAC/") {
+			mine = append(mine, f)
+		}
+	}
+	if want := []string{"MAC/" + work.Encode(p.placed()) + "/b.md"}; !reflect.DeepEqual(mine, want) {
+		t.Fatalf("B archived %v, want %v", mine, want)
+	}
+}
+
+// Hostile shards: a root home, a folder in ~/.ssh, a ".." path, archive files a push
+// never sends, an origin aimed into node_modules, an ancestor of the home, and a
+// machine name that makes a copy beside an .exe. Only the plain files of the one folder
+// B mapped land, and not executable.
+func TestImportWorkHostileShard(t *testing.T) {
+	arch := t.TempDir()
+	a, b := newMachine(t, "WIN", arch), newMachine(t, "MAC", arch)
+	homeA, homeB := t.TempDir(), t.TempDir()
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, a.session(repo), sessionLines(repo, "u1"))
+	a.workRun(t, homeA, "push", "--no-html")
+
+	mapped := filepath.Join(homeB, "evil")
+	mustMkdir(t, mapped)
+	configAs(t, b.claudeDir, "MAC", "map-folder", "/evil", mapped)
+	mustWrite(t, filepath.Join(mapped, "proj", "tool"), "B's own tool\n")
+	own := filepath.Join(homeB, "mine")
+	mustMkdir(t, own)
+	ownRecord, _ := json.Marshal([]map[string]any{{"path": own}})
+	mustWrite(t, filepath.Join(b.claudeDir, "session-sync-base", "work-folders.json"), string(ownRecord))
+
+	evil, evil2, evil3, exe := machine{name: "EVIL", archive: arch}, machine{name: "EVIL2", archive: arch},
+		machine{name: "EVIL3", archive: arch}, machine{name: "exe", archive: arch}
+	ssh := filepath.Join(homeB, ".ssh")
+	put := func(m machine, folder, rel, body string) string {
+		f := filepath.Join(workCopy(m, folder), filepath.FromSlash(rel))
+		mustWrite(t, f, body)
+		return f
+	}
+	put(evil, ssh, "authorized_keys", "ssh-ed25519 AAAA attacker\n")
+	put(evil, "/evil/proj", "ok.md", "fine\n")
+	if err := os.Chmod(put(evil, "/evil/proj", "run.sh", "#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	put(evil, "/evil/proj", ".git/config", "[core]\n\tfsmonitor = evil\n")
+	put(evil, "/evil/proj", "node_modules/x/index.js", "evil()\n")
+	put(evil, "/evil/proj", "tool.exe", "MZ")
+	put(evil, "/evil/proj", "deploy.key", "k")
+	put(evil2, "/evil/proj", "evil2.md", "x")
+	put(evil, "/x/y", "index.js", "evil()\n")
+	put(evil3, filepath.Dir(homeB), "x.md", "x")
+	put(exe, "/evil/proj", "tool", "MZ")
+	// Links in the archive are never read through, as a file or on the way to a folder
+	// (no symlinks on some Windows runners).
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "sub", "private.md"), "private\n")
+	_ = os.Symlink(filepath.Join(outside, "sub", "private.md"), filepath.Join(workCopy(evil, "/evil/proj"), "link.md"))
+	_ = os.Symlink(outside, workCopy(evil, "/evil/lnk"))
+
+	shard := func(name, home string, folders ...any) {
+		var wf []any
+		for _, f := range folders {
+			if p, ok := f.(string); ok {
+				f = map[string]any{"path": p}
+			}
+			wf = append(wf, f)
+		}
+		raw, _ := json.Marshal(map[string]any{"schemaVersion": 1, "machine": name, "home": home, "projects": map[string]any{}, "workFolders": wf})
+		mustWrite(t, filepath.Join(arch, "manifest", name+".json"), string(raw))
+	}
+	sep := string(filepath.Separator) // not filepath.Join, which would clean the ".." away
+	shard("EVIL", "/", ssh, homeB+sep+"notes"+sep+".."+sep+".ssh", "/evil/proj", "/evil/lnk/sub",
+		map[string]any{"path": "/x/y", "origin": map[string]any{"machine": "MAC", "path": filepath.Join(own, "node_modules", "lodash")}})
+	shard("EVIL2", "x", "/evil/proj") // a relative home: the whole shard is ignored
+	shard("EVIL3", homeB, filepath.Dir(homeB))
+	shard("exe", "/", "/evil/proj")
+
+	out := b.workRun(t, homeB, "import", "--no-plugins", "--update")
+
+	var got []string
+	_ = filepath.WalkDir(homeB, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(homeB, p)
+			got = append(got, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if want := []string{"evil/proj/ok.md", "evil/proj/run.sh", "evil/proj/tool"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("wrote %v, want %v\n%s", got, want, out)
+	}
+	if fi, err := os.Stat(filepath.Join(mapped, "proj", "run.sh")); runtime.GOOS != "windows" && (err != nil || fi.Mode().Perm() != 0o644) {
+		t.Fatalf("run.sh mode: %v %v", fi, err)
+	}
+	if !strings.Contains(out, "work folders from EVIL: ") || !strings.Contains(out, "7 refused") || !strings.Contains(out, "contains ..") ||
+		!strings.Contains(out, "/x/y/index.js: refused: folder") || !strings.Contains(out, "a broad folder") ||
+		!strings.Contains(out, "tool: refused: type") || strings.Contains(out, "EVIL2") {
+		t.Fatalf("output: %s", out)
+	}
+}
+
+// pull keeps its same-layout contract: files at their recorded paths, no rewriting.
+func TestPullWorkSameLayout(t *testing.T) {
+	arch := t.TempDir()
+	a, b := newMachine(t, "WIN", arch), newMachine(t, "MAC", arch)
+	home, po, transcript := poSession(t, a)
+	a.workRun(t, home, "push", "--no-html")
+	// One file system stands in for two: A's folder would be there already.
+	if err := os.RemoveAll(po); err != nil {
+		t.Fatal(err)
+	}
+	a.workRun(t, home, "pull", "--no-plugins") // its own shard: what A deleted stays deleted
+	if _, err := os.Stat(po); !os.IsNotExist(err) {
+		t.Fatalf("own folder restored: %v", err)
+	}
+	b.workRun(t, home, "pull", "--no-plugins")
+
+	if got := mustRead(t, filepath.Join(po, "r.md")); got != "report, first and longer version\n" {
+		t.Fatalf("r.md = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(po, "shot.png")); !os.IsNotExist(err) {
+		t.Fatalf("image restored: %v", err)
+	}
+	if got := mustRead(t, b.session(home)); got != mustRead(t, transcript) {
+		t.Fatalf("transcript rewritten:\n%s", got)
+	}
+}
+
+func TestImportProjectInsideWorkFolder(t *testing.T) {
+	arch := t.TempDir()
+	a, b := newMachine(t, "WIN", arch), newMachine(t, "MAC", arch)
+	homeA, homeB := t.TempDir(), t.TempDir()
+	po := filepath.Join(homeA, "SQL", "po")
+	mustWrite(t, filepath.Join(po, "r.md"), "x\n")
+	workSession(t, a, po, []string{filepath.Join(po, "r.md")})
+	a.workRun(t, homeA, "push", "--no-html")
+	b.workRun(t, homeB, "import", "--no-plugins")
+
+	if _, err := os.Stat(b.session(filepath.Join(homeB, "SQL", "po"))); err != nil {
+		t.Fatalf("not filed for the placed folder: %v", err)
+	}
+	if _, err := os.Stat(b.session(po)); !os.IsNotExist(err) {
+		t.Fatalf("filed for A's path: %v", err)
+	}
+}
+
+func TestImportWorkOff(t *testing.T) {
+	p := newWorkPair(t)
+	configAs(t, p.b.claudeDir, "MAC", "work", "off")
+	p.b.workRun(t, p.homeB, "import", "--no-plugins")
+	if _, err := os.Stat(filepath.Join(p.homeB, "My Work")); !os.IsNotExist(err) {
+		t.Fatalf("restored while off: %v", err)
+	}
+	if s := mustRead(t, p.b.session(p.repo)); !strings.Contains(s, inJSON(p.folder)) {
+		t.Fatalf("work move applied while off:\n%s", s)
 	}
 }
