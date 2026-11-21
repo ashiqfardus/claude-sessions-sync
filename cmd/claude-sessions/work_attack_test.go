@@ -153,6 +153,38 @@ func TestImportKilledBeforeRecordIsSeeded(t *testing.T) {
 	}
 }
 
+// Two imports with the other machine's shard changed in between give a remap whose
+// old end is one of this machine's own folders; --repoint must not rewrite this
+// machine's own conversation.
+func TestRemapNeverMovesOwnTarget(t *testing.T) {
+	arch := t.TempDir()
+	mac := newMachine(t, "MAC", arch)
+	homeM := t.TempDir()
+	notes := filepath.Join(homeM, "notes")
+	mustWrite(t, filepath.Join(notes, "x.md"), "mine\n")
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	own := workSession(t, mac, repo, []string{filepath.Join(notes, "x.md")})
+	aged(t, own)
+	mac.workRun(t, homeM, "push", "--no-html")
+	before := mustRead(t, own)
+
+	// A hand-written EVIL shard: home /evilhome, folder /evilhome/notes, with a copy.
+	writeEvil := func(home string) {
+		b, _ := json.Marshal(map[string]any{"schemaVersion": 1, "machine": "EVIL", "home": home, "projects": map[string]any{},
+			"workFolders": []map[string]any{{"path": "/evilhome/notes"}}})
+		mustWrite(t, filepath.Join(arch, "manifest", "EVIL.json"), string(b))
+	}
+	mustWrite(t, filepath.Join(arch, "work", "EVIL", "evilhome", "notes", "a.md"), "a\n")
+	writeEvil("/evilhome")
+	mac.workRun(t, homeM, "import", "--no-plugins")
+	writeEvil("/elsewhere")
+	mac.workRun(t, homeM, "import", "--no-plugins")
+	out := mac.workRun(t, homeM, "import", "--no-plugins", "--repoint")
+	if after := mustRead(t, own); after != before {
+		t.Errorf("own conversation rewritten:\n%s\n%s", after, out)
+	}
+}
+
 // A Windows folder mapped on a Unix machine, the session started in it or below it:
 // the project resolves through the work folder, and the rest of every path is
 // converted.

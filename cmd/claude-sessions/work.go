@@ -557,14 +557,20 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			} else if err != nil {
 				continue // not a path on this machine: pull's same layout does not fit
 			}
-			// Placed elsewhere before: remembered until a --repoint moves conversations off it.
+			// Placed elsewhere before: remembered until a --repoint moves conversations off it,
+			// unless that was a place this machine's own conversations may name (I1).
 			key := s.Machine + "|" + wf.Path
-			if old, ok := held.Placed[key]; ok && !samePath(old, target) &&
+			old, ok := held.Placed[key]
+			if ok && !samePath(old, target) && !held.NoPrev[key] && !sameLayout &&
 				!slices.ContainsFunc(held.Prev[key], func(x string) bool { return samePath(x, old) }) {
 				held.Prev[key] = append(held.Prev[key], old)
 			}
 			if held.Prev[key] = slices.DeleteFunc(held.Prev[key], func(x string) bool { return samePath(x, target) }); len(held.Prev[key]) == 0 {
 				delete(held.Prev, key)
+			}
+			if !ok || !samePath(old, target) || sameLayout {
+				// Decided when first placed: once worked in here, every target is an own path.
+				held.NoPrev[key] = sameLayout || ownPath(target)
 			}
 			held.Placed[key] = target
 			res.ByMachine[key] = target

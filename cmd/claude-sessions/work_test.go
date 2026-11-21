@@ -839,6 +839,16 @@ func TestPullWorkSameLayout(t *testing.T) {
 	if got := mustRead(t, b.session(home)); got != mustRead(t, transcript) {
 		t.Fatalf("transcript rewritten:\n%s", got)
 	}
+
+	// Placed elsewhere later, the pulled path is never one to move conversations off:
+	// on one layout it is where B's own conversations are too (I1).
+	dir := filepath.Join(home, "elsewhere")
+	mustMkdir(t, dir)
+	configAs(t, b.claudeDir, "MAC", "map-folder", po, dir)
+	b.workRun(t, home, "import", "--no-plugins")
+	if h := work.LoadHeld(filepath.Join(b.claudeDir, "session-sync-base", "work-held.json")); len(h.Prev) != 0 || h.Placed["WIN|"+po] != dir {
+		t.Fatalf("placed %v, earlier targets %v", h.Placed, h.Prev)
+	}
 }
 
 func TestImportProjectInsideWorkFolder(t *testing.T) {
