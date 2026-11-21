@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
@@ -33,6 +35,15 @@ type Held struct {
 	// Err is why an existing record could not be read; callers warn, and the record
 	// starts again empty.
 	Err error `json:"-"`
+}
+
+// FoldKey is how a local path is looked up in Files: macOS and Windows file systems
+// ignore case, so a file there may be named in a case other than the one recorded.
+func FoldKey(p string) string {
+	if runtime.GOOS == "linux" {
+		return p
+	}
+	return strings.ToLower(p)
 }
 
 // LoadHeld reads the record at path. Missing or unreadable gives empty maps.

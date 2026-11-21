@@ -74,7 +74,7 @@ type Collected struct {
 // Collect lists the files of f that may be archived, minus excluded paths.
 func Collect(f Folder, exclude []string) (Collected, error) {
 	c := Collected{Skipped: map[string]int{}}
-	fold := runtime.GOOS == "windows"
+	fold := runtime.GOOS != "linux" // macOS and Windows ignore case
 	add := func(path, rel string, size int64) {
 		for _, x := range exclude {
 			if Within(path, x, fold) {

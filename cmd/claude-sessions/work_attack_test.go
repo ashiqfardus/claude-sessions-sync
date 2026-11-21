@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -223,6 +224,59 @@ func TestWindowsToUnixTailConverted(t *testing.T) {
 		if !strings.Contains(got, inJSON(filepath.Join(sql, "po", "r.md"))) || !strings.Contains(got, inJSON(filepath.Join(project, "x.md"))) ||
 			strings.Contains(got, `E:`) || strings.Contains(got, `\\`) {
 			t.Errorf("cwd E:\\SQL\\po%s: not fully repointed:\n%s", sub, got)
+		}
+	}
+}
+
+// caseInsensitive skips unless dir ignores case, as macOS and Windows file systems do.
+func caseInsensitive(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "linux" {
+		t.Skip("Linux file systems keep case")
+	}
+	p := filepath.Join(dir, "Probe")
+	mustWrite(t, p, "x")
+	_, err := os.Stat(filepath.Join(dir, "probe"))
+	_ = os.Remove(p)
+	if err != nil {
+		t.Skip("this file system keeps case")
+	}
+}
+
+// An exclusion holds for the folder named in another case: on macOS it is the same one.
+func TestExcludeFolderIgnoresCase(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home := t.TempDir()
+	caseInsensitive(t, home)
+	po := filepath.Join(home, "SQL", "po")
+	mustWrite(t, filepath.Join(po, "r.md"), "report\n")
+	mustWrite(t, filepath.Join(po, "private", "pay.md"), "private\n")
+	configAs(t, m.claudeDir, "MAC", "exclude-folder", filepath.Join(po, "private"))
+	lower := filepath.Join(home, "sql", "po")
+	workSession(t, m, lower, []string{filepath.Join(lower, "r.md")})
+	m.workRun(t, home, "push", "--no-html")
+	files := workFiles(m.archive)
+	if !slices.ContainsFunc(files, func(f string) bool { return strings.HasSuffix(f, "/r.md") }) {
+		t.Fatalf("folder not backed up: %v", files)
+	}
+	if slices.ContainsFunc(files, func(f string) bool { return strings.HasSuffix(f, "/pay.md") }) {
+		t.Errorf("excluded folder uploaded: %v", files)
+	}
+}
+
+// A restored file is still the other machine's when B's session names its folder in
+// another case.
+func TestHeldFileIgnoresCase(t *testing.T) {
+	p := newWorkPair(t)
+	caseInsensitive(t, p.homeB)
+	p.b.workRun(t, p.homeB, "import", "--no-plugins")
+	lower := filepath.Join(p.homeB, "my work", "run 1")
+	mustWrite(t, filepath.Join(lower, "b.md"), "B's own\n")
+	workSession(t, p.b, gitRepo(t, filepath.Join(t.TempDir(), "dev", "web")), []string{filepath.Join(lower, "b.md")})
+	p.b.workRun(t, p.homeB, "push", "--no-html")
+	for _, f := range workFiles(p.b.archive) {
+		if strings.HasPrefix(f, "MAC/") && strings.HasSuffix(f, "রিপোর্ট.md") {
+			t.Errorf("A's restored file pushed as B's: %s", f)
 		}
 	}
 }

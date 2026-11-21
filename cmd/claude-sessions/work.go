@@ -70,7 +70,8 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 		return res
 	}
 	env := workEnv(root)
-	fold := func(p string) bool { return env.Windows || work.WindowsPath(p) }
+	// macOS and Windows file systems ignore case: ~/sql is ~/SQL there.
+	fold := func(p string) bool { return runtime.GOOS != "linux" || work.WindowsPath(p) }
 	// The archive is never copied into its own work/ folder.
 	exclude := append(slices.Clone(cfg.WorkExclude), dest)
 	excluded := func(p string) bool {
@@ -116,7 +117,10 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 	if hr.Err != nil {
 		logf("WARN: restored work record: %v", hr.Err)
 	}
-	held := hr.Files
+	held := map[string]work.HeldFile{} // by work.FoldKey
+	for p, h := range hr.Files {
+		held[work.FoldKey(p)] = h
+	}
 	start := time.Now()
 	real := map[string]bool{}
 	// copyFolder backs up one folder. It returns false when the budget ran out part way.
@@ -134,7 +138,7 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 		// Restored from another machine and unchanged since: that machine's, not ours. Not
 		// copied, and not counted toward the cap either.
 		c.Files = slices.DeleteFunc(c.Files, func(p string) bool {
-			h, ok := held[p]
+			h, ok := held[work.FoldKey(p)]
 			if !ok {
 				return false
 			}
@@ -355,7 +359,7 @@ func purgeWork(dest, machine, folder string) ([]string, error) {
 	}
 	changed := false
 	for _, f := range shard.WorkFolders {
-		fold := runtime.GOOS == "windows" || work.WindowsPath(f.Path) || work.WindowsPath(folder)
+		fold := runtime.GOOS != "linux" || work.WindowsPath(f.Path) || work.WindowsPath(folder)
 		switch {
 		case work.Within(f.Path, folder, fold):
 			if _, err := workDir(dest, machine, f.Path); err != nil {
