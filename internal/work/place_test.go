@@ -159,8 +159,9 @@ func TestPlaceRefused(t *testing.T) {
 	}
 	// M-1: no usable local home refuses everything, SameLayout included.
 	// Built at the volume root, away from macOS's /var link, which would refuse it anyway.
-	p := filepath.Join(filepath.VolumeName(l.Home)+string(filepath.Separator), "srv", "SQL", "po")
-	for _, h := range []string{"", "rel"} {
+	root := filepath.VolumeName(l.Home) + string(filepath.Separator) // round 2: a root home matches everything
+	p := filepath.Join(root, "srv", "SQL", "po")
+	for _, h := range []string{"", "rel", "/", `C:\`, root} {
 		bad := l
 		bad.Home, bad.SameLayout = h, true
 		for _, src := range []Source{mac(p), exact(mac(p))} {
@@ -239,7 +240,7 @@ func TestPlaceRefusedTargets(t *testing.T) {
 	// M-4(a): a Claude root without a dot, so that rule alone decides.
 	env := fakeEnv()
 	env.ClaudeRoot = "/h/claude-data"
-	if why := refused("/h/Claude-Data/x", false, env); why != "inside the Claude folder" {
+	if why := refused("/h/Claude-Data/x", false, env); why != "in or above the Claude folder" {
 		t.Errorf("claude root: %q", why)
 	}
 	// M-2: Exact exempts Desktop, Downloads and Documents, never the home, above it, or a root.
@@ -251,6 +252,23 @@ func TestPlaceRefusedTargets(t *testing.T) {
 	}
 	if why := refused("/", true, fakeEnv()); why == "" {
 		t.Error("exact / accepted")
+	}
+}
+
+// Round 2: a folder that holds the Claude root or a temp folder would let its files in.
+func TestPlaceAboveClaudeRoot(t *testing.T) {
+	l := testLocal(t)
+	l.ClaudeRoot = filepath.Join(l.Home, "work", "claude")
+	l.Temp = []string{filepath.Join(l.Home, "scratch", "t")}
+	for _, p := range []string{"/x/work", "/x/scratch"} {
+		if got, err := Place(Source{Machine: "MAC2", Home: "/x", Path: p}, l); !errors.Is(err, ErrRefused) {
+			t.Errorf("%s: %q, %v", p, got, err)
+		}
+	}
+	mustPlace(t, Source{Machine: "MAC2", Home: "/x", Path: "/x/work2"}, l, filepath.Join(l.Home, "work2"))
+	// A UNC path has no drive letter; on Windows it still gets the Windows name checks.
+	if why := refused(`\\srv\share\x~1\y`, false, fakeWinEnv()); (why == "") != (runtime.GOOS != "windows") {
+		t.Errorf("unc on %s: %q", runtime.GOOS, why)
 	}
 }
 

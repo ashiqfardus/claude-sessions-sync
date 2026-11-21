@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -44,7 +45,8 @@ func absSource(p string) bool {
 // Place returns the local target for src: rules 0-3 of the spec, or src.Path as is
 // under SameLayout, then the safety checks.
 func Place(src Source, l Local) (string, error) {
-	if !filepath.IsAbs(l.Home) { // every rule trusts it; empty would make Within match anything
+	// Every rule trusts the home; empty or a root would make Within match anything.
+	if h := segs(l.Home); !filepath.IsAbs(l.Home) || len(h) == 0 || WindowsPath(l.Home) && len(h) == 1 {
 		return "", fmt.Errorf("%w: %s: no local home", ErrRefused, src.Path)
 	}
 	if !absSource(src.Path) {
@@ -149,30 +151,34 @@ func anyFold(s string, names ...string) bool {
 // refused returns why target must not be written, or "". Case is ignored throughout,
 // since the macOS and Windows file systems ignore it: ~/library is ~/Library.
 func refused(target string, exact bool, env Env) string {
-	t, win, h := segs(target), WindowsPath(target), segs(env.Home)
+	t, drive, h := segs(target), WindowsPath(target), segs(env.Home)
+	// A UNC target has no drive letter, but on Windows its names still alias.
+	win := drive || runtime.GOOS == "windows"
 	rest := t // what the archive chose; the local home itself is trusted
 	if len(h) > 0 && within(t, h, true) {
 		rest = t[len(h):]
-	} else if win {
+	} else if drive {
 		rest = t[1:]
 	}
-	top := len(t) == 0 || win && len(t) == 1 || within(h, t, true) // a root, the home or above it
+	top := len(t) == 0 || drive && len(t) == 1 || within(h, t, true) // a root, the home or above it
 	in := func(dir string) bool { return dir != "" && Within(target, dir, true) }
+	// Above counts too: the folder's files would land inside.
+	near := func(dir string) bool { return in(dir) || dir != "" && Within(dir, target, true) }
 	broad := env
 	broad.Windows = true // IsBroad ignores case only for Windows
 	switch {
-	case in(env.ClaudeRoot):
-		return "inside the Claude folder"
-	case slices.ContainsFunc(env.Temp, in):
-		return "in a temp folder"
+	case near(env.ClaudeRoot):
+		return "in or above the Claude folder"
+	case slices.ContainsFunc(env.Temp, near):
+		return "in or above a temp folder"
 	case env.RepoRoot(target) != "":
 		return "inside a git repo"
 	case IsBroad(target, broad) && (!exact || top): // Exact exempts only Desktop, Downloads, Documents
 		return "a broad folder"
 	case env.Home != "" && in(filepath.Join(env.Home, "Library")):
 		return "in ~/Library"
-	case !win && len(t) > 0 && anyFold(t[0], "etc", "Library", "System"),
-		win && len(t) > 1 && anyFold(t[1], "Windows", "Program Files", "Program Files (x86)"):
+	case !drive && len(t) > 0 && anyFold(t[0], "etc", "Library", "System"),
+		drive && len(t) > 1 && anyFold(t[1], "Windows", "Program Files", "Program Files (x86)"):
 		return "a system folder"
 	}
 	return badNames(rest, win)
@@ -223,7 +229,8 @@ func SafeJoin(target, rel string) (string, error) {
 		why = "not inside the folder"
 	default:
 		// Split on both: on Windows a backslash inside a name is a separator.
-		why = badNames(strings.FieldsFunc(rel, func(r rune) bool { return r == '/' || r == '\\' }), WindowsPath(out))
+		why = badNames(strings.FieldsFunc(rel, func(r rune) bool { return r == '/' || r == '\\' }),
+			WindowsPath(out) || runtime.GOOS == "windows")
 		if why == "" && modCache(segs(out)) { // go/pkg/mod may straddle target and rel
 			why = "in the Go module cache"
 		}
