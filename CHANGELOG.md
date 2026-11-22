@@ -3,7 +3,14 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-11-22
+
+Upgrading: update the binary and run `claude-sessions install` again on **every**
+machine before the first push that packs anything; a machine still on 0.3.x skips packed
+folders (it prints `refused: type` once per pack). To back up work folders from
+conversations you had before upgrading, run `claude-sessions push --scan-history` once
+on each machine, and only if you trust everyone who can write to your archive. See
+"Upgrading" in the README.
 
 ### Added
 - **Unchanged work subfolders are packed.** A first-level subfolder of a work folder
