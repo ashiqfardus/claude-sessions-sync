@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -2844,5 +2845,84 @@ func TestExcludeFolderPrunesFormerNamePack(t *testing.T) {
 	configAs(t, m.claudeDir, "MAC", "exclude-folder", filepath.Join(dir, "run1", "sub"))
 	if idx := packIndex(t, pack); !reflect.DeepEqual(idx, map[string]int64{"keep.md": 2}) {
 		t.Fatalf("pack: %v", idx)
+	}
+}
+
+var copiedRe = regexp.MustCompile(`(?m)^copied (\d+) file\(s\)`)
+
+// The two-machine loop: A packs, B unpacks, B edits a packed file and pushes, then A
+// and B each import --update and push, twice over. Each keeps its own copy with the
+// other's beside it; after that no push copies anything and nothing new appears.
+func TestTwoMachinePackLoop(t *testing.T) {
+	a, b, homeA, homeB, w := packPair(t)
+	sqlB := filepath.Join(homeB, "SQL")
+	b.workRun(t, homeB, "import", "--no-plugins")
+	workSession(t, b, gitRepo(t, filepath.Join(t.TempDir(), "dev", "web")), nil, `cd "`+sqlB+`" && ls`)
+	mustWrite(t, filepath.Join(sqlB, "run1", "f03.md"), "edited on B\n")
+	b.workRun(t, homeB, "push", "--no-html")
+
+	var arch []string
+	for round := 1; round <= 2; round++ {
+		for _, s := range []struct {
+			m    machine
+			home string
+		}{{a, homeA}, {b, homeB}} {
+			out := s.m.workRun(t, s.home, "import", "--no-plugins", "--update")
+			if strings.Contains(out, "  x ") || round == 2 && (!strings.Contains(out, "(0 file(s) filed, ") || !strings.Contains(out, ", 0 beside, ")) {
+				t.Fatalf("round %d, %s import: %s", round, s.m.name, out)
+			}
+			out = s.m.workRun(t, s.home, "push", "--no-html")
+			if c := copiedRe.FindStringSubmatch(out); c == nil || c[1] != "0" {
+				t.Fatalf("round %d, %s push: %s", round, s.m.name, out)
+			}
+		}
+		if round == 1 {
+			arch = sortedWorkFiles(a.archive)
+		} else if got := sortedWorkFiles(a.archive); !reflect.DeepEqual(got, arch) {
+			t.Fatalf("archive changed: %v, was %v", got, arch)
+		}
+	}
+	runFiles := func(beside string) []string {
+		return []string{"f00.md", "f01.md", "f02.md", beside, "f03.md", "f04.md", "f05.md"}
+	}
+	if got := filesUnderDir(t, filepath.Join(w, "run1")); !reflect.DeepEqual(got, runFiles("f03.MAC.md")) {
+		t.Fatalf("A has %v", got)
+	}
+	if got := filesUnderDir(t, filepath.Join(sqlB, "run1")); !reflect.DeepEqual(got, runFiles("f03.WIN.md")) {
+		t.Fatalf("B has %v", got)
+	}
+	if a3, b3 := mustRead(t, filepath.Join(w, "run1", "f03.md")), mustRead(t, filepath.Join(sqlB, "run1", "f03.md")); a3 != "file 3\n" || b3 != "edited on B\n" {
+		t.Fatalf("f03: A %q, B %q", a3, b3)
+	}
+}
+
+// An edit on A after B unpacked reaches B under --update through the overlay, and again
+// once A has compacted it into the pack: replaced each time, never written beside.
+func TestImportUpdateThroughOverlayAndCompaction(t *testing.T) {
+	a, b, homeA, homeB, w := packPair(t)
+	placed := filepath.Join(homeB, "SQL", "run1")
+	b.workRun(t, homeB, "import", "--no-plugins")
+	mustWrite(t, filepath.Join(w, "run1", "f04.md"), "A edits f04\n")
+	a.workRun(t, homeA, "push", "--no-html")
+	out := b.workRun(t, homeB, "import", "--no-plugins", "--update")
+	if got := mustRead(t, filepath.Join(placed, "f04.md")); got != "A edits f04\n" || len(filesUnderDir(t, placed)) != 6 {
+		t.Fatalf("after the overlay: f04 %q, files %v\n%s", got, filesUnderDir(t, placed), out)
+	}
+
+	names := []string{"f02.md", "f04.md", "f05.md"}
+	for i := 0; i < 51; i++ {
+		names = append(names, fmt.Sprintf("n%02d.md", i))
+		mustWrite(t, filepath.Join(w, "run1", names[len(names)-1]), "n\n")
+	}
+	mustWrite(t, filepath.Join(w, "run1", "f05.md"), "A edits f05\n")
+	settle(t, filepath.Join(w, "run1"), filepath.Join(workCopy(a, w), "run1"), names...)
+	a.workRun(t, homeA, "push", "--no-html")
+	if got := sortedWorkFiles(a.archive); len(got) != 1 || !strings.HasSuffix(got[0], "run1.cspack.zip") {
+		t.Fatalf("not compacted: %v", got)
+	}
+	out = b.workRun(t, homeB, "import", "--no-plugins", "--update")
+	f04, f05 := mustRead(t, filepath.Join(placed, "f04.md")), mustRead(t, filepath.Join(placed, "f05.md"))
+	if got := filesUnderDir(t, placed); f04 != "A edits f04\n" || f05 != "A edits f05\n" || len(got) != 57 || strings.Contains(out, " beside it as ") {
+		t.Fatalf("after compaction: f04 %q, f05 %q, files %v\n%s", f04, f05, got, out)
 	}
 }
