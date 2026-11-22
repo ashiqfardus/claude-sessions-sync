@@ -14,14 +14,32 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
 )
 
 var binary string
 
 func TestMain(m *testing.M) {
+	// Windows puts temp folders under C:\Users\ADMINI~1\AppData\Local\Temp, where the
+	// work-folder placement guards rightly refuse to write for real users (AppData, and
+	// 8.3 short names that alias another). So the tests, and the binary they run, get a
+	// long-name temp folder outside AppData and outside any git repo instead.
+	testRoot := ""
+	if runtime.GOOS == "windows" && guardedName(os.TempDir()) {
+		testRoot = windowsTestRoot()
+		os.Setenv("TMP", testRoot)
+		os.Setenv("TEMP", testRoot)
+	}
 	dir, err := os.MkdirTemp("", "cs-e2e")
 	if err != nil {
 		panic(err)
+	}
+	cleanup := func() {
+		os.RemoveAll(dir)
+		if testRoot != "" {
+			os.RemoveAll(testRoot)
+		}
 	}
 	binary = filepath.Join(dir, "claude-sessions")
 	if runtime.GOOS == "windows" {
@@ -31,13 +49,45 @@ func TestMain(m *testing.M) {
 	build := exec.Command("go", "build", "-o", binary, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		os.Stderr.Write(out)
-		os.RemoveAll(dir)
+		cleanup()
 		panic("build failed: " + err.Error())
 	}
 
 	code := m.Run()
-	os.RemoveAll(dir)
+	cleanup()
 	os.Exit(code)
+}
+
+// guardedName reports a path with a segment the placement guards refuse on Windows:
+// AppData, or a name with "~".
+func guardedName(p string) bool {
+	for _, s := range strings.FieldsFunc(p, func(r rune) bool { return r == '\\' || r == '/' }) {
+		if strings.EqualFold(s, "AppData") || strings.Contains(s, "~") {
+			return true
+		}
+	}
+	return false
+}
+
+// windowsTestRoot makes <SystemDrive>\cs-test-*, or a folder under the home if that
+// fails, in neither AppData nor a git repo.
+func windowsTestRoot() string {
+	var parents []string
+	if d := os.Getenv("SystemDrive"); d != "" {
+		parents = append(parents, d+`\`)
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		parents = append(parents, h)
+	}
+	for _, p := range parents {
+		if guardedName(p) || identity.RepoRoot(p) != "" {
+			continue
+		}
+		if dir, err := os.MkdirTemp(p, "cs-test-"); err == nil {
+			return dir
+		}
+	}
+	panic("no folder for test files outside AppData and git repos")
 }
 
 // fixture builds a throwaway Claude profile and archive.
