@@ -179,6 +179,19 @@ func cmdImport(args []string) error {
 			if samePath(p.Path, h) {
 				return identity.Match{How: identity.ByHomeFolder, Path: localHome}
 			}
+			// So are its Desktop, Documents and Downloads: Windows has one per profile,
+			// and a name match among them is ambiguous.
+			if ps := pathSegs(p.Path); len(ps) == len(pathSegs(h))+1 && work.Within(p.Path, h, true) {
+				for _, name := range []string{"Desktop", "Documents", "Downloads"} {
+					if !strings.EqualFold(ps[len(ps)-1], name) {
+						continue
+					}
+					local := filepath.Join(localHome, name)
+					if st, err := os.Stat(local); err == nil && st.IsDir() {
+						return identity.Match{How: identity.ByHomeFolder, Path: local}
+					}
+				}
+			}
 		}
 		return m
 	}

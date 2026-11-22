@@ -70,6 +70,33 @@ func TestImportFilesAnotherMachinesHomeIntoThisHome(t *testing.T) {
 	}
 }
 
+// Another machine's Desktop is this home's, however many folders named Desktop there
+// are here (Windows has one per profile). The shard's home is written with the other
+// separator and case to show neither matters.
+func TestImportFilesAnotherMachinesDesktopIntoThisHomes(t *testing.T) {
+	f := newImportFixture(t)
+	home := filepath.Dir(f.claudeDir)
+	desktop := filepath.Join(home, "Desktop")
+	mustMkdir(t, desktop)
+	mustMkdir(t, filepath.Join(home, "dev", "Desktop")) // a second one: ambiguous by name
+
+	f.archiveProject(t, "C--Users-alice-Desktop", `C:\Users\alice\Desktop`, homeSession, "tidy my desktop")
+	f.writeShard(t, `C:\Users\alice\.claude`, `c:/users/Alice/`, map[string]any{
+		"C--Users-alice-Desktop": map[string]any{"path": `C:\Users\alice\Desktop`, "leaf": "Desktop", "seen": "2026-08-30"},
+	})
+
+	out, err := f.runAsHome(t, home, "import", "--search-root", home)
+	if err != nil {
+		t.Fatalf("import failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "-> "+desktop+" (matched by home folder)") {
+		t.Fatalf("not filed for this home's Desktop:\n%s", out)
+	}
+	if got := f.localBucket(t, claude.Slug(desktop)); !contains(got, homeSession+".jsonl") {
+		t.Fatalf("bucket holds %v\n%s", got, out)
+	}
+}
+
 // Same username on two Macs: the recorded path exists here, which is the stronger
 // answer and must stay the one used.
 func TestImportSameHomePathStillMatchesByRecordedPath(t *testing.T) {
