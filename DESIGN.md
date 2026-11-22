@@ -143,11 +143,18 @@ then deletes only the loose copies it holds. Later changes go loose beside it (t
 overlay) until they pass 50 files or a quarter of the pack's bytes; then push compacts
 them into a new pack, through a temp file and a rename. `work-packs.json` in
 `session-sync-base/` records each pack's entries and overlay, so push need not read the
-pack from the mount. Restore treats a pack as untrusted as a loose file: it refuses the
-whole pack over 20,000 entries or 250 MB declared, refuses alone each entry that is not a
-plain relative path, not a regular file, over 10 MB declared or read, or failing its
-CRC, extracts the rest to a private temp folder, and files each through the same checks
-as a loose file. For one path, the newer of a pack entry and an overlay file is filed,
+pack from the mount. Restore treats a pack as untrusted as a loose file. Before zip
+parses it, the whole pack is refused when the file is over 266 MB (250 MB of content
+plus 16 MB for headers), or when its layout is not the one push writes: the end record
+closes the file with no comment, the central directory runs from its offset straight
+to that record (no prepended data, no zip64), and a walk of the directory's headers
+tiles it with at most 20,000 entries. zip reads headers until one fails and checks the
+end record's count only modulo 65,536, so without the walk a small file could hold
+millions of entries. Push in turn never commits a pack over 266 MB: the files stay
+loose. Restore then refuses the whole pack over 250 MB declared, refuses alone each
+entry that is not a plain relative path, not a regular file, over 10 MB declared or
+read, or failing its CRC, extracts the rest to a private temp folder, and files each
+through the same checks as a loose file. For one path, the newer of a pack entry and an overlay file is filed,
 the overlay on a tie (within 2 s).
 
 ### Local

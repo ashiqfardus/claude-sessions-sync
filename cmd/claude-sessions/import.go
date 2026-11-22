@@ -455,7 +455,7 @@ func cmdImport(args []string) error {
 	}
 	fmt.Printf(". %d same layout, %d not found, %d ambiguous.\n", sameLayout, notFound, ambiguous)
 	for _, n := range append(workRes.Notes, remapNotes...) {
-		fmt.Println(n)
+		fmt.Println(printable(n)) // they name files and folders the archive chose
 	}
 	if *noWork {
 		fmt.Println(noWorkNote)
@@ -689,7 +689,7 @@ func cmdPull(args []string) error {
 		fmt.Println(noWorkNote)
 	}
 	for _, n := range workRes.Notes {
-		fmt.Println(n)
+		fmt.Println(printable(n)) // they name files and folders the archive chose
 	}
 	if updated > 0 {
 		fmt.Printf("updated %d session(s) that continued on another machine\n", updated)

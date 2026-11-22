@@ -535,11 +535,12 @@ func TestExtractPackDirectoryLimits(t *testing.T) {
 		if err := os.WriteFile(pack, b, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := ExtractPack(pack, "", nil); err == nil {
-			t.Fatalf("%d entries extracted", n)
+		// The walk's own refusal: zip's, or the count after it, would mean no walk.
+		if _, _, err := ExtractPack(pack, "", nil); err == nil || !strings.Contains(err.Error(), "over 20000 entries") {
+			t.Fatalf("%d entries extracted: %v", n, err)
 		}
-		if _, err := ReadPackIndex(pack); err == nil {
-			t.Fatalf("%d entries indexed", n)
+		if _, err := ReadPackIndex(pack); err == nil || !strings.Contains(err.Error(), "over 20000 entries") {
+			t.Fatalf("%d entries indexed: %v", n, err)
 		}
 	}
 

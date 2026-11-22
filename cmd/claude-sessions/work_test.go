@@ -2660,3 +2660,17 @@ func TestImportPackOverlayTie(t *testing.T) {
 		}
 	}
 }
+
+// Names from the archive never reach the terminal raw: a refusal naming a pack entry
+// or a loose file with control characters prints neither.
+func TestImportNotesDropControlChars(t *testing.T) {
+	b, homeB, pack := hostileSetup(t)
+	packAt(t, pack, time.Now().Add(-8*24*time.Hour), [3]string{"a\x1b]0;pwned\x07.pem", "k"}, [3]string{"ok.md", "ok\n"})
+	if runtime.GOOS != "windows" { // no control characters in Windows file names
+		mustWrite(t, filepath.Join(filepath.Dir(pack), "run", "b\x1b[2J.pem"), "k")
+	}
+	out := b.workRun(t, homeB, "import", "--no-plugins")
+	if strings.ContainsAny(out, "\x1b\x07") || !strings.Contains(out, "]0;pwned.pem: refused: secret") {
+		t.Fatalf("output: %q", out)
+	}
+}

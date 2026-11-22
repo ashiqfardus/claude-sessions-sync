@@ -191,6 +191,10 @@ func openPack(path string) (r *zip.Reader, f *os.File, err error) {
 				err = nil
 			}
 		}
+		// Bytes rewritten in place since the walk would show here.
+		if err == nil && len(r.File) > PackMaxEntries {
+			err = fmt.Errorf("zip read %d entries", len(r.File))
+		}
 	}
 	if err != nil {
 		f.Close()
