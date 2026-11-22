@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -106,16 +107,18 @@ func ReadPackIndex(path string) (map[string]PackEntry, error) {
 }
 
 // ExtractPack writes the entries of the pack at path that restore may take to
-// tmpDir/<name>, each stamped with its header's time, and returns them, with notes
+// <dir>/<name>, each stamped with its header's time, and returns them, with notes
 // naming the entries refused. A pack is shared archive data, as untrusted as a loose
 // file. Before anything is written, the whole pack is refused when openPack refuses
 // it or for more than MaxFolderBytes declared in all. Each entry is
 // refused alone for a name that is not a plain path inside the pack, a type other
 // than a regular file, more than MaxFileBytes declared or read, or a CRC mismatch.
-// skip, given each name and header time, drops an entry unread. With tmpDir "",
-// nothing is read or written: the entries are listed as they would be, for a dry run.
-// An error refuses the whole pack; the caller removes tmpDir.
-func ExtractPack(path, tmpDir string, skip func(rel string, mtime time.Time) bool) ([]PackFile, []string, error) {
+// skip, given each name, declared size and header time, drops an entry unwritten: the
+// caller's own checks run there, before an entry touches the disk. tmpDir makes dir,
+// once, at the first entry to write, so a pack with nothing to unpack makes none; with
+// tmpDir nil nothing is read or written, and the entries are listed as they would be,
+// for a dry run. An error refuses the whole pack; the caller removes dir.
+func ExtractPack(path string, tmpDir func() (string, error), skip func(rel string, size int64, mtime time.Time) bool) ([]PackFile, []string, error) {
 	r, in, err := openPack(path)
 	if err != nil {
 		return nil, nil, err
@@ -129,6 +132,7 @@ func ExtractPack(path, tmpDir string, skip func(rel string, mtime time.Time) boo
 	}
 	var out []PackFile
 	var notes []string
+	dir := ""
 	for _, f := range r.File {
 		why := ""
 		switch {
@@ -139,12 +143,17 @@ func ExtractPack(path, tmpDir string, skip func(rel string, mtime time.Time) boo
 		case f.UncompressedSize64 > MaxFileBytes:
 			why = fmt.Sprintf("over %d MB", MaxFileBytes>>20)
 		}
-		if why == "" && skip != nil && skip(f.Name, f.Modified) {
+		if why == "" && skip != nil && skip(f.Name, int64(f.UncompressedSize64), f.Modified) {
 			continue
 		}
 		pf := PackFile{Rel: f.Name, Size: int64(f.UncompressedSize64), ModTime: f.Modified}
-		if why == "" && tmpDir != "" {
-			pf.Path = filepath.Join(tmpDir, filepath.FromSlash(f.Name))
+		if why == "" && tmpDir != nil {
+			if dir == "" {
+				if dir, err = tmpDir(); err != nil {
+					return nil, notes, err
+				}
+			}
+			pf.Path = filepath.Join(dir, filepath.FromSlash(f.Name))
 			if err := extractOne(f, pf.Path); err != nil {
 				// Not the path: it is built from the name, which the note quotes.
 				var pe *fs.PathError
@@ -155,12 +164,28 @@ func ExtractPack(path, tmpDir string, skip func(rel string, mtime time.Time) boo
 			}
 		}
 		if why != "" {
-			notes = append(notes, fmt.Sprintf("entry %q: %s", f.Name, why))
+			notes = append(notes, fmt.Sprintf("entry \"%s\": %s", Printable(f.Name), why))
 			continue
 		}
 		out = append(out, pf)
 	}
 	return out, notes, nil
+}
+
+// Printable drops control characters from text read out of the archive before it is
+// printed, a tab becoming a space. Names and prompts there are written by other
+// machines, and an escape sequence among them could retitle the terminal, rewrite what
+// is on screen or, through OSC 52, set the clipboard.
+func Printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return ' '
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // openPack opens the pack at path for zip to read, closing the file on an error;

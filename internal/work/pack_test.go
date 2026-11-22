@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -314,7 +315,7 @@ func TestExtractPackRefusesTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	var asked []string
-	files, notes, err := ExtractPack(pack, tmp, func(rel string, mtime time.Time) bool {
+	files, notes, err := ExtractPack(pack, dirAt(tmp), func(rel string, _ int64, mtime time.Time) bool {
 		asked = append(asked, rel)
 		return rel == "skipped.md" && mtime.Equal(at)
 	})
@@ -357,7 +358,7 @@ func TestExtractPackRefusesSymlinkAndDirEntries(t *testing.T) {
 	if err := os.Mkdir(tmp, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	files, notes, err := ExtractPack(pack, tmp, nil)
+	files, notes, err := ExtractPack(pack, dirAt(tmp), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +382,7 @@ func TestExtractPackLimits(t *testing.T) {
 		if err := os.Mkdir(tmp, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		files, notes, err := ExtractPack(pack, tmp, nil)
+		files, notes, err := ExtractPack(pack, dirAt(tmp), nil)
 		return files, notes, err, tmp
 	}
 
@@ -457,13 +458,13 @@ func TestExtractPackCorrupt(t *testing.T) {
 	if err := os.Mkdir(tmp, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if files, _, err := ExtractPack(pack, tmp, nil); err == nil || len(files) != 0 {
+	if files, _, err := ExtractPack(pack, dirAt(tmp), nil); err == nil || len(files) != 0 {
 		t.Fatalf("truncated pack extracted %v: %v", packRels(files), err)
 	}
 	if err := os.WriteFile(pack, []byte("not a zip"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ExtractPack(pack, tmp, nil); err == nil {
+	if _, _, err := ExtractPack(pack, dirAt(tmp), nil); err == nil {
 		t.Fatal("not a zip, extracted")
 	}
 	if got := filesUnder(t, tmp); len(got) != 0 {
@@ -477,7 +478,7 @@ func TestExtractPackDryRun(t *testing.T) {
 	dir := t.TempDir()
 	pack := filepath.Join(dir, "run.cspack.zip")
 	zipAt(t, pack, zipEntry{name: "ok.md", body: "ok\n"}, zipEntry{name: "../x", body: "x"})
-	files, notes, err := ExtractPack(pack, "", nil)
+	files, notes, err := ExtractPack(pack, nil, nil)
 	if err != nil || !reflect.DeepEqual(packRels(files), []string{"ok.md"}) || files[0].Path != "" || len(notes) != 1 {
 		t.Fatalf("listed %+v, notes %q: %v", files, notes, err)
 	}
@@ -536,7 +537,7 @@ func TestExtractPackDirectoryLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The walk's own refusal: zip's, or the count after it, would mean no walk.
-		if _, _, err := ExtractPack(pack, "", nil); err == nil || !strings.Contains(err.Error(), "over 20000 entries") {
+		if _, _, err := ExtractPack(pack, nil, nil); err == nil || !strings.Contains(err.Error(), "over 20000 entries") {
 			t.Fatalf("%d entries extracted: %v", n, err)
 		}
 		if _, err := ReadPackIndex(pack); err == nil || !strings.Contains(err.Error(), "over 20000 entries") {
@@ -574,7 +575,7 @@ func TestExtractPackDirectoryLimits(t *testing.T) {
 	if err := os.Truncate(big, PackMaxBytes+1); err != nil { // sparse
 		t.Fatal(err)
 	}
-	if _, _, err := ExtractPack(big, "", nil); err == nil || !strings.Contains(err.Error(), "MB") {
+	if _, _, err := ExtractPack(big, nil, nil); err == nil || !strings.Contains(err.Error(), "MB") {
 		t.Fatalf("oversized pack: %v", err)
 	}
 }
@@ -599,7 +600,7 @@ func TestPackReadersRefuseLinks(t *testing.T) {
 	if err := CompactPack(link, filepath.Join(dir, "out.cspack.zip"), nil); err == nil {
 		t.Error("compacted through a link")
 	}
-	if _, _, err := ExtractPack(link, "", nil); err == nil {
+	if _, _, err := ExtractPack(link, nil, nil); err == nil {
 		t.Error("extracted through a link")
 	}
 	if fi, err := os.Lstat(link); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
@@ -607,8 +608,9 @@ func TestPackReadersRefuseLinks(t *testing.T) {
 	}
 }
 
-// A note never carries an entry's control characters: the name is quoted, and the
-// temp path built from it is left out.
+// A note never carries an entry's control characters: the name is shown as every
+// other note shows a name from the archive, through Printable, and the temp path built
+// from it is left out.
 func TestExtractPackNotesQuoteNames(t *testing.T) {
 	dir := t.TempDir()
 	pack, tmp := filepath.Join(dir, "run.cspack.zip"), filepath.Join(dir, "tmp")
@@ -616,13 +618,43 @@ func TestExtractPackNotesQuoteNames(t *testing.T) {
 	if err := os.Mkdir(tmp, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, notes, err := ExtractPack(pack, tmp, nil)
+	_, notes, err := ExtractPack(pack, dirAt(tmp), nil)
 	if err != nil || len(notes) == 0 {
 		t.Fatalf("notes %q: %v", notes, err)
 	}
 	for _, n := range notes {
-		if strings.ContainsRune(n, 0x1b) || strings.Contains(n, tmp) {
+		if strings.ContainsRune(n, 0x1b) || strings.Contains(n, tmp) || !strings.HasPrefix(n, `entry "esc[2J/child.md": `) {
 			t.Errorf("note %q", n)
 		}
+	}
+}
+
+// dirAt is a tmpDir for ExtractPack that hands out dir, made already.
+func dirAt(dir string) func() (string, error) {
+	return func() (string, error) { return dir, nil }
+}
+
+// The temp folder is asked for once, at the first entry to write: a pack whose entries
+// are all skipped or refused makes none. skip gets each entry's declared size.
+func TestExtractPackMakesDirOnlyToWrite(t *testing.T) {
+	dir := t.TempDir()
+	pack := filepath.Join(dir, "run.cspack.zip")
+	zipAt(t, pack, zipEntry{name: "a.md", body: "aa\n"}, zipEntry{name: "b.md", body: "b\n"}, zipEntry{name: "../x", body: "x"})
+	asked := 0
+	mk := func() (string, error) {
+		asked++
+		return filepath.Join(dir, "tmp"), os.Mkdir(filepath.Join(dir, "tmp"), 0o700)
+	}
+	sizes := map[string]int64{}
+	files, notes, err := ExtractPack(pack, mk, func(rel string, size int64, _ time.Time) bool { sizes[rel] = size; return true })
+	if err != nil || len(files) != 0 || len(notes) != 1 || asked != 0 || !reflect.DeepEqual(sizes, map[string]int64{"a.md": 3, "b.md": 2}) {
+		t.Fatalf("files %v, notes %q, asked %d, sizes %v: %v", files, notes, asked, sizes, err)
+	}
+	files, _, err = ExtractPack(pack, mk, nil)
+	if err != nil || !reflect.DeepEqual(packRels(files), []string{"a.md", "b.md"}) || asked != 1 {
+		t.Fatalf("files %v, asked %d: %v", packRels(files), asked, err)
+	}
+	if _, _, err := ExtractPack(pack, func() (string, error) { return "", errors.New("no temp") }, nil); err == nil || err.Error() != "no temp" {
+		t.Fatalf("temp folder error: %v", err)
 	}
 }

@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
-	"strings"
-	"unicode"
+
+	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
 var version = "dev" // overwritten at release time by -X main.version
@@ -92,20 +92,8 @@ func main() {
 }
 
 // printable drops control characters from text read out of the archive before it is
-// printed. Project names, prompts and machine names are written by other machines,
-// and an escape sequence among them could retitle the terminal, rewrite what is on
-// screen or, through OSC 52, set the clipboard.
-func printable(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\t' {
-			return ' '
-		}
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-}
+// printed: project names, prompts and machine names are written by other machines.
+var printable = work.Printable
 
 func usage() {
 	fmt.Fprint(os.Stderr, `claude-sessions - archive Claude Code sessions and file them by project identity

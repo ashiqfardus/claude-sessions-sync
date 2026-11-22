@@ -964,6 +964,16 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 	broad := func(p string) bool {
 		return slices.ContainsFunc(homes, func(h string) bool { return work.IsBroad(p, work.Env{Home: h}) })
 	}
+	if !dryRun {
+		// An import killed while unpacking leaves its temp folder, up to 250 MB. One an
+		// hour old is no live run's: none takes that long over a pack.
+		left, _ := os.ReadDir(os.TempDir())
+		for _, d := range left {
+			if fi, err := d.Info(); err == nil && d.IsDir() && strings.HasPrefix(d.Name(), "cs-pack-") && time.Since(fi.ModTime()) > time.Hour {
+				os.RemoveAll(filepath.Join(os.TempDir(), d.Name()))
+			}
+		}
+	}
 	ownPath := ownPaths(root, l.Env, shards)
 	// An excluded folder is neither backed up nor restored into; same fold rule as push.
 	excludedHere := func(p string) bool {
@@ -1062,34 +1072,44 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			if work.WindowsPath(wf.Path) {
 				sep = `\`
 			}
+			// admit runs the checks every file from the archive passes before it is read:
+			// the push filter on trel, its time, the join below tdir. It returns where the
+			// file goes, or "" when it is refused or excluded here (both counted).
+			admit := func(from, trel string, size int64, mtime time.Time) string {
+				if ok, why := work.Allowed(trel, size); !ok {
+					refuse(from, why)
+					return ""
+				}
+				if mtime.After(now.Add(time.Hour)) { // would stay "newer" than any edit here
+					refuse(from, "dated in the future")
+					return ""
+				}
+				dst, err := work.SafeJoin(tdir, trel)
+				if err != nil {
+					refuse(from, err)
+					return ""
+				}
+				if excludedHere(dst) {
+					n.Excluded++
+					return ""
+				}
+				return dst
+			}
+			// mine: restored from this machine and unchanged since, so replaceable.
+			mine := func(p string, st fs.FileInfo) bool {
+				h, ok := held.Files[p]
+				return ok && strings.EqualFold(h.Machine, s.Machine) && h.Size == st.Size() && archive.SameMTime(h.MTime, st.ModTime())
+			}
 			file := func(src, rel string, fi fs.FileInfo) {
 				from, trel := wf.Path+sep+strings.ReplaceAll(rel, "/", sep), rel
 				if wf.Exact {
 					from, trel = wf.Path, filepath.Base(target)
 				}
-				if ok, why := work.Allowed(trel, fi.Size()); !ok {
-					refuse(from, why)
-					return
-				}
-				if fi.ModTime().After(now.Add(time.Hour)) { // would stay "newer" than any edit here
-					refuse(from, "dated in the future")
-					return
-				}
-				dst, err := work.SafeJoin(tdir, trel)
-				if err != nil {
-					refuse(from, err)
-					return
-				}
-				if excludedHere(dst) {
-					n.Excluded++
+				dst := admit(from, trel, fi.Size(), fi.ModTime())
+				if dst == "" {
 					return
 				}
 				same := func(a fs.FileInfo) bool { return a.Size() == fi.Size() && archive.SameMTime(a.ModTime(), fi.ModTime()) }
-				// mine: restored from this machine and unchanged since, so replaceable.
-				mine := func(p string, st fs.FileInfo) bool {
-					h, ok := held.Files[p]
-					return ok && strings.EqualFold(h.Machine, s.Machine) && h.Size == st.Size() && archive.SameMTime(h.MTime, st.ModTime())
-				}
 				write := func(p string) bool {
 					if dryRun {
 						return true
@@ -1156,18 +1176,39 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				}
 				pack, over := filepath.Join(dir, d.Name()), looseTimes(filepath.Join(dir, u))
 				tmp := ""
+				var mk func() (string, error) // none in a dry run: nothing is written
+				var mkErr error
 				if !dryRun {
-					var err error
-					if tmp, err = os.MkdirTemp("", "cs-pack-*"); err != nil {
-						notes = append(notes, fmt.Sprintf("  x %s: %v", pack, err))
-						continue
+					mk = func() (string, error) {
+						tmp, mkErr = os.MkdirTemp("", "cs-pack-*")
+						return tmp, mkErr
 					}
 				}
-				files, bad, err := work.ExtractPack(pack, tmp, func(rel string, at time.Time) bool {
-					o, ok := over[rel]
-					return ok && !o.Before(at.Add(-archive.MTimeToleranceSeconds*time.Second))
+				files, bad, err := work.ExtractPack(pack, mk, func(rel string, size int64, at time.Time) bool {
+					r := u + "/" + rel
+					o, inOver := over[rel]
+					if inOver && !o.Before(at.Add(-archive.MTimeToleranceSeconds*time.Second)) {
+						return true // the overlay file is as new or newer: it is filed instead
+					}
+					// Decided on the name, before the entry is written anywhere (R39): a
+					// refused one never lands on disk, and one here already as it is - kept
+					// add-only, or this machine's copy unchanged - is not unpacked again.
+					if dst := admit(wf.Path+sep+strings.ReplaceAll(r, "/", sep), r, size, at); dst != "" {
+						st, err := os.Lstat(dst)
+						if err != nil || update && !(st.Mode().IsRegular() && mine(dst, st) && st.Size() == size && archive.SameMTime(st.ModTime(), at)) {
+							return false
+						}
+						n.Kept++ // as file would count it
+					}
+					if inOver {
+						lost[r] = true // this entry won: the overlay file is not filed either
+					}
+					return true
 				})
-				if err != nil {
+				switch {
+				case mkErr != nil:
+					notes = append(notes, fmt.Sprintf("  x %s: %v", pack, mkErr))
+				case err != nil:
 					refuse(pack, err)
 				}
 				for _, why := range bad {

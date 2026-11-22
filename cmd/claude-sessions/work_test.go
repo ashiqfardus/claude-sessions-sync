@@ -2674,3 +2674,55 @@ func TestImportNotesDropControlChars(t *testing.T) {
 		t.Fatalf("output: %q", out)
 	}
 }
+
+// An entry the push filter refuses is refused by its name before anything is written
+// (R39): one no disk can create - a name over 255 bytes here, control characters on
+// Windows - reads "refused: secret", not the disk's error, and its content never lands.
+func TestImportPackRefusesBeforeWriting(t *testing.T) {
+	b, homeB, pack := hostileSetup(t)
+	long := strings.Repeat("k", 300) + ".pem"
+	packAt(t, pack, time.Now().Add(-8*24*time.Hour), [3]string{long, "k"}, [3]string{"ok.md", "ok\n"})
+	out := b.workRun(t, homeB, "import", "--no-plugins")
+	if !strings.Contains(out, long+": refused: secret") || !strings.Contains(out, "(1 file(s) filed, 0 kept, 0 beside, 1 refused") {
+		t.Fatalf("output: %s", out)
+	}
+}
+
+// A repeat import with nothing new unpacks nothing: with the temp folder gone it still
+// runs clean. Entries already here - add-only without --update, restored from that
+// machine and unchanged with it - and entries excluded here are settled unread.
+func TestImportRepeatSkipsUnpacking(t *testing.T) {
+	_, b, _, homeB, _ := packPair(t)
+	b.workRun(t, homeB, "import", "--no-plugins")
+	missing := filepath.Join(t.TempDir(), "no-such-dir")
+	for _, args := range [][]string{{"import", "--no-plugins"}, {"import", "--no-plugins", "--update"}} {
+		out := b.tmpRun(t, homeB, missing, args...)
+		if strings.Contains(out, "  x ") || !strings.Contains(out, "(0 file(s) filed, 6 kept, 0 beside, 0 refused, 0 excluded here)") {
+			t.Fatalf("%v: %s", args, out)
+		}
+	}
+	configAs(t, b.claudeDir, "MAC", "set-destination", b.archive)
+	configAs(t, b.claudeDir, "MAC", "exclude-folder", filepath.Join(homeB, "SQL", "run1"))
+	if out := b.tmpRun(t, homeB, missing, "import", "--no-plugins"); strings.Contains(out, "  x ") ||
+		!strings.Contains(out, "(0 file(s) filed, 0 kept, 0 beside, 0 refused, 6 excluded here)") {
+		t.Fatalf("excluded: %s", out)
+	}
+}
+
+// A temp folder that an import killed while unpacking left behind is cleared by the
+// next one once it is an hour old; a newer one, maybe another run's, stays.
+func TestImportClearsStaleTempDirs(t *testing.T) {
+	_, b, _, homeB, _ := packPair(t)
+	tmp := t.TempDir()
+	stale, fresh := filepath.Join(tmp, "cs-pack-1"), filepath.Join(tmp, "cs-pack-2")
+	mustWrite(t, filepath.Join(stale, "run1", "f00.md"), "x")
+	mustWrite(t, filepath.Join(fresh, "f00.md"), "x")
+	setTime(t, stale, time.Now().Add(-2*time.Hour))
+	b.tmpRun(t, homeB, tmp, "import", "--no-plugins")
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale temp folder kept: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh temp folder removed: %v", err)
+	}
+}
