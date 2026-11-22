@@ -1645,3 +1645,40 @@ func TestPushScanHistory(t *testing.T) {
 		t.Errorf("not backed up with --scan-history: %v", err)
 	}
 }
+
+// An excluded folder is not restored into: neither a placed folder inside it nor the
+// files below an excluded subfolder arrive, and the import says so.
+func TestImportWorkExcludedFolderNotRestored(t *testing.T) {
+	p := newWorkPair(t)
+	configAs(t, p.b.claudeDir, "MAC", "exclude-folder", p.placed())
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins")
+
+	if _, err := os.Stat(p.placed()); !os.IsNotExist(err) {
+		t.Fatalf("restored into an excluded folder: %v", err)
+	}
+	if s := mustRead(t, p.b.session(p.repo)); strings.Contains(s, inJSON(p.placed())) {
+		t.Fatalf("transcript moved to an excluded folder:\n%s", s)
+	}
+	if !strings.Contains(out, "excluded here") || !strings.Contains(out, p.placed()) {
+		t.Fatalf("output: %s", out)
+	}
+}
+
+func TestImportWorkExcludedSubfolderSkipped(t *testing.T) {
+	homeA := t.TempDir()
+	p := workPairAt(t, homeA)
+	mustWrite(t, filepath.Join(p.folder, "private", "secret.md"), "s\n")
+	p.a.workRun(t, p.homeA, "push", "--no-html")
+	configAs(t, p.b.claudeDir, "MAC", "exclude-folder", filepath.Join(p.placed(), "private"))
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins")
+
+	if got := mustRead(t, filepath.Join(p.placed(), "রিপোর্ট.md")); got != "report v1\n" {
+		t.Fatalf("restored %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(p.placed(), "private")); !os.IsNotExist(err) {
+		t.Fatalf("restored into an excluded subfolder: %v", err)
+	}
+	if !strings.Contains(out, "excluded here") {
+		t.Fatalf("output: %s", out)
+	}
+}

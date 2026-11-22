@@ -6,6 +6,9 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **An excluded folder is not restored into either.** `config exclude-folder` now also
+  stops `import` placing another computer's work folder there, or files below an excluded
+  subfolder. The import counts them as "excluded here".
 - **Work folders are backed up.** Folders Claude worked in outside `~/.claude` and git
   repositories, such as a notes or scripts folder, are copied to `work/<computer>/` in
   the archive. Only text-like files go in. Images, video and audio, archives, binaries,

@@ -728,7 +728,7 @@ each one to `<claude-root>/repoint-backup/<date-time>/` before changing it.
 | `config work-placement home\|machine` | Where a folder with no local counterpart goes: under your home (default), or always under `~/claude-work/<computer>/` |
 | `config map-folder <path> <folder>` | Say where another computer's work folder lives here |
 | `config unmap-folder <path>` | Remove that mapping |
-| `config exclude-folder <folder>` | Never back up this folder, and remove this computer's archived copy (your sync provider's trash or version history may still hold it) |
+| `config exclude-folder <folder>` | Never backed up from, and never restored into; also remove this computer's archived copy (your sync provider's trash or version history may still hold it) |
 | `config unexclude-folder <folder>` | Back it up again |
 
 ---

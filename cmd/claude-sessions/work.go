@@ -462,6 +462,7 @@ type workRestoreResult struct {
 	Placed, ByMachine            map[string]string
 	Prev                         map[string][]string
 	Filed, Kept, Beside, Refused int
+	Excluded                     int // folders and files left alone: excluded here
 	Notes                        []string
 }
 
@@ -573,6 +574,10 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 		return slices.ContainsFunc(homes, func(h string) bool { return work.IsBroad(p, work.Env{Home: h}) })
 	}
 	ownPath := ownPaths(root, l.Env, shards)
+	// An excluded folder is neither backed up nor restored into; same fold rule as push.
+	excludedHere := func(p string) bool {
+		return slices.ContainsFunc(cfg.WorkExclude, func(x string) bool { return work.Within(p, x, runtime.GOOS != "linux" || work.WindowsPath(p)) })
+	}
 	would := func(done string) string {
 		if dryRun {
 			return "would be " + done
@@ -612,6 +617,11 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				continue
 			} else if err != nil {
 				continue // not a path on this machine: pull's same layout does not fit
+			}
+			if excludedHere(target) {
+				n.Excluded++
+				notes = append(notes, fmt.Sprintf("  - %s: excluded here (%s is an excluded folder); nothing restored", wf.Path, target))
+				continue
 			}
 			// Placed elsewhere before: remembered until a --repoint moves conversations off it,
 			// unless that was a place this machine's own conversations may name (I1).
@@ -677,6 +687,10 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				dst, err := work.SafeJoin(tdir, trel)
 				if err != nil {
 					refuse(from, err)
+					return
+				}
+				if excludedHere(dst) {
+					n.Excluded++
 					return
 				}
 				same := func(a fs.FileInfo) bool { return a.Size() == fi.Size() && archive.SameMTime(a.ModTime(), fi.ModTime()) }
@@ -752,15 +766,16 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			})
 		}
 		res.Filed, res.Kept, res.Beside, res.Refused = res.Filed+n.Filed, res.Kept+n.Kept, res.Beside+n.Beside, res.Refused+n.Refused
-		if len(went) == 0 && n.Refused == 0 {
+		res.Excluded += n.Excluded
+		if len(went) == 0 && n.Refused == 0 && n.Excluded == 0 {
 			continue
 		}
 		where := strings.Join(went, ", ")
 		if where == "" {
 			where = "none placed"
 		}
-		res.Notes = append(res.Notes, fmt.Sprintf("work folders from %s: %s (%d file(s) %s, %d kept, %d beside, %d refused)",
-			s.Machine, where, n.Filed, would("filed"), n.Kept, n.Beside, n.Refused))
+		res.Notes = append(res.Notes, fmt.Sprintf("work folders from %s: %s (%d file(s) %s, %d kept, %d beside, %d refused, %d excluded here)",
+			s.Machine, where, n.Filed, would("filed"), n.Kept, n.Beside, n.Refused, n.Excluded))
 		res.Notes = append(res.Notes, notes...)
 	}
 	if !dryRun {
