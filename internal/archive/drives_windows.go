@@ -12,8 +12,8 @@ import (
 // exist, which is one syscall instead of 26 filesystem round-trips.
 //
 // Called through syscall rather than golang.org/x/sys so the module keeps its
-// zero-dependency promise.
-func driveRoots() []string {
+// zero-dependency promise. A variable so tests never see this machine's real drives.
+var driveRoots = func() []string {
 	proc := syscall.NewLazyDLL("kernel32.dll").NewProc("GetLogicalDrives")
 	mask, _, _ := proc.Call()
 	if mask == 0 {

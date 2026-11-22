@@ -6,12 +6,16 @@ import (
 	"testing"
 )
 
-// fakeHome points the home directory at a temp folder for every OS's lookup.
+// fakeHome points the home directory at a temp folder for every OS's lookup, and
+// hides this machine's drives: on Windows a real G:\My Drive would be found first.
 func fakeHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	saved := driveRoots
+	driveRoots = func() []string { return nil }
+	t.Cleanup(func() { driveRoots = saved })
 	return home
 }
 
@@ -101,5 +105,23 @@ func TestDetectFallbackRefusesTwoMountedDrives(t *testing.T) {
 
 	if got := detected(t); got != "" {
 		t.Fatalf("detected %q, want none when two accounts are mounted", got)
+	}
+}
+
+// Drive for desktop on Windows mounts as <letter>:\My Drive: the archive in it is found,
+// and before there is one, it is created there. A temp folder stands in for the drive.
+func TestDetectsMyDriveOnADriveRoot(t *testing.T) {
+	fakeHome(t)
+	root := t.TempDir()
+	driveRoots = func() []string { return []string{root} }
+	want := filepath.Join(root, "My Drive", archiveFolderName)
+
+	mkdirs(t, filepath.Dir(want))
+	if got := detected(t); got != want {
+		t.Fatalf("no archive yet: detected %q, want %q", got, want)
+	}
+	mkdirs(t, want)
+	if got := detected(t); got != want {
+		t.Fatalf("detected %q, want %q", got, want)
 	}
 }
