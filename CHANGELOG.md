@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Let Claude set it up.** `docs/setup-with-claude.md` is a page Claude Code can follow:
+  it installs the tool, picks the synced folder, shows what would be backed up before
+  anything is uploaded, and sets up a second computer, asking before each step that
+  changes something. The README links it from Quick start.
+
 ## [0.4.0] - 2026-11-22
 
 Upgrading: update the binary and run `claude-sessions install` again on **every**

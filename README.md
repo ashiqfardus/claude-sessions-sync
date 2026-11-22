@@ -127,7 +127,15 @@ roll back, one of the others may suit you better.
 
 ## Quick start
 
-On your **first computer**:
+**Or let Claude do it.** Paste this into Claude Code on each computer:
+
+> Set up claude-sessions for me by following
+> https://github.com/ashiqfardus/claude-sessions-sync/blob/main/docs/setup-with-claude.md
+
+Claude installs the tool, finds your synced folder, shows you what it would back up
+before anything is uploaded, and asks before each step that changes something.
+
+To do it yourself, on your **first computer**:
 
 ```sh
 claude-sessions config set-destination "<your synced folder>/claude-sessions"
