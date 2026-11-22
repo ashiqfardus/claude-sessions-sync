@@ -44,7 +44,8 @@ type workPushResult struct {
 // for packAge, with at least packMinFiles of them, is archived as one zip: the sync
 // client then moves one file, not thousands. Later changes are copied loose beside
 // it, until there are more than packOverlayFiles of them or they pass a quarter of
-// the pack's bytes; then the pack is rebuilt with them.
+// the pack's bytes, and none has changed for packAge; then the pack is rebuilt with
+// them.
 const (
 	packAge          = 7 * 24 * time.Hour
 	packMinFiles     = 5
@@ -337,11 +338,13 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 
 // packRecord is what this machine packed of one unit: Files, the pack's entries by
 // "/"-separated path; Overlay, the files copied loose beside it since; Bytes, the
-// pack's size on disk, which tells whether the pack there is still the one recorded.
+// pack's size on disk, which tells whether the pack there is still the one recorded;
+// TooLarge, that push has warned the unit is too large to pack again.
 type packRecord struct {
-	Files   map[string]work.PackEntry `json:"files"`
-	Overlay map[string]work.PackEntry `json:"overlay,omitempty"`
-	Bytes   int64                     `json:"bytes"`
+	Files    map[string]work.PackEntry `json:"files"`
+	Overlay  map[string]work.PackEntry `json:"overlay,omitempty"`
+	Bytes    int64                     `json:"bytes"`
+	TooLarge bool                      `json:"tooLarge,omitempty"`
 }
 
 // workPacksPath is this machine's record of its packs. It lets push see what changed
@@ -476,12 +479,14 @@ func packUnit(dest, dir, folder, u string, files []string, packs map[string]map[
 		ov[r] = work.PackEntry{Size: st.Size(), ModTime: st.ModTime()}
 	}
 	sort.Strings(send)
-	if r, done := compactPack(dest, folder, u, pack, loose, rec, ov, info, local, real, dryRun, res, logf); done {
+	r, done := compactPack(dest, folder, u, pack, loose, rec, ov, info, local, real, dryRun, res, logf)
+	if done {
 		if !dryRun {
 			set(r)
 		}
 		return true
 	}
+	rec = r // what it noted
 	if rec.Overlay == nil {
 		rec.Overlay = map[string]work.PackEntry{}
 	}
@@ -500,7 +505,8 @@ func packUnit(dest, dir, folder, u string, files []string, packs map[string]map[
 }
 
 // compactPack rebuilds a unit's pack with its overlay ov when ov has grown past the
-// limits. It reports whether it did (or would, in a dry run), with the new record.
+// limits and settled. It reports whether it did (or would, in a dry run), with the new
+// record, or the old one with what it noted.
 func compactPack(dest, folder, u, pack, loose string, rec packRecord, ov map[string]work.PackEntry, info map[string]os.FileInfo,
 	local map[string]string, real map[string]bool, dryRun bool, res *workPushResult, logf func(string, ...any)) (packRecord, bool) {
 	var ovBytes, packBytes int64
@@ -512,6 +518,14 @@ func compactPack(dest, folder, u, pack, loose string, rec packRecord, ov map[str
 	}
 	if len(ov) <= packOverlayFiles && ovBytes*4 <= packBytes {
 		return rec, false
+	}
+	// Only a settled overlay is packed: while its files still change, a new pack would
+	// be built again at the next push.
+	cutoff := time.Now().Add(-packAge)
+	for r := range ov {
+		if st, here := info[r]; here && !st.ModTime().Before(cutoff) {
+			return rec, false
+		}
 	}
 	merged := map[string]work.PackEntry{}
 	for _, m := range []map[string]work.PackEntry{rec.Files, ov} {
@@ -525,7 +539,11 @@ func compactPack(dest, folder, u, pack, loose string, rec packRecord, ov map[str
 	}
 	name := filepath.Join(folder, u)
 	if len(merged) > work.PackMaxEntries || total > work.MaxFolderBytes {
-		logf("WARN: work folder %s: subfolder %s is too large to pack again; its changes stay loose", folder, u)
+		// Said once, then again only when the unit changes.
+		if !rec.TooLarge || !maps.EqualFunc(ov, rec.Overlay, func(a, b work.PackEntry) bool { return a.Size == b.Size && archive.SameMTime(a.ModTime, b.ModTime) }) {
+			logf("WARN: work folder %s: subfolder %s is too large to pack again; its changes stay loose", folder, u)
+		}
+		rec.TooLarge = true
 		return rec, false
 	}
 	if dryRun {

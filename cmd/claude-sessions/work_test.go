@@ -1891,7 +1891,7 @@ func TestPushOverlayOnly(t *testing.T) {
 }
 
 // Changes past 50 files, or past a quarter of the pack's bytes, are folded into a new
-// pack and the loose copies go.
+// pack once settled, and the loose copies go.
 func TestPushCompacts(t *testing.T) {
 	m := newMachine(t, "MAC", t.TempDir())
 	home, w, pack := packHome(t, m, 6)
@@ -1902,9 +1902,12 @@ func TestPushCompacts(t *testing.T) {
 		t.Fatalf("no overlay: %v", err)
 	}
 
+	names := []string{"f00.md"}
 	for i := 0; i < 51; i++ {
-		mustWrite(t, filepath.Join(w, "run1", fmt.Sprintf("n%02d.md", i)), "n\n")
+		names = append(names, fmt.Sprintf("n%02d.md", i))
+		mustWrite(t, filepath.Join(w, "run1", names[i+1]), "n\n")
 	}
+	settle(t, filepath.Join(w, "run1"), filepath.Join(workCopy(m, w), "run1"), names...)
 	m.workRun(t, home, "push", "--no-html")
 	enc := "MAC/" + work.Encode(w) + "/"
 	if got := sortedWorkFiles(m.archive); !reflect.DeepEqual(got, []string{enc + "run1.cspack.zip"}) {
@@ -1922,6 +1925,8 @@ func TestPushCompacts(t *testing.T) {
 	home2, w2, pack2 := packHome(t, m2, 6)
 	m2.workRun(t, home2, "push", "--no-html")
 	mustWrite(t, filepath.Join(w2, "run1", "f00.md"), strings.Repeat("x", 20))
+	m2.workRun(t, home2, "push", "--no-html")
+	settle(t, filepath.Join(w2, "run1"), filepath.Join(workCopy(m2, w2), "run1"), "f00.md")
 	m2.workRun(t, home2, "push", "--no-html")
 	if got := sortedWorkFiles(m2.archive); len(got) != 1 {
 		t.Fatalf("archived %v", got)
@@ -2227,34 +2232,53 @@ func growPack(t *testing.T, pack string, size uint64) {
 }
 
 // A compaction whose result restore would refuse is not made: the pack stays, the
-// changes are copied loose, and push warns.
+// changes are copied loose, and push warns once, then again only when the unit changes.
 func TestPushCompactionTooLarge(t *testing.T) {
 	m := newMachine(t, "MAC", t.TempDir())
 	home, w, pack := packHome(t, m, 6)
 	m.workRun(t, home, "push", "--no-html")
 	growPack(t, pack, work.MaxFolderBytes)
+	var names []string
 	for i := 0; i < 51; i++ {
-		mustWrite(t, filepath.Join(w, "run1", fmt.Sprintf("n%02d.md", i)), "")
+		names = append(names, fmt.Sprintf("n%02d.md", i))
+		mustWrite(t, filepath.Join(w, "run1", names[i]), "")
 	}
+	settle(t, filepath.Join(w, "run1"), "", names...)
 	before := backdate(t, pack)
 	m.workRun(t, home, "push", "--no-html")
 	samePack(t, pack, before)
 	if got := workFiles(m.archive); len(got) != 52 {
 		t.Fatalf("archived %d files: %v", len(got), got)
 	}
-	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log, "WARN: work folder "+w+": subfolder run1 is too large to pack again") {
-		t.Fatalf("log: %s", log)
+	warn := "WARN: work folder " + w + ": subfolder run1 is too large to pack again"
+	warned := func(want int) {
+		t.Helper()
+		if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); strings.Count(log, warn) != want {
+			t.Fatalf("want %d warning(s); log: %s", want, log)
+		}
 	}
+	warned(1)
+	m.workRun(t, home, "push", "--no-html")
+	m.workRun(t, home, "push", "--no-html")
+	warned(1)
+	mustWrite(t, filepath.Join(w, "run1", "n51.md"), "")
+	settle(t, filepath.Join(w, "run1"), "", "n51.md")
+	m.workRun(t, home, "push", "--no-html")
+	warned(2)
+	samePack(t, pack, before)
 }
 
-// 50 changed files stay loose; the 51st folds them into the pack.
+// 50 settled changed files stay loose; the 51st folds them into the pack.
 func TestPushCompactBoundary(t *testing.T) {
 	m := newMachine(t, "MAC", t.TempDir())
 	home, w, pack := packHome(t, m, 6)
 	m.workRun(t, home, "push", "--no-html")
+	var names []string
 	for i := 0; i < 50; i++ { // empty, so only the count can trigger it
-		mustWrite(t, filepath.Join(w, "run1", fmt.Sprintf("n%02d.md", i)), "")
+		names = append(names, fmt.Sprintf("n%02d.md", i))
+		mustWrite(t, filepath.Join(w, "run1", names[i]), "")
 	}
+	settle(t, filepath.Join(w, "run1"), "", names...)
 	before := backdate(t, pack)
 	m.workRun(t, home, "push", "--no-html")
 	samePack(t, pack, before)
@@ -2262,12 +2286,28 @@ func TestPushCompactBoundary(t *testing.T) {
 		t.Fatalf("archived %d files", len(got))
 	}
 	mustWrite(t, filepath.Join(w, "run1", "n50.md"), "")
+	settle(t, filepath.Join(w, "run1"), "", "n50.md")
 	m.workRun(t, home, "push", "--no-html")
 	if got := workFiles(m.archive); len(got) != 1 {
 		t.Fatalf("archived %v", got)
 	}
 	if idx := packIndex(t, pack); len(idx) != 57 {
 		t.Fatalf("pack: %d entries", len(idx))
+	}
+}
+
+// settle dates the named files of unit 8 days back, as a burst of changes is once it
+// has settled, and their loose copies under loose ("" for none) alike.
+func settle(t *testing.T, unit, loose string, names ...string) {
+	t.Helper()
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	for _, n := range names {
+		setTime(t, filepath.Join(unit, n), old)
+		if lc := filepath.Join(loose, n); loose != "" {
+			if _, err := os.Stat(lc); err == nil {
+				setTime(t, lc, old)
+			}
+		}
 	}
 }
 
@@ -2724,5 +2764,38 @@ func TestImportClearsStaleTempDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(fresh); err != nil {
 		t.Fatalf("fresh temp folder removed: %v", err)
+	}
+}
+
+// A burst of changes stays loose while it is fresh: three pushes in a row, each with 51
+// new files, rebuild nothing. Once every change is a week old, one push compacts them.
+func TestPushCompactionWaitsToSettle(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	before := backdate(t, pack)
+	var names []string
+	for run := 0; run < 3; run++ {
+		for i := 0; i < 51; i++ {
+			names = append(names, fmt.Sprintf("r%d-%02d.md", run, i))
+			mustWrite(t, filepath.Join(w, "run1", names[len(names)-1]), "x\n")
+		}
+		m.workRun(t, home, "push", "--no-html")
+		samePack(t, pack, before)
+	}
+	if got := workFiles(m.archive); len(got) != 154 {
+		t.Fatalf("archived %d files", len(got))
+	}
+	settle(t, filepath.Join(w, "run1"), filepath.Join(workCopy(m, w), "run1"), names...)
+	m.workRun(t, home, "push", "--no-html")
+	m.workRun(t, home, "push", "--no-html")
+	if got := workFiles(m.archive); len(got) != 1 {
+		t.Fatalf("archived %v", got)
+	}
+	if idx := packIndex(t, pack); len(idx) != 159 {
+		t.Fatalf("pack: %d entries", len(idx))
+	}
+	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); strings.Count(log, "WORK: compacted") != 1 {
+		t.Fatalf("log: %s", log)
 	}
 }
