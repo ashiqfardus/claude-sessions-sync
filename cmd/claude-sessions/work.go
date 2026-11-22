@@ -875,7 +875,7 @@ type importRecord struct {
 	folded  map[string]int64 // the largest mark under each lower-cased key
 	pending map[string]bool  // journaled as landing, with no size journaled since
 	save    bool             // false under --dry-run: nothing is written
-	log     *os.File         // the journal, once opened for appending
+	opened  bool             // the journal was appended to in this run
 	err     error            // why imported.json could not be saved
 }
 
@@ -1040,26 +1040,31 @@ func (r *importRecord) land(p string, write func() error) error {
 	return werr
 }
 
-// append adds b to the journal, with sync fsync'd before it returns.
+// append adds b to the journal, with sync fsync'd before it returns, and closes it
+// again: a run that stops early never reaches finish, and Windows cannot remove a
+// journal still open, at finish or at the next load.
 func (r *importRecord) append(b []byte, sync bool) error {
-	if r.log == nil {
+	if !r.opened {
 		if err := os.MkdirAll(filepath.Dir(importedLog(r.root)), 0o755); err != nil {
 			return fmt.Errorf("%w: %v", errRecord, err)
 		}
-		f, err := os.OpenFile(importedLog(r.root), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			return fmt.Errorf("%w: %v", errRecord, err)
-		}
-		r.log = f
 		b = append([]byte("\n"), b...) // ends a line a killed run left half written
 	}
-	_, err := r.log.Write(b)
+	f, err := os.OpenFile(importedLog(r.root), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errRecord, err)
+	}
+	_, err = f.Write(b)
 	if err == nil && sync {
-		err = r.log.Sync()
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
 	}
 	if err != nil {
 		return fmt.Errorf("%w: %s: %v", errRecord, importedLog(r.root), err)
 	}
+	r.opened = true
 	return nil
 }
 
@@ -1070,10 +1075,6 @@ func (r *importRecord) compact() {
 		r.markNow(filepath.Join(claude.ProjectsDir(r.root), filepath.FromSlash(k)))
 	}
 	clear(r.pending)
-	if r.log != nil {
-		r.log.Close()
-		r.log = nil
-	}
 	if !r.save {
 		return
 	}

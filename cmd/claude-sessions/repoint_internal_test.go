@@ -185,6 +185,37 @@ func TestJournalPendingCountsWhole(t *testing.T) {
 	}
 }
 
+// openFiles counts this process's open files, or -1 where /dev/fd cannot be listed
+// (Windows, where removing the journal below fails instead).
+func openFiles() int {
+	entries, err := os.ReadDir("/dev/fd")
+	if err != nil {
+		return -1
+	}
+	return len(entries)
+}
+
+// Journaling leaves nothing open: runs that stop early never reach finish, and Windows
+// cannot remove an open journal, at finish or at the next load.
+func TestJournalNotHeldOpen(t *testing.T) {
+	root := t.TempDir()
+	p := writeTranscript(t, root, "11111111-1111-1111-1111-111111111111", "x\n")
+	r := loadImported(root, true)
+	before := openFiles()
+	if err := r.pend(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.settle(p, true); err != nil {
+		t.Fatal(err)
+	}
+	if after := openFiles(); after != before {
+		t.Fatalf("%d files open after journaling, %d before", after, before)
+	}
+	if err := os.Remove(importedLog(root)); err != nil {
+		t.Fatalf("journal: %v", err)
+	}
+}
+
 // A lookup takes the larger of the exact key and the case-folded one, on every OS;
 // a nil record reads everything (R28, N6).
 func TestRecordFoldedLookup(t *testing.T) {
