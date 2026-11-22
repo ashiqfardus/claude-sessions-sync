@@ -163,3 +163,51 @@ func TestCompactPackOverlayWins(t *testing.T) {
 		t.Fatalf("left behind: %v", left)
 	}
 }
+
+// PrunePack takes entries out and keeps the rest with their times; with none left it
+// removes the pack, and one it cannot read stays as it is.
+func TestPrunePack(t *testing.T) {
+	src, dir := t.TempDir(), t.TempDir()
+	pack := filepath.Join(dir, "run.cspack.zip")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := WritePack(pack, []PackFile{
+		packFile(t, src, "a.md", "a\n", old),
+		packFile(t, src, "sub/s.md", "s\n", old),
+		packFile(t, src, "sub/t.md", "t\n", old),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inSub := func(n string) bool { return Within(n, "sub", false) }
+	if n, err := PrunePack(pack, inSub); err != nil || n != 2 {
+		t.Fatalf("pruned %d: %v", n, err)
+	}
+	if got := packContents(t, pack); !reflect.DeepEqual(got, map[string]string{"a.md": "a\n"}) {
+		t.Fatalf("contents %v", got)
+	}
+	if idx, _ := ReadPackIndex(pack); idx["a.md"].ModTime.Sub(old).Abs() > 2*time.Second {
+		t.Fatalf("time lost: %+v", idx)
+	}
+	if n, err := PrunePack(pack, inSub); err != nil || n != 0 {
+		t.Fatalf("pruned again %d: %v", n, err)
+	}
+	if left, _ := os.ReadDir(dir); len(left) != 1 {
+		t.Fatalf("left behind: %v", left)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "bad.cspack.zip"), []byte("not a zip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrunePack(filepath.Join(dir, "bad.cspack.zip"), func(string) bool { return true }); err == nil {
+		t.Fatal("unreadable pack pruned")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "bad.cspack.zip")); err != nil {
+		t.Fatalf("unreadable pack removed: %v", err)
+	}
+
+	if n, err := PrunePack(pack, func(string) bool { return true }); err != nil || n != 1 {
+		t.Fatalf("pruned all %d: %v", n, err)
+	}
+	if _, err := os.Stat(pack); !os.IsNotExist(err) {
+		t.Fatalf("empty pack kept: %v", err)
+	}
+}

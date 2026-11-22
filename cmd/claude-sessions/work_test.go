@@ -1,6 +1,8 @@
 package main_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -1849,6 +1851,7 @@ func TestPushKeepsArchiveOnlyFiles(t *testing.T) {
 	home, w, pack := packHome(t, m, 6)
 	mustWrite(t, filepath.Join(workCopy(m, w), "run1", "gone.md"), "only in the archive\n")
 	mustWrite(t, filepath.Join(workCopy(m, w), "run1", "f00.md"), "file 0\n")
+	ageFiles(t, workCopy(m, w)) // a leftover of an earlier push carries the local time
 	m.workRun(t, home, "push", "--no-html")
 
 	enc := "MAC/" + work.Encode(w) + "/"
@@ -1988,12 +1991,13 @@ func TestPushPackDryRun(t *testing.T) {
 	}
 }
 
-// Excluding a path inside a packed unit removes the pack and its loose copies; the
-// next push packs the unit again without it, and the push after leaves that pack be.
-func TestExcludeInsideUnitRemovesPack(t *testing.T) {
+// Excluding a path inside a packed unit takes its entries out of the pack and its
+// loose copies out of the archive. The rest stays: other entries, a file only the
+// pack still holds, and the overlay. Excluding the whole unit removes its pack.
+func TestExcludeInsideUnitPrunesPack(t *testing.T) {
 	m := newMachine(t, "MAC", t.TempDir())
 	configAs(t, m.claudeDir, "MAC", "set-destination", m.archive)
-	home, w, pack := packHome(t, m, 6)
+	home, w, pack := packHome(t, m, 7)
 	sub := filepath.Join(w, "run1", "sub")
 	mustWrite(t, filepath.Join(sub, "s.md"), "private\n")
 	ageFiles(t, w)
@@ -2001,22 +2005,268 @@ func TestExcludeInsideUnitRemovesPack(t *testing.T) {
 	if idx := packIndex(t, pack); idx["sub/s.md"] != 8 {
 		t.Fatalf("pack: %v", idx)
 	}
-	mustWrite(t, filepath.Join(w, "run1", "f00.md"), "edited\n")
+	if err := os.Remove(filepath.Join(w, "run1", "f06.md")); err != nil { // only in the pack now
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(w, "run1", "f00.md"), "e\n")
 	m.workRun(t, home, "push", "--no-html")
 
 	if out := configAs(t, m.claudeDir, "MAC", "exclude-folder", sub); !strings.Contains(out, "removed "+sub) {
 		t.Fatalf("output: %s", out)
 	}
+	if idx := packIndex(t, pack); len(idx) != 7 || idx["f06.md"] != 7 || idx["sub/s.md"] != 0 {
+		t.Fatalf("pack: %v", idx)
+	}
+	enc := "MAC/" + work.Encode(w) + "/"
+	if got := sortedWorkFiles(m.archive); !reflect.DeepEqual(got, []string{enc + "run1.cspack.zip", enc + "run1/f00.md"}) {
+		t.Fatalf("archived %v", got)
+	}
+	if rec := mustRead(t, filepath.Join(m.claudeDir, "session-sync-base", "work-packs.json")); strings.Contains(rec, "sub/s.md") {
+		t.Fatalf("record still lists the excluded file: %s", rec)
+	}
+
+	before := backdate(t, pack)
+	m.workRun(t, home, "push", "--no-html")
+	m.workRun(t, home, "push", "--no-html")
+	samePack(t, pack, before)
+
+	if out := configAs(t, m.claudeDir, "MAC", "exclude-folder", filepath.Join(w, "run1")); !strings.Contains(out, "removed "+filepath.Join(w, "run1")) {
+		t.Fatalf("output: %s", out)
+	}
 	if got := workFiles(m.archive); len(got) != 0 {
 		t.Fatalf("left in the archive: %v", got)
 	}
+}
 
-	ageFiles(t, w)
+func setTime(t *testing.T, p string, at time.Time) {
+	t.Helper()
+	if err := os.Chtimes(p, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A pack push cannot read is never deleted by an exclusion inside its unit, nor is
+// anything beside it: the next run tries again.
+func TestPushUnreadablePackKept(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a mode cannot make a file unreadable on Windows")
+	}
+	m := newMachine(t, "MAC", t.TempDir())
+	configAs(t, m.claudeDir, "MAC", "set-destination", m.archive)
+	home, w, pack := packHome(t, m, 7)
 	m.workRun(t, home, "push", "--no-html")
-	if idx := packIndex(t, pack); len(idx) != 6 || idx["f00.md"] != 7 {
+	nothere := filepath.Join(w, "run1", "nothere")
+	configAs(t, m.claudeDir, "MAC", "exclude-folder", nothere)
+	if err := os.Remove(filepath.Join(w, "run1", "f06.md")); err != nil { // only in the pack now
+		t.Fatal(err)
+	}
+	gone := filepath.Join(workCopy(m, w), "run1", "gone.md")
+	mustWrite(t, gone, "archive only\n")
+
+	if err := os.Chmod(pack, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(pack, 0o644) })
+	if f, err := os.Open(pack); err == nil {
+		f.Close()
+		t.Skip("files stay readable here")
+	}
+	m.workRun(t, home, "push", "--no-html")
+	if err := os.Chmod(pack, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(gone); err != nil {
+		t.Fatalf("archive-only file deleted: %v", err)
+	}
+	if idx := packIndex(t, pack); len(idx) != 7 || idx["f06.md"] != 7 {
 		t.Fatalf("pack: %v", idx)
+	}
+	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log, "WARN: excluded folder "+nothere) {
+		t.Fatalf("log: %s", log)
+	}
+}
+
+// Loose copies of packed files left beside the pack go on a routine push, unless
+// newer than the pack's entry: then they may be the only copy of newer content.
+func TestPushRemovesStaleLooseCopies(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, _ := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	loose := filepath.Join(workCopy(m, w), "run1")
+	stale, newer := filepath.Join(loose, "f00.md"), filepath.Join(loose, "f01.md")
+	mustWrite(t, stale, "stale\n")
+	setTime(t, stale, time.Now().Add(-30*24*time.Hour))
+	mustWrite(t, newer, "newer\n")
+	setTime(t, newer, time.Now().Add(-time.Hour))
+	m.workRun(t, home, "push", "--no-html")
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale loose copy kept: %v", err)
+	}
+	if _, err := os.Stat(newer); err != nil {
+		t.Fatalf("newer loose copy deleted: %v", err)
+	}
+
+	// An overlay copy of a file deleted here since, with the record lost.
+	mustWrite(t, filepath.Join(w, "run1", "f02.md"), "e\n")
+	m.workRun(t, home, "push", "--no-html")
+	if err := os.Remove(filepath.Join(w, "run1", "f02.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(m.claudeDir, "session-sync-base", "work-packs.json")); err != nil {
+		t.Fatal(err)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	if got := mustRead(t, filepath.Join(loose, "f02.md")); got != "e\n" {
+		t.Fatalf("overlay copy = %q", got)
+	}
+}
+
+// An overlay copy gone from the archive is copied again.
+func TestPushHealsMissingOverlayCopy(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, _ := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	mustWrite(t, filepath.Join(w, "run1", "f02.md"), "e\n")
+	m.workRun(t, home, "push", "--no-html")
+	ov := filepath.Join(workCopy(m, w), "run1", "f02.md")
+	if err := os.Remove(ov); err != nil {
+		t.Fatal(err)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	if got := mustRead(t, ov); got != "e\n" {
+		t.Fatalf("overlay copy = %q", got)
+	}
+}
+
+// A loose copy newer than the local file - whose time went back - is not removed when
+// the unit is packed.
+func TestPushPackKeepsNewerLooseCopy(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	lc := filepath.Join(workCopy(m, w), "run1", "f00.md")
+	mustWrite(t, lc, "newer content in the archive\n")
+	setTime(t, lc, time.Now().Add(-time.Hour))
+	m.workRun(t, home, "push", "--no-html")
+	if idx := packIndex(t, pack); idx["f00.md"] != 7 {
+		t.Fatalf("pack: %v", idx)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	if got := mustRead(t, lc); got != "newer content in the archive\n" {
+		t.Fatalf("loose copy = %q", got)
+	}
+}
+
+// The shard counts the packs in the archive, not the records of them.
+func TestPushPackedCountsPacks(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	if err := os.RemoveAll(filepath.Join(w, "run1")); err != nil {
+		t.Fatal(err)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	if wf := workShard(t, m); len(wf) != 1 || wf[0].Packed != 1 {
+		t.Fatalf("shard: %+v", wf)
+	}
+	if err := os.Remove(pack); err != nil {
+		t.Fatal(err)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	if wf := workShard(t, m); len(wf) != 1 || wf[0].Packed != 0 {
+		t.Fatalf("shard: %+v", wf)
+	}
+}
+
+// Held files - restored from another machine and unchanged - stay out of the pack.
+func TestPushPackLeavesHeldFiles(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 7)
+	held := filepath.Join(w, "run1", "f06.md")
+	st, err := os.Stat(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hp := filepath.Join(m.claudeDir, "session-sync-base", "work-held.json")
+	h := work.LoadHeld(hp)
+	h.Files[held] = work.HeldFile{Machine: "WIN", From: `E:\SQL\run1\f06.md`, Size: st.Size(), MTime: st.ModTime()}
+	if err := h.Save(hp); err != nil {
+		t.Fatal(err)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	if idx := packIndex(t, pack); len(idx) != 6 || idx["f06.md"] != 0 {
+		t.Fatalf("pack: %v", idx)
+	}
+	if got := workFiles(m.archive); len(got) != 1 {
+		t.Fatalf("archived %v", got)
+	}
+}
+
+// growPack adds an entry declaring size bytes and holding none, so a merge with it
+// passes the cap without the test writing 250 MB.
+func growPack(t *testing.T, pack string, size uint64) {
+	t.Helper()
+	r, err := zip.OpenReader(pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range r.File {
+		if err := zw.Copy(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.Close()
+	if _, err := zw.CreateRaw(&zip.FileHeader{Name: "big.bin", Method: zip.Store, UncompressedSize64: size}); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, pack, buf.String())
+}
+
+// A compaction whose result restore would refuse is not made: the pack stays, the
+// changes are copied loose, and push warns.
+func TestPushCompactionTooLarge(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	growPack(t, pack, work.MaxFolderBytes)
+	for i := 0; i < 51; i++ {
+		mustWrite(t, filepath.Join(w, "run1", fmt.Sprintf("n%02d.md", i)), "")
 	}
 	before := backdate(t, pack)
 	m.workRun(t, home, "push", "--no-html")
 	samePack(t, pack, before)
+	if got := workFiles(m.archive); len(got) != 52 {
+		t.Fatalf("archived %d files: %v", len(got), got)
+	}
+	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log, "WARN: work folder "+w+": subfolder run1 is too large to pack again") {
+		t.Fatalf("log: %s", log)
+	}
+}
+
+// 50 changed files stay loose; the 51st folds them into the pack.
+func TestPushCompactBoundary(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	for i := 0; i < 50; i++ { // empty, so only the count can trigger it
+		mustWrite(t, filepath.Join(w, "run1", fmt.Sprintf("n%02d.md", i)), "")
+	}
+	before := backdate(t, pack)
+	m.workRun(t, home, "push", "--no-html")
+	samePack(t, pack, before)
+	if got := workFiles(m.archive); len(got) != 51 {
+		t.Fatalf("archived %d files", len(got))
+	}
+	mustWrite(t, filepath.Join(w, "run1", "n50.md"), "")
+	m.workRun(t, home, "push", "--no-html")
+	if got := workFiles(m.archive); len(got) != 1 {
+		t.Fatalf("archived %v", got)
+	}
+	if idx := packIndex(t, pack); len(idx) != 57 {
+		t.Fatalf("pack: %d entries", len(idx))
+	}
 }

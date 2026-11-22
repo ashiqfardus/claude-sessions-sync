@@ -318,12 +318,12 @@ flags:
 			return nil
 		}
 		defer lock.Release()
-		gone, err := purgeWork(dest, machineName(), folder)
-		if err != nil {
-			return err
-		}
+		gone, err := purgeWork(root, dest, machineName(), folder)
 		for _, g := range gone {
 			fmt.Printf("removed %s\n", g)
+		}
+		if err != nil {
+			return err
 		}
 		if len(gone) > 0 {
 			fmt.Println("They may still be in the sync service's trash or version history.")

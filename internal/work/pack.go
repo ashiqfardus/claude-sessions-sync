@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 )
@@ -54,6 +55,31 @@ func CompactPack(old, dst string, add []PackFile) error {
 		return err
 	}
 	return commitPack(tmp, dst)
+}
+
+// PrunePack rewrites the pack at path without the entries drop names, copied as they
+// are through a temp file and a rename, and removes the pack when none are left. It
+// returns how many entries it took out. A pack it cannot read is left as it is.
+func PrunePack(path string, drop func(name string) bool) (int, error) {
+	r, err := zip.OpenReader(path)
+	if err != nil {
+		return 0, err
+	}
+	keep := slices.DeleteFunc(slices.Clone(r.File), func(f *zip.File) bool { return drop(f.Name) })
+	n := len(r.File) - len(keep)
+	if n == 0 || len(keep) == 0 {
+		r.Close()
+		if n > 0 {
+			err = os.Remove(path)
+		}
+		return n, err
+	}
+	tmp, err := buildPack(path, keep, nil)
+	r.Close() // before the rename: Windows cannot replace an open file
+	if err != nil {
+		return 0, err
+	}
+	return n, commitPack(tmp, path)
 }
 
 // ReadPackIndex reads a pack's entries from its central directory alone.

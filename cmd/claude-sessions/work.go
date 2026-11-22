@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -119,7 +120,7 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 	// folder or a part of one - is removed too. purgeWork is idempotent.
 	if !dryRun {
 		for _, x := range cfg.WorkExclude {
-			if _, err := purgeWork(dest, shard.Machine, x); err != nil {
+			if _, err := purgeWork(root, dest, shard.Machine, x); err != nil {
 				logf("WARN: excluded folder %s: %v", x, err)
 			}
 		}
@@ -276,7 +277,14 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 				}
 			}
 		}
-		e.Packed = len(packs[f.Path])
+		if !f.Exact && realWorkDirs(dest, dir, real) {
+			ents, _ := os.ReadDir(dir) // the packs there, not the records of them
+			for _, d := range ents {
+				if d.Type().IsRegular() && strings.HasSuffix(d.Name(), work.PackSuffix) {
+					e.Packed++
+				}
+			}
+		}
 		e.Files, e.Bytes = len(c.Files), c.Bytes
 		res.Folders++
 		res.Bytes += c.Bytes
@@ -440,7 +448,7 @@ func packUnit(dest, dir, folder, u string, files []string, packs map[string]map[
 		for _, f := range add {
 			r.Files[f.Rel] = work.PackEntry{Size: f.Size, ModTime: f.ModTime}
 		}
-		removeLoose(dest, loose, r.Files, real)
+		removeLoose(dest, loose, r.Files, nil, real)
 		if st, err := os.Stat(pack); err == nil {
 			r.Bytes = st.Size()
 		}
@@ -450,25 +458,23 @@ func packUnit(dest, dir, folder, u string, files []string, packs map[string]map[
 		return true
 	}
 
-	// Packed: what differs from both the pack and the overlay is new or changed.
+	// Packed: what differs from the pack is new or changed. An overlay file is always
+	// checked against its loose copy, so one gone from the archive is copied again.
 	ov := map[string]work.PackEntry{}
 	for r, e := range rec.Overlay {
 		ov[r] = e
 	}
-	var changed []string
+	var send []string
 	for r, st := range info {
-		ref, in := rec.Overlay[r]
-		if !in {
-			ref, in = rec.Files[r]
-		}
-		if in && ref.Size == st.Size() && archive.SameMTime(ref.ModTime, st.ModTime()) {
+		_, over := rec.Overlay[r]
+		if ref, in := rec.Files[r]; !over && in && ref.Size == st.Size() && archive.SameMTime(ref.ModTime, st.ModTime()) {
 			res.Unchanged++
 			continue
 		}
-		changed = append(changed, r)
+		send = append(send, r)
 		ov[r] = work.PackEntry{Size: st.Size(), ModTime: st.ModTime()}
 	}
-	sort.Strings(changed)
+	sort.Strings(send)
 	if r, done := compactPack(dest, folder, u, pack, loose, rec, ov, info, local, real, dryRun, res, logf); done {
 		if !dryRun {
 			set(r)
@@ -478,10 +484,15 @@ func packUnit(dest, dir, folder, u string, files []string, packs map[string]map[
 	if rec.Overlay == nil {
 		rec.Overlay = map[string]work.PackEntry{}
 	}
-	for _, r := range changed {
+	for _, r := range send {
 		if copyLoose(local[r], filepath.Join(loose, filepath.FromSlash(r)), info[r]) {
 			rec.Overlay[r] = ov[r]
 		}
+	}
+	if !dryRun {
+		// Loose copies of packed files left from before the pack - a crash, a lost
+		// record - go; overlay files stay.
+		removeLoose(dest, loose, rec.Files, ov, real)
 	}
 	set(rec)
 	return true
@@ -543,7 +554,7 @@ func compactPack(dest, folder, u, pack, loose string, rec packRecord, ov map[str
 		added[f.Rel] = work.PackEntry{Size: f.Size, ModTime: f.ModTime}
 		r.Files[f.Rel] = added[f.Rel]
 	}
-	removeLoose(dest, loose, added, real)
+	removeLoose(dest, loose, added, nil, real)
 	if st, err := os.Stat(pack); err == nil {
 		r.Bytes = st.Size()
 	}
@@ -562,10 +573,11 @@ func packFiles(info map[string]os.FileInfo, local map[string]string) []work.Pack
 	return out
 }
 
-// removeLoose deletes the archive's loose copies under loose of the files now in its
-// pack (in, by "/"-separated path), and the folders that leaves empty. A loose copy of
-// a file not in the pack - deleted here, still in the archive - stays.
-func removeLoose(dest, loose string, in map[string]work.PackEntry, real map[string]bool) {
+// removeLoose deletes the archive's loose copies under loose of the files in its pack
+// (in, by "/"-separated path) and not in keep, and the folders that leaves empty. A
+// loose copy of a file not in the pack - deleted here, still in the archive - stays,
+// as does one newer than its pack entry: it may be the only copy of newer content.
+func removeLoose(dest, loose string, in, keep map[string]work.PackEntry, real map[string]bool) {
 	var dirs []string
 	_ = filepath.WalkDir(loose, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || !realWorkDirs(dest, filepath.Dir(p), real) {
@@ -576,7 +588,12 @@ func removeLoose(dest, loose string, in map[string]work.PackEntry, real map[stri
 			return nil
 		}
 		rel, _ := filepath.Rel(loose, p)
-		if _, ok := in[filepath.ToSlash(rel)]; ok && d.Type().IsRegular() {
+		r := filepath.ToSlash(rel)
+		e, ok := in[r]
+		if _, kept := keep[r]; !ok || kept || !d.Type().IsRegular() {
+			return nil
+		}
+		if st, err := d.Info(); err == nil && !st.ModTime().After(e.ModTime.Add(archive.MTimeToleranceSeconds*time.Second)) {
 			os.Remove(p)
 		}
 		return nil
@@ -694,7 +711,7 @@ func realWorkDirs(dest, dir string, real map[string]bool) bool {
 // stays), listed nowhere, or under a name this machine went by before. It returns the
 // folders removed. What workDir refuses, or a link reaches, is never deleted. The
 // caller holds the push lock.
-func purgeWork(dest, machine, folder string) ([]string, error) {
+func purgeWork(root, dest, machine, folder string) ([]string, error) {
 	shard := readShard(dest, machine)
 	var keep []archive.WorkFolder
 	var removed []string
@@ -716,6 +733,7 @@ func purgeWork(dest, machine, folder string) ([]string, error) {
 		return nil
 	}
 	changed := false
+	var packErr error
 	for _, f := range shard.WorkFolders {
 		fold := runtime.GOOS != "linux" || work.WindowsPath(f.Path) || work.WindowsPath(folder)
 		if !work.Within(f.Path, folder, fold) {
@@ -740,9 +758,9 @@ func purgeWork(dest, machine, folder string) ([]string, error) {
 			entries = readShard(dest, m).WorkFolders
 		}
 		for _, f := range entries {
-			gone, err := dropPack(dest, m, f, folder, real)
-			if err != nil {
-				return removed, err
+			gone, err := prunePack(root, dest, m, f, folder, m == machine, real)
+			if err != nil { // left as it is: the next run tries again
+				packErr = errors.Join(packErr, err)
 			}
 			if gone && !slices.Contains(removed, folder) {
 				removed = append(removed, folder)
@@ -750,19 +768,20 @@ func purgeWork(dest, machine, folder string) ([]string, error) {
 		}
 	}
 	if !changed {
-		return removed, nil
+		return removed, packErr
 	}
 	shard.WorkFolders = keep
 	if shard.Machine == "" {
 		shard.Machine = machine
 	}
-	return removed, writeManifest(dest, shard)
+	return removed, errors.Join(packErr, writeManifest(dest, shard))
 }
 
-// dropPack removes the pack of the unit of work folder f that p lies in, and the
-// unit's loose copies, when the pack holds p: the next push packs the unit again
-// without it. A pack that no longer holds p stays, as purge runs on every push.
-func dropPack(dest, machine string, f archive.WorkFolder, p string, real map[string]bool) (bool, error) {
+// prunePack takes p out of the pack of the unit of work folder f that p lies in: the
+// entries under p go, the rest are kept as they are, and the pack goes only when p is
+// the whole unit (drop removes p's loose copies). own marks this machine's current
+// name, whose record of the pack is updated. A pack it cannot read is never touched.
+func prunePack(root, dest, machine string, f archive.WorkFolder, p string, own bool, real map[string]bool) (bool, error) {
 	fold := runtime.GOOS != "linux" || work.WindowsPath(f.Path) || work.WindowsPath(p)
 	sep := func(r rune) bool { return r == '/' || r == '\\' }
 	in, at := strings.FieldsFunc(p, sep), strings.FieldsFunc(f.Path, sep)
@@ -778,20 +797,33 @@ func dropPack(dest, machine string, f archive.WorkFolder, p string, real map[str
 	if _, err := os.Lstat(pack); err != nil {
 		return false, nil
 	}
-	if sub != "" {
-		idx, err := work.ReadPackIndex(pack)
-		holds := err != nil // unreadable: it may hold p
-		for n := range idx {
-			holds = holds || work.Within(n, sub, fold)
+	under := func(n string) bool { return sub == "" || work.Within(n, sub, fold) }
+	n := 1
+	if sub == "" { // the whole unit is excluded: every entry goes, unread
+		if err := os.Remove(pack); err != nil {
+			return false, err
 		}
-		if !holds {
-			return false, nil
+	} else if n, err = work.PrunePack(pack, under); err != nil {
+		return false, fmt.Errorf("pack %s: %w", pack, err)
+	}
+	if n == 0 || !own {
+		return n > 0, nil
+	}
+	packs := loadPacks(root)
+	if rec, ok := packs[f.Path][unit]; ok {
+		st, serr := os.Stat(pack)
+		if serr != nil {
+			delete(packs[f.Path], unit)
+		} else {
+			for _, m := range []map[string]work.PackEntry{rec.Files, rec.Overlay} {
+				maps.DeleteFunc(m, func(n string, _ work.PackEntry) bool { return under(n) })
+			}
+			rec.Bytes = st.Size()
+			packs[f.Path][unit] = rec
 		}
+		return true, savePacks(root, packs)
 	}
-	if err := os.Remove(pack); err != nil {
-		return false, err
-	}
-	return true, os.RemoveAll(filepath.Join(dir, unit)) // never follows a link
+	return true, nil
 }
 
 // heldWorkPath is this machine's record of work files restored from other machines
