@@ -81,6 +81,10 @@ func Collect(f Folder, exclude []string) (Collected, error) {
 	excluded := func(p string) bool {
 		return slices.ContainsFunc(exclude, func(x string) bool { return Within(p, x, fold) })
 	}
+	// A name SafeJoin refuses to restore is never read: Folders vetted f.Path, so the
+	// walk checks each name once as it goes down, plus go/pkg/mod across the boundary.
+	win := runtime.GOOS == "windows" || WindowsPath(f.Path)
+	program := func(p string) bool { return badNames([]string{filepath.Base(p)}, win) != "" || modCache(segs(p)) }
 	add := func(path, rel string, size int64) {
 		if excluded(path) {
 			c.Skipped["excluded"]++
@@ -88,6 +92,10 @@ func Collect(f Folder, exclude []string) (Collected, error) {
 		}
 		if ok, why := Allowed(rel, size); !ok {
 			c.Skipped[why]++
+			return
+		}
+		if program(path) {
+			c.Skipped["program"]++
 			return
 		}
 		c.Files = append(c.Files, path)
@@ -121,7 +129,7 @@ func Collect(f Folder, exclude []string) (Collected, error) {
 			if p == f.Path {
 				return nil
 			}
-			if skipDir(d.Name()) || strings.HasPrefix(d.Name(), ".") || excluded(p) {
+			if skipDir(d.Name()) || strings.HasPrefix(d.Name(), ".") || excluded(p) || program(p) {
 				return fs.SkipDir
 			}
 			if _, e := os.Lstat(filepath.Join(p, ".git")); e == nil {

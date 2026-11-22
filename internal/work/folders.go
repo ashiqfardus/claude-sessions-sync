@@ -159,8 +159,9 @@ func Folders(cands []Candidate, env Env) []Folder {
 			f = Folder{p, true}
 		}
 		// A folder a runtime loads code from is never ours to own: rule 0 would then let
-		// another machine write into it.
-		if dotted(f.Path) || slices.ContainsFunc(segs(f.Path), codeDir) {
+		// another machine write into it. Nor is one restore refuses to write: app settings
+		// and caches hold tokens.
+		if dotted(f.Path) || slices.ContainsFunc(segs(f.Path), codeDir) || programPlace(f.Path, env) != "" {
 			continue
 		}
 		all = append(all, f)

@@ -163,14 +163,6 @@ func anyFold(s string, names ...string) bool {
 // since the macOS and Windows file systems ignore it: ~/library is ~/Library.
 func refused(target string, exact bool, env Env) string {
 	t, drive, h := segs(target), WindowsPath(target), segs(env.Home)
-	// A UNC target has no drive letter, but on Windows its names still alias.
-	win := drive || runtime.GOOS == "windows"
-	rest := t // what the archive chose; the local home itself is trusted
-	if len(h) > 0 && within(t, h, true) {
-		rest = t[len(h):]
-	} else if drive {
-		rest = t[1:]
-	}
 	top := len(t) == 0 || drive && len(t) == 1 || within(h, t, true) // a root, the home or above it
 	in := func(dir string) bool { return dir != "" && Within(target, dir, true) }
 	// Above counts too: the folder's files would land inside.
@@ -186,7 +178,25 @@ func refused(target string, exact bool, env Env) string {
 		return "inside a git repo"
 	case IsBroad(target, broad) && (!exact || top): // Exact exempts only Desktop, Downloads, Documents
 		return "a broad folder"
-	case env.Home != "" && in(filepath.Join(env.Home, "Library")):
+	}
+	return programPlace(target, env)
+}
+
+// programPlace returns why p lies where programs keep their settings or code - ~/Library,
+// a system folder, a name badNames refuses below the home or drive - or "". Restore
+// never writes there and push never reads there.
+func programPlace(p string, env Env) string {
+	t, drive, h := segs(p), WindowsPath(p), segs(env.Home)
+	// A UNC path has no drive letter, but on Windows its names still alias.
+	win := drive || runtime.GOOS == "windows"
+	rest := t // what the archive chose; the local home itself is trusted
+	if len(h) > 0 && within(t, h, true) {
+		rest = t[len(h):]
+	} else if drive {
+		rest = t[1:]
+	}
+	switch {
+	case env.Home != "" && Within(p, filepath.Join(env.Home, "Library"), true):
 		return "in ~/Library"
 	case !drive && len(t) > 0 && anyFold(t[0], "etc", "Library", "System"),
 		drive && len(t) > 1 && anyFold(t[1], "Windows", "Program Files", "Program Files (x86)"):

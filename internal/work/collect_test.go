@@ -178,3 +178,24 @@ func TestAllowedArchivePaths(t *testing.T) {
 		}
 	}
 }
+
+// Below a work folder, push skips every name restore refuses to write there.
+func TestCollectSkipsProgramNames(t *testing.T) {
+	root := t.TempDir()
+	for _, r := range []string{"r.md", "vimfiles/x.vim", "_vimrc", "AppData/Roaming/x.md", "go/pkg/mod/m/x.go",
+		"env/etc/conda/activate.d/a.sh", "lib/site-packages/x.py"} {
+		put(t, root, r, 0)
+	}
+	c, err := Collect(Folder{Path: root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rels(t, root, c); !reflect.DeepEqual(got, []string{"r.md"}) {
+		t.Fatalf("got %v", got)
+	}
+	// go/pkg/mod split between the folder and the path below it.
+	c, err = Collect(Folder{Path: filepath.Join(root, "go", "pkg")}, nil)
+	if err != nil || len(c.Files) != 0 {
+		t.Fatalf("module cache collected: %v %v", c.Files, err)
+	}
+}

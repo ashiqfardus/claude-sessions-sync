@@ -503,6 +503,27 @@ func TestPushWorkSkipsDotFolder(t *testing.T) {
 	}
 }
 
+// Push reads nothing restore refuses to write: a session in VS Code's settings folder
+// must not carry its state databases to the archive.
+func TestPushWorkSkipsLibrary(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, po, _ := poSession(t, m)
+	code := filepath.Join(home, "Library", "Application Support", "Code")
+	mustWrite(t, filepath.Join(code, "User", "settings.json"), "{}\n")
+	mustWrite(t, filepath.Join(code, "state.md"), "token\n")
+	workSession(t, m, home, []string{filepath.Join(code, "User", "settings.json"), filepath.Join(po, "r.md")},
+		`cd "`+code+`" && echo token > state.md`)
+
+	m.workRun(t, home, "push", "--no-html", "--scan-history")
+	want := []string{"MAC/" + work.Encode(po) + "/out.csv", "MAC/" + work.Encode(po) + "/r.md"}
+	if got := workFiles(m.archive); !reflect.DeepEqual(got, want) {
+		t.Errorf("archived %v, want %v", got, want)
+	}
+	if wf := workShard(t, m); len(wf) != 1 || wf[0].Path != po {
+		t.Fatalf("shard: %+v", wf)
+	}
+}
+
 // The shard is shared archive data. A folder added to it by hand is not walked: only
 // folders this machine's sessions named are.
 func TestPushWorkIgnoresShardEntries(t *testing.T) {

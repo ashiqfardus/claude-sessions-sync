@@ -175,3 +175,25 @@ func TestNormWindowsUnixPath(t *testing.T) {
 		t.Errorf("Unix: %q %v", got, ok)
 	}
 }
+
+// Push reads nothing restore refuses to write: app settings and caches in ~/Library,
+// AppData and ProgramData, system folders, and folders that run or configure programs.
+func TestFoldersDropProgramPlaces(t *testing.T) {
+	drop := []string{"/h/Library/Application Support/Code", "/h/Library/Caches/composer", "/h/library/caches/x",
+		"/etc/x", "/h/vimfiles", "/h/go/pkg/mod/x", "/h/miniconda3/etc/conda/activate.d"}
+	keep := []string{"/h/SQL/po", "/h/fuzzy-stress/results", "/h/Documents/reports"}
+	env := fakeEnv(append(append([]string{"/h/Library/Application Support/Code/User/settings.json"}, drop...), keep...)...)
+	c := []Candidate{{"/h/Library/Application Support/Code/User/settings.json", true}}
+	for _, p := range append(drop, keep...) {
+		c = append(c, Candidate{p, false})
+	}
+	want := []Folder{{"/h/Documents/reports", false}, {"/h/SQL/po", false}, {"/h/fuzzy-stress/results", false}}
+	if got := Folders(c, env); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v", got)
+	}
+	for _, p := range []string{`C:\Users\a\AppData\Roaming\x`, `C:\ProgramData\x`, `C:\Windows\x`} {
+		if got := Folders([]Candidate{{p, false}}, fakeWinEnv()); len(got) != 0 {
+			t.Errorf("%s: got %v", p, got)
+		}
+	}
+}
