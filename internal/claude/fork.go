@@ -116,6 +116,8 @@ func IsTranscriptID(id string) bool { return IsSessionID(id) || legacyAgentRe.Ma
 // lines that add no turn - cost-state, last-prompt, tools-used, derived-from,
 // bridge-session with no uuid; hook attachments with one, on resume - and a copy that
 // only gained those must not look forked from, or newer than, one with more turns.
+// A queued prompt is an attachment too, but it is the user's input: a copy ending in
+// one not yet run holds a turn the other lacks.
 var turnTypes = map[string]bool{"user": true, "assistant": true, "system": true}
 
 // lastUUID is the uuid of the newest turn, read from the file's end, and how many
@@ -142,18 +144,27 @@ func lastUUID(path string) (uuid string, trailing int) {
 	}
 	for i := len(lines) - 1; i >= 0; i-- {
 		var e struct {
-			Type string `json:"type"`
-			UUID string `json:"uuid"`
+			Type       string          `json:"type"`
+			UUID       string          `json:"uuid"`
+			Attachment json.RawMessage `json:"attachment"` // raw: any shape still parses the line
 		}
 		if json.Unmarshal(lines[i], &e) != nil {
 			continue // blank, or a truncated last line
 		}
-		if e.UUID != "" && turnTypes[e.Type] {
+		if e.UUID != "" && (turnTypes[e.Type] || e.Type == "attachment" && queuedPrompt(e.Attachment)) {
 			return e.UUID, trailing
 		}
 		trailing++
 	}
 	return "", 0
+}
+
+// queuedPrompt reports whether an attachment is a prompt the user queued.
+func queuedPrompt(raw json.RawMessage) bool {
+	var a struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(raw, &a) == nil && a.Type == "queued_command"
 }
 
 // hasUUID reports whether the transcript has an entry with this uuid, reading it in

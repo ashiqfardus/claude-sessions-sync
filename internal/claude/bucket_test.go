@@ -104,3 +104,21 @@ func TestListBucketsSeparatesMemoryOnly(t *testing.T) {
 		t.Error("memory files should still be listed for a transcript-less bucket")
 	}
 }
+
+// Claude Code keeps a workflow's subagents a level down; every one is a subagent
+// transcript, and nothing outside subagents/ is.
+func TestIsSubagentTranscript(t *testing.T) {
+	for rel, want := range map[string]bool{
+		"subagents/agent-a1.jsonl": true,
+		filepath.Join("subagents", "workflows", "wf_1-a95", "agent-b2.jsonl"): true,
+		"subagents/workflows/wf_1/agent-c3.JSONL":                             true,
+		"subagents/agent-a1.meta.json":                                        false,
+		"tool-results/out.jsonl":                                              false,
+		"workflows/wf_1.json":                                                 false,
+		"subagentsx/agent.jsonl":                                              false,
+	} {
+		if got := IsSubagentTranscript(rel); got != want {
+			t.Errorf("IsSubagentTranscript(%q) = %v, want %v", rel, got, want)
+		}
+	}
+}

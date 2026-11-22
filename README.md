@@ -496,7 +496,8 @@ into one, so:
 Copies are compared by each entry's ID, not by bytes, so a copy whose paths an import
 rewrote still counts as the same conversation. Only turns count: the lines Claude Code
 adds to a session without a new turn (its cost, the last prompt, a hook's output on
-resume) never make a copy look newer or continued on both computers.
+resume) never make a copy look newer or continued on both computers. A prompt you
+queued that never ran is a turn, so a copy ending in one is kept as a fork.
 
 ---
 

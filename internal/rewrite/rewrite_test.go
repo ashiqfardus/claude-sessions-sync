@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -187,7 +188,12 @@ func TestConvertTailSurvivesDedupe(t *testing.T) {
 	}
 }
 
+// On Windows a tail is converted only on request. Off Windows every move from a
+// Windows path converts it (R36, TestWindowsMoveConvertsTailOffWindows).
 func TestNoTailByDefault(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("off Windows a move from a Windows path always converts its tail")
+	}
 	got := Apply(`{"t":"open E:\\SQL\\po\\x.md now"}`, tailRules(false), nil)
 	if want := `{"t":"open /Users/b/SQL\\po\\x.md now"}`; got != want {
 		t.Fatalf("got %s want %s", got, want)
@@ -220,8 +226,10 @@ func TestTailStillValidJSON(t *testing.T) {
 
 // Moves for one place, and for its parent, all converting: each path is converted
 // once. Of two moves from one path to different places the first wins, and does not
-// take the other's flag.
+// take the other's flag - which matters on Windows only: elsewhere every move from a
+// Windows path converts (R36).
 func TestConvertTailNoDoubleConversion(t *testing.T) {
+	onWindows := runtime.GOOS == "windows"
 	rules := RulesForMoves([]Move{
 		{From: `E:\SQL\po`, To: "/Users/b/SQL/po", ConvertTail: true}, // project
 		{From: `E:\SQL\po`, To: "/Users/b/SQL/po", ConvertTail: true}, // work
@@ -229,13 +237,20 @@ func TestConvertTailNoDoubleConversion(t *testing.T) {
 		{From: `C:\Users\a\.claude`, To: "/Users/b/.claude"},
 	})
 	in := `{"a":"E:\\SQL\\po\\sub\\x.md","b":"E:\\SQL\\other\\y.md","c":"cd E:\\SQL\\po && dir","d":"C:\\Users\\a\\.claude\\projects\\p"}`
-	want := `{"a":"/Users/b/SQL/po/sub/x.md","b":"/Users/b/SQL/other/y.md","c":"cd /Users/b/SQL/po && dir","d":"/Users/b/.claude\\projects\\p"}`
+	want := `{"a":"/Users/b/SQL/po/sub/x.md","b":"/Users/b/SQL/other/y.md","c":"cd /Users/b/SQL/po && dir","d":"/Users/b/.claude/projects/p"}`
+	if onWindows {
+		want = strings.Replace(want, "/Users/b/.claude/projects/p", `/Users/b/.claude\\projects\\p`, 1)
+	}
 	if got := Apply(in, rules, nil); got != want {
 		t.Fatalf("\ngot  %s\nwant %s", got, want)
 	}
 	rules = RulesForMoves([]Move{{From: `E:\SQL`, To: "/Users/b/A"}, {From: `E:\SQL`, To: "/Users/b/B", ConvertTail: true}})
-	if got := Apply(`{"a":"E:\\SQL\\x"}`, rules, nil); got != `{"a":"/Users/b/A\\x"}` {
-		t.Fatalf("got %s", got)
+	want = `{"a":"/Users/b/A/x"}`
+	if onWindows {
+		want = `{"a":"/Users/b/A\\x"}`
+	}
+	if got := Apply(`{"a":"E:\\SQL\\x"}`, rules, nil); got != want {
+		t.Fatalf("got %s want %s", got, want)
 	}
 }
 
@@ -256,5 +271,29 @@ func TestApplyRewritesAPathBeforeABacktickOrQuote(t *testing.T) {
 		if !json.Valid([]byte(got)) {
 			t.Errorf("invalid JSON: %s", got)
 		}
+	}
+}
+
+// R36: on a Unix machine every move from a Windows path converts the rest of the path,
+// whatever kind of move it is - a ClaudeRoot move as much as a work folder's.
+func TestWindowsMoveConvertsTailOffWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows-form paths are native here")
+	}
+	rules := RulesForMoves([]Move{{From: `C:\Users\a\.claude`, To: "/Users/b/.claude"}})
+	in := `{"cwd":"C:\\Users\\a\\.claude\\backups\\x","p":"C:\\Users\\a\\.claude\\projects\\p\\t.txt"}`
+	want := `{"cwd":"/Users/b/.claude/backups/x","p":"/Users/b/.claude/projects/p/t.txt"}`
+	if got := Apply(in, rules, nil); got != want {
+		t.Errorf("\n got %s\nwant %s", got, want)
+	}
+}
+
+// A Unix to Unix move rewrites the prefix and nothing after it.
+func TestUnixMoveLeavesTheTail(t *testing.T) {
+	rules := RulesForMoves([]Move{{From: "/home/a/proj", To: "/Users/b/proj"}})
+	in := `{"a":"/home/a/proj\\sub","b":"/home/a/proj/src/x.go"}`
+	want := `{"a":"/Users/b/proj\\sub","b":"/Users/b/proj/src/x.go"}`
+	if got := Apply(in, rules, nil); got != want {
+		t.Errorf("\n got %s\nwant %s", got, want)
 	}
 }

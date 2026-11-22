@@ -178,3 +178,21 @@ func TestCompareCountsSystemEntries(t *testing.T) {
 		t.Errorf("Compare = %v, want Forked: each has an entry the other lacks", got)
 	}
 }
+
+// A prompt queued and never run is user input: a copy that ends with one holds a turn
+// a copy with other new turns lacks, so the two are forked, not one behind (task 4b).
+// Other attachments still add no turn.
+func TestCompareCountsAnUnrunQueuedPromptAsATurn(t *testing.T) {
+	queued := `{"type":"attachment","uuid":"q1","parentUuid":"u2","attachment":{"type":"queued_command","prompt":"and then"},"sessionId":"s"}`
+	a := filepath.Join(t.TempDir(), "a.jsonl")
+	if err := os.WriteFile(a, []byte(entryLine("u1", "/w")+"\n"+entryLine("u2", "/w")+"\n"+queued+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := writeTranscriptAt(t, "b.jsonl", `E:\\w`, "u1", "u2", "b3", "b4")
+	if got := Compare(a, b); got != Forked {
+		t.Errorf("Compare(queued prompt, new turns) = %v, want Forked", got)
+	}
+	if got := Compare(b, a); got != Forked {
+		t.Errorf("Compare(new turns, queued prompt) = %v, want Forked", got)
+	}
+}

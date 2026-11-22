@@ -33,6 +33,12 @@ type Transcript struct {
 	Extras []string
 }
 
+// IsSubagentTranscript reports whether rel, a path in a session's own folder, is a
+// subagent conversation: a .jsonl anywhere under subagents/, a workflow's included.
+func IsSubagentTranscript(rel string) bool {
+	return strings.HasPrefix(filepath.ToSlash(rel), "subagents/") && strings.EqualFold(filepath.Ext(rel), ".jsonl")
+}
+
 // HasTranscripts reports whether the bucket holds any session at all.
 //
 // A bucket with memory but no transcripts is a real and awkward case: its identity

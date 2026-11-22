@@ -60,10 +60,18 @@ All notable changes to this project are documented here. This project follows
   add no turn (cost, the last prompt, a hook's output when a session is resumed), and
   the hook lines carry an entry ID. `push` and `import --update` now compare copies by
   their user, assistant and system entries only, so such a copy is behind a copy with
-  more turns, never a fork of it, and `import --update` takes the continuation.
+  more turns, never a fork of it, and `import --update` takes the continuation. A
+  prompt you queued that never ran still counts as a turn: that copy is kept as a fork
+  rather than replaced.
 - **Subagent conversations kept the other computer's paths.** `import` now files
-  `<session>/subagents/*.jsonl` through the same path rewriting as the session itself;
-  saved tool output is still copied as it is.
+  `<session>/subagents/**/*.jsonl` (a workflow's, a level down, too) through the same
+  path rewriting as the session itself, for a fork's copy as well, and says when one
+  cannot be filed; saved tool output is still copied as it is. `push` and
+  `import --repoint` read subagents at any depth too.
+- **Windows paths were only half converted on a Mac or Linux.** A path under another
+  computer's Windows project, `~/.claude` or backup root kept its backslashes after the
+  new prefix (`/Users/you/.claude\backups\x`), which names no file. The whole path now
+  takes `/`, for every kind of moved folder.
 - **`import` filed projects into folders that are not here.** A project inside another
   computer's work folder is filed there only when its folder exists once the work
   folders are placed. A repository inside a container work folder (`~/Developer` with a

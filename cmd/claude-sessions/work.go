@@ -1042,7 +1042,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 					res.Placed[wf.Path] = target
 				}
 				if target != wf.Path {
-					moves = append(moves, rewrite.Move{From: wf.Path, To: target, ConvertTail: work.WindowsPath(wf.Path) && runtime.GOOS != "windows"})
+					moves = append(moves, rewrite.Move{From: wf.Path, To: target})
 				}
 			}
 
@@ -1429,7 +1429,7 @@ func loadImported(root string, save bool) *importRecord {
 			for _, t := range b.Transcripts {
 				r.markNow(t.Path)
 				for _, x := range t.Extras {
-					if filepath.Dir(x) == "subagents" {
+					if claude.IsSubagentTranscript(x) {
 						r.markNow(filepath.Join(b.Dir, t.ID, x))
 					}
 				}
@@ -1633,7 +1633,7 @@ buckets:
 		for _, t := range b.Transcripts {
 			rels := []string{filepath.Base(t.Path)}
 			for _, x := range t.Extras {
-				if filepath.Dir(x) == "subagents" && strings.EqualFold(filepath.Ext(x), ".jsonl") {
+				if claude.IsSubagentTranscript(x) {
 					rels = append(rels, filepath.Join(t.ID, x))
 				}
 			}

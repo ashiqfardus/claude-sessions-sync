@@ -322,7 +322,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 				owner = ""
 			}
 			fid, outcome, err := fileFork(root, src, filepath.Join(source, id), res.Bucket, id,
-				forkTag(filepath.Base(source), owner), rules, bareLeaf, opts)
+				forkTag(filepath.Base(source), owner), rules, bareLeaf, opts, &res)
 			if errors.Is(err, errRecord) {
 				return res, err
 			}
@@ -355,7 +355,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 					continue
 				}
 				fid, outcome, err := fileFork(root, filepath.Join(opts.Forks, d.Name(), c.Name()), filepath.Join(source, d.Name()),
-					res.Bucket, d.Name(), forkTag(filepath.Base(source), machine), rules, bareLeaf, opts)
+					res.Bucket, d.Name(), forkTag(filepath.Base(source), machine), rules, bareLeaf, opts, &res)
 				if errors.Is(err, errRecord) {
 					return res, err
 				}
@@ -499,12 +499,13 @@ func forkTag(bucket, machine string) string { return strings.ToLower(bucket + "@
 // as well - as a session of its own, with its session id replaced throughout. Its id
 // is derived from the original and the tag, so filing it again updates it in place,
 // and only with Update. sessionDir is the archived folder of subagent transcripts and
-// saved tool output that goes with it.
+// saved tool output that goes with it; a file of it that cannot be filed is added to
+// res.Failed, as restoreSessionFiles reports one of the session's own.
 //
 // The fork copy can itself be continued here while the other machine continues the
 // original. Then it no longer contains the other side, and the other side is filed
 // as the next level of fork rather than dropped.
-func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.Rule, bareLeaf string, opts restoreOpts) (string, forkOutcome, error) {
+func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.Rule, bareLeaf string, opts restoreOpts, res *restoreResult) (string, forkOutcome, error) {
 	info, err := os.Stat(src)
 	if err != nil {
 		return "", forkUnchanged, err
@@ -574,6 +575,9 @@ func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.
 				err := opts.Imported.land(to, func() error { return fileSessionFile(filepath.Join(sessionDir, rel), to, rel, forkRules, bareLeaf) })
 				if errors.Is(err, errRecord) {
 					return "", forkUnchanged, err
+				}
+				if err != nil {
+					res.Failed = append(res.Failed, fmt.Sprintf("%s/%s: %v", fid, filepath.ToSlash(rel), err))
 				}
 			}
 		}
@@ -977,7 +981,7 @@ func restoreSessionFiles(srcBucket, dstBucket, id string, rels []string, rules [
 // (valid JSON kept, written beside and renamed, dated before its source); saved tool
 // output is copied byte for byte.
 func fileSessionFile(src, dst, rel string, rules []rewrite.Rule, bareLeaf string) error {
-	if strings.HasPrefix(filepath.ToSlash(rel), "subagents/") && strings.EqualFold(filepath.Ext(rel), ".jsonl") {
+	if claude.IsSubagentTranscript(rel) {
 		_, err := fileTranscript(src, dst, rules, bareLeaf)
 		return err
 	}

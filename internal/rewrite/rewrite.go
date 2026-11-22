@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode"
@@ -81,8 +82,8 @@ func Literal(label, find, replace string) Rule {
 }
 
 // Move is one project path that changed between machines.
-// ConvertTail also turns the separators after the prefix into '/', for a Windows
-// folder placed on a Unix machine.
+// ConvertTail also turns the separators after the prefix into '/'. RulesForMoves sets
+// it itself for every move from a Windows path to a Unix one on a Unix machine.
 type Move struct {
 	From, To    string
 	ConvertTail bool
@@ -93,6 +94,11 @@ type Move struct {
 // so /work/app/api is repointed before its parent /work/app could claim it. Of moves
 // from one path the first wins; one to the same place that converts the tail makes
 // the first convert it too.
+//
+// On a Unix machine a move from a Windows path converts the tail whatever kind of move
+// it is - a project, a related repository, a work folder, the Claude folder or a
+// backup's root (R36): C:\Users\a\.claude\backups\x becomes /Users/b/.claude/backups/x,
+// never /Users/b/.claude\backups\x, which names no file here.
 //
 // ponytail: rules apply in sequence, so a destination that equals another move's
 // source would be rewritten twice. Nothing in import produces that.
@@ -115,8 +121,9 @@ func RulesForMoves(moves []Move) []Rule {
 	var rules []Rule
 	for _, m := range sorted {
 		rs := Rules(m.From, m.To, false)
+		tail := m.ConvertTail || runtime.GOOS != "windows" && drivePath(m.From) && !drivePath(m.To)
 		for i := range rs {
-			rs[i].tail = m.ConvertTail && rs[i].Label == "json-escaped"
+			rs[i].tail = tail && rs[i].Label == "json-escaped"
 		}
 		rules = append(rules, rs...)
 	}
@@ -138,6 +145,11 @@ func AbsoluteAnywhere(p string) bool {
 		return true
 	}
 	return false
+}
+
+// drivePath reports whether p is a Windows path with a drive letter.
+func drivePath(p string) bool {
+	return len(p) > 2 && p[1] == ':' && unicode.IsLetter(rune(p[0])) && (p[2] == '\\' || p[2] == '/')
 }
 
 // msysPath returns the Git Bash form of a Windows drive path, or "" for any other.

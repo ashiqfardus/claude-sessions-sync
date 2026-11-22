@@ -308,7 +308,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 			if scanAllWork || changedSincePush(pushed, b.Name, t.ID, srcInfo) {
 				workScan = append(workScan, t.Path)
 				for _, rel := range t.Extras {
-					if filepath.Dir(rel) == "subagents" && strings.EqualFold(filepath.Ext(rel), ".jsonl") {
+					if claude.IsSubagentTranscript(rel) {
 						workScan = append(workScan, filepath.Join(b.Dir, t.ID, rel))
 					}
 				}

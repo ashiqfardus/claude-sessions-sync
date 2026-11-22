@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -153,17 +152,16 @@ func TestImportRepointsOtherMachinesClaudeDir(t *testing.T) {
 		t.Fatalf("transcript does not point at this machine's ~/.claude:\n%s", body)
 	}
 
-	// On Windows the repointed path is a real file: the tool output came along too.
-	if runtime.GOOS == "windows" {
-		var rec struct {
-			ToolUseResult struct{ PersistedOutputPath string } `json:"toolUseResult"`
-		}
-		if err := json.Unmarshal([]byte(strings.Split(body, "\n")[1]), &rec); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Stat(rec.ToolUseResult.PersistedOutputPath); err != nil {
-			t.Errorf("saved tool output not readable at the repointed path: %v", err)
-		}
+	// The repointed path is a real file: the tool output came along too. On a Unix
+	// machine that takes the rest of the Windows path converted (R36).
+	var rec struct {
+		ToolUseResult struct{ PersistedOutputPath string } `json:"toolUseResult"`
+	}
+	if err := json.Unmarshal([]byte(strings.Split(body, "\n")[1]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(rec.ToolUseResult.PersistedOutputPath); err != nil {
+		t.Errorf("saved tool output not readable at the repointed path: %v", err)
 	}
 }
 
