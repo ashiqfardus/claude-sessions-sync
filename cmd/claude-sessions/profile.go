@@ -32,6 +32,10 @@ var profileDirs = []string{"skills", "agents", "commands", "output-styles"}
 
 const noPluginsHelp = "do not install plugins that are enabled on another machine and missing here"
 const noWorkHelp = "bring conversations only; skip other machines' work folders"
+
+// updateProfileHelp: --update alone never replaces a rule or skill file. One machine's
+// shorter CLAUDE.md, saved later, would otherwise replace the other's on every import.
+const updateProfileHelp = "also replace rule and skill files here with newer archived copies (this machine's are kept in the archive's profile/replaced/)"
 const noWorkNote = "work folders skipped (--no-work)"
 
 func profileDir(dest string) string { return filepath.Join(dest, "profile") }
@@ -181,8 +185,9 @@ type pluginRun struct {
 func (p pluginRun) Command() string { return "claude " + strings.Join(p.Args, " ") }
 
 // restoreProfile files the archived profile into root. A file already here is kept
-// unless update is set and the archived copy is newer, as for memory: these files are
-// loaded as instructions, and the archive is written by other machines.
+// unless update is set (--update-profile, never --update alone) and the archived copy
+// is newer: these files are loaded as instructions, and the archive is written by
+// other machines.
 //
 // Plugins enabled on any machine and not here are installed with `claude plugin
 // install`, unless installPlugins is false.
@@ -514,7 +519,7 @@ func printProfile(res profileResult, dryRun bool) {
 }
 
 // profileDiffs lists profile files that more than one machine has archived with
-// different content: what `import --update` would settle by taking the newest.
+// different content: what `import --update-profile` would settle by taking the newest.
 func profileDiffs(dest string) []string {
 	machines, _ := os.ReadDir(filepath.Join(profileDir(dest), "machines"))
 	first := map[string][]byte{}

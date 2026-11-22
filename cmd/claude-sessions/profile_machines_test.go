@@ -49,8 +49,8 @@ func TestPushKeepsEachMachinesRulesRecoverable(t *testing.T) {
 	}
 }
 
-// --update replacing a local rule file that differs must say so, and must leave the
-// local version recoverable from the archive.
+// --update-profile replacing a local rule file that differs must say so, and must
+// leave the local version recoverable from the archive.
 func TestImportUpdateReportsAndKeepsAReplacedRuleFile(t *testing.T) {
 	f := profileImportFixture(t)
 	p := filepath.Join(f.archive, "profile")
@@ -61,12 +61,12 @@ func TestImportUpdateReportsAndKeepsAReplacedRuleFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := f.run(t, "import", "--search-root", f.dev, "--no-plugins", "--update")
+	out, err := f.run(t, "import", "--search-root", f.dev, "--no-plugins", "--update-profile")
 	if err != nil {
-		t.Fatalf("import --update failed: %v\n%s", err, out)
+		t.Fatalf("import --update-profile failed: %v\n%s", err, out)
 	}
 	if got := mustRead(t, filepath.Join(f.claudeDir, "CLAUDE.md")); got != "archived rules\n" {
-		t.Fatalf("--update did not take the archived CLAUDE.md: %q\n%s", got, out)
+		t.Fatalf("--update-profile did not take the archived CLAUDE.md: %q\n%s", got, out)
 	}
 	if !strings.Contains(out, "replaced") || !strings.Contains(out, "CLAUDE.md") {
 		t.Errorf("the replaced file was not reported:\n%s", out)

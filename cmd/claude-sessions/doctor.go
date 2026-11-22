@@ -157,7 +157,7 @@ func cmdDoctor(args []string) error {
 	if diffs := profileDiffs(dest); len(diffs) > 0 {
 		add(check{"profile", levelInfo,
 			fmt.Sprintf("%d rule/skill file(s) differ between machines: %s", len(diffs), profileSummary(diffs)),
-			"`import --update` takes the newest. Every machine's own copy stays in the archive under profile/machines/."})
+			"`import --update-profile` takes the newest. Every machine's own copy stays in the archive under profile/machines/."})
 	}
 
 	// --- manifest drift -------------------------------------------------------

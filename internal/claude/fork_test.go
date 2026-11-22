@@ -135,3 +135,46 @@ func TestIsTranscriptID(t *testing.T) {
 		}
 	}
 }
+
+// trailingNoTurns is what Claude Code appends to a session with no new turn, as on
+// the first two-machine run: metadata lines with no uuid, a hook attachment that
+// carries one (written on resume, never answered), and - should a later release do
+// it - a metadata line with a uuid of its own.
+const trailingNoTurns = `{"type":"last-prompt","lastPrompt":"go on","leafUuid":"u2","sessionId":"s"}
+{"type":"cost-state","totalCostUSD":1.5,"sessionId":"s"}
+{"type":"tools-used","tools":["Bash"],"sessionId":"s"}
+{"type":"derived-from","sessions":["s"],"v":1,"sessionId":"s"}
+{"type":"bridge-session","bridgeSessionId":"b","lastSequenceNum":3,"sessionId":"s"}
+{"type":"attachment","uuid":"h1","parentUuid":"u2","attachment":{"type":"hook_success"},"sessionId":"s"}
+{"type":"cost-state","uuid":"m1","totalCostUSD":1.6,"sessionId":"s"}
+`
+
+// A copy with the same turns plus trailing lines that add none is behind a copy with
+// more turns, never forked from it (findings a and f).
+func TestCompareIgnoresTrailingLinesThatAddNoTurn(t *testing.T) {
+	stale := filepath.Join(t.TempDir(), "stale.jsonl")
+	if err := os.WriteFile(stale, []byte(entryLine("u1", "/w")+"\n"+entryLine("u2", "/w")+"\n"+trailingNoTurns), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ahead := writeTranscriptAt(t, "ahead.jsonl", `E:\\w`, "u1", "u2", "u3")
+	if got := Compare(ahead, stale); got != Extends {
+		t.Errorf("Compare(more turns, same turns + metadata) = %v, want Extends", got)
+	}
+	if got := Compare(stale, ahead); got != Behind {
+		t.Errorf("Compare(same turns + metadata, more turns) = %v, want Behind", got)
+	}
+	if got := LastUUID(stale); got != "u2" {
+		t.Errorf("LastUUID = %q, want the last turn u2", got)
+	}
+}
+
+// system lines - a stop hook's summary - are part of the conversation and still count.
+func TestCompareCountsSystemEntries(t *testing.T) {
+	sys := `{"type":"system","subtype":"stop_hook_summary","uuid":"s9","parentUuid":"u2","sessionId":"s"}`
+	a := filepath.Join(t.TempDir(), "a.jsonl")
+	os.WriteFile(a, []byte(entryLine("u1", "/w")+"\n"+entryLine("u2", "/w")+"\n"+sys+"\n"), 0o644)
+	b := writeTranscriptAt(t, "b.jsonl", `E:\\w`, "u1", "u2", "x3")
+	if got := Compare(a, b); got != Forked {
+		t.Errorf("Compare = %v, want Forked: each has an entry the other lacks", got)
+	}
+}

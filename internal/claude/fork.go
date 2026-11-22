@@ -41,9 +41,9 @@ func Compare(a, b string) Relation {
 	case ua == "" || ub == "":
 		return Unknown
 	case ua == ub:
-		// The same last turn. Claude Code then appends entries with no uuid - a title
-		// from /rename, cost, the last prompt - and the copy with more of them is the
-		// later one: a rename with no new turn is still a change.
+		// The same last turn. Claude Code then appends entries that are no turn - a
+		// title from /rename, cost, the last prompt - and the copy with more of them is
+		// the later one: a rename with no new turn is still a change.
 		switch {
 		case ta > tb:
 			return Extends
@@ -91,9 +91,7 @@ func appendedTo(a, b string) bool {
 	return bytes.Equal(wa, wb)
 }
 
-// lastUUID is the uuid of the newest entry that has one, read from the file's end,
-// and how many entries without one follow it.
-// LastUUID is the uuid of a transcript's last entry, "" when it has none.
+// LastUUID is the uuid of a transcript's last turn, "" when it has none.
 func LastUUID(path string) string {
 	u, _ := lastUUID(path)
 	return u
@@ -114,6 +112,14 @@ var legacyAgentRe = regexp.MustCompile(`^agent-[0-9A-Fa-f]{4,}$`)
 // folder is one Claude Code wrote: a session, or an older version's subagent.
 func IsTranscriptID(id string) bool { return IsSessionID(id) || legacyAgentRe.MatchString(id) }
 
+// turnTypes are the entries that make up the conversation. Claude Code also writes
+// lines that add no turn - cost-state, last-prompt, tools-used, derived-from,
+// bridge-session with no uuid; hook attachments with one, on resume - and a copy that
+// only gained those must not look forked from, or newer than, one with more turns.
+var turnTypes = map[string]bool{"user": true, "assistant": true, "system": true}
+
+// lastUUID is the uuid of the newest turn, read from the file's end, and how many
+// other entries follow it.
 func lastUUID(path string) (uuid string, trailing int) {
 	const tail = 4 << 20 // one entry can hold a large tool result
 	f, err := os.Open(path)
@@ -136,12 +142,13 @@ func lastUUID(path string) (uuid string, trailing int) {
 	}
 	for i := len(lines) - 1; i >= 0; i-- {
 		var e struct {
+			Type string `json:"type"`
 			UUID string `json:"uuid"`
 		}
 		if json.Unmarshal(lines[i], &e) != nil {
 			continue // blank, or a truncated last line
 		}
-		if e.UUID != "" {
+		if e.UUID != "" && turnTypes[e.Type] {
 			return e.UUID, trailing
 		}
 		trailing++

@@ -191,6 +191,9 @@ func TestWindowsToUnixTailConverted(t *testing.T) {
 		mustWrite(t, sp, string(b))
 		mustWrite(t, filepath.Join(arch, "work", "WIN", "E", "SQL", "po", "r.md"), "report\n")
 		mustWrite(t, filepath.Join(arch, "work", "WIN", "E", "SQL", "po", "out.csv"), "a,b\n")
+		if sub != "" { // x.md, written there, came with the folder: the project is here
+			mustWrite(t, filepath.Join(arch, "work", "WIN", "E", "SQL", "po", "sub", "x.md"), "x\n")
+		}
 
 		sql := filepath.Join(homeM, "SQL")
 		mustMkdir(t, sql)

@@ -81,7 +81,7 @@ func profileImportFixture(t *testing.T) importFixture {
 	return f
 }
 
-func TestImportRestoresProfileAndKeepsLocalRulesUnlessUpdate(t *testing.T) {
+func TestImportRestoresProfileAndKeepsLocalRulesUnlessUpdateProfile(t *testing.T) {
 	f := profileImportFixture(t)
 	p := filepath.Join(f.archive, "profile")
 	mustWrite(t, filepath.Join(p, "CLAUDE.md"), "archived rules\n")
@@ -112,12 +112,12 @@ func TestImportRestoresProfileAndKeepsLocalRulesUnlessUpdate(t *testing.T) {
 		t.Errorf("local CLAUDE.md replaced without --update: %q", got)
 	}
 
-	out, err = f.run(t, "import", "--search-root", f.dev, "--no-plugins", "--update")
+	out, err = f.run(t, "import", "--search-root", f.dev, "--no-plugins", "--update-profile")
 	if err != nil {
-		t.Fatalf("import --update failed: %v\n%s", err, out)
+		t.Fatalf("import --update-profile failed: %v\n%s", err, out)
 	}
 	if got := mustRead(t, filepath.Join(f.claudeDir, "CLAUDE.md")); got != "archived rules\n" {
-		t.Errorf("--update did not take the newer archived CLAUDE.md: %q\n%s", got, out)
+		t.Errorf("--update-profile did not take the newer archived CLAUDE.md: %q\n%s", got, out)
 	}
 	if got := mustRead(t, filepath.Join(f.claudeDir, "REVIEW.md")); got != "local review\n" {
 		t.Errorf("a future-dated archive file replaced a local one: %q", got)

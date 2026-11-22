@@ -266,9 +266,11 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 			continue
 		}
 		id := strings.TrimSuffix(name, filepath.Ext(name))
-		if err := restoreSessionFiles(source, res.Bucket, id, sessionFiles[id], opts.DryRun, opts.Imported); err != nil {
+		failed, err := restoreSessionFiles(source, res.Bucket, id, sessionFiles[id], rules, bareLeaf, opts.DryRun, opts.Imported)
+		if err != nil {
 			return res, err
 		}
+		res.Failed = append(res.Failed, failed...)
 		if exists && !opts.Update {
 			res.Skipped++
 			continue
@@ -569,7 +571,7 @@ func fileFork(root, src, sessionDir, bucketDir, id, tag string, rules []rewrite.
 		}
 		for _, rel := range claude.SessionFiles(sessionDir) {
 			if to := filepath.Join(bucketDir, fid, rel); archive.StatOrNil(to) == nil {
-				err := opts.Imported.land(to, func() error { return archive.CopyFile(filepath.Join(sessionDir, rel), to) })
+				err := opts.Imported.land(to, func() error { return fileSessionFile(filepath.Join(sessionDir, rel), to, rel, forkRules, bareLeaf) })
 				if errors.Is(err, errRecord) {
 					return "", forkUnchanged, err
 				}
@@ -949,26 +951,37 @@ func mergeIndex(base, theirs, mine string, theirsNewer bool, held map[string]boo
 	return strings.Join(out, "\n") + "\n"
 }
 
-// restoreSessionFiles copies a session's own folder - rels, its subagent transcripts
+// restoreSessionFiles files a session's own folder - rels, its subagent transcripts
 // and saved tool output - adding only files that are not here yet. A local file
 // belongs to a live or newer session and is never replaced. Each subagent transcript
 // was pended in r before; its size is journaled once it lands, and a journal error
-// stops it.
-//
-// ponytail: paths inside subagent transcripts are not rewritten; add it if a
-// subagent's recorded cwd ever matters to Claude Code.
-func restoreSessionFiles(srcBucket, dstBucket, id string, rels []string, dryRun bool, r *importRecord) error {
+// stops it. failed names the files that could not be filed.
+func restoreSessionFiles(srcBucket, dstBucket, id string, rels []string, rules []rewrite.Rule, bareLeaf string, dryRun bool, r *importRecord) (failed []string, err error) {
 	for _, rel := range rels {
 		dst := filepath.Join(dstBucket, id, rel)
 		if dryRun || archive.StatOrNil(dst) != nil {
 			continue
 		}
-		_ = archive.CopyFile(filepath.Join(srcBucket, id, rel), dst)
+		if ferr := fileSessionFile(filepath.Join(srcBucket, id, rel), dst, rel, rules, bareLeaf); ferr != nil {
+			failed = append(failed, fmt.Sprintf("%s/%s: %v", id, filepath.ToSlash(rel), ferr))
+		}
 		if err := r.settle(dst, true); err != nil {
-			return err
+			return failed, err
 		}
 	}
-	return nil
+	return failed, nil
+}
+
+// fileSessionFile files one file of a session's own folder. A subagent transcript
+// names the project's paths as the session does, so it goes through the same rewrite
+// (valid JSON kept, written beside and renamed, dated before its source); saved tool
+// output is copied byte for byte.
+func fileSessionFile(src, dst, rel string, rules []rewrite.Rule, bareLeaf string) error {
+	if strings.HasPrefix(filepath.ToSlash(rel), "subagents/") && strings.EqualFold(filepath.Ext(rel), ".jsonl") {
+		_, err := fileTranscript(src, dst, rules, bareLeaf)
+		return err
+	}
+	return archive.CopyFile(src, dst)
 }
 
 // olderThanArchive dates a rewritten transcript just before its archived source.

@@ -99,7 +99,7 @@ func TestImportUpdateKeepsAReplacedMemoryFile(t *testing.T) {
 	}
 }
 
-// 3. The local rule file --update replaced is still recoverable after the next push.
+// 3. The local rule file --update-profile replaced is still recoverable after the next push.
 func TestReplacedRuleFileSurvivesTheNextPush(t *testing.T) {
 	f := profileImportFixture(t)
 	mustWrite(t, filepath.Join(f.archive, "profile", "CLAUDE.md"), "THEIRS\n")
@@ -108,7 +108,7 @@ func TestReplacedRuleFileSurvivesTheNextPush(t *testing.T) {
 	old := time.Now().Add(-48 * time.Hour)
 	os.Chtimes(local, old, old)
 
-	if out, err := f.run(t, "import", "--search-root", f.dev, "--no-plugins", "--update"); err != nil {
+	if out, err := f.run(t, "import", "--search-root", f.dev, "--no-plugins", "--update-profile"); err != nil {
 		t.Fatalf("import: %v\n%s", err, out)
 	}
 	if out, err := f.run(t, "push", "--no-html"); err != nil {

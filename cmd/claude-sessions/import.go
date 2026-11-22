@@ -41,6 +41,7 @@ func cmdImport(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "report what would happen without writing")
 	bareName := fs.Bool("include-bare-name", false, "also replace the bare folder name inside transcripts")
 	update := fs.Bool("update", false, updateHelp)
+	updateProfile := fs.Bool("update-profile", false, updateProfileHelp)
 	noPlugins := fs.Bool("no-plugins", false, noPluginsHelp)
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	noWork := fs.Bool("no-work", false, noWorkHelp)
@@ -179,9 +180,16 @@ func cmdImport(args []string) error {
 			return m
 		}
 		// A fallback: a repository found by its remote is never work-folder content,
-		// however far up a placed folder reaches.
+		// however far up a placed folder reaches. And only a folder that is here once
+		// the work folders are placed: a container (~/Developer, a few loose files) does
+		// not bring the repositories in it, and a bucket for one not here would be
+		// pushed back with no identity.
+		// shortcut: a dry run places nothing, so a project only the work folder would
+		// bring reads as not found there; upgrade if dry runs must match exactly.
 		if t := placedPath(workRes.Placed, p.Path); t != "" {
-			return identity.Match{How: byWorkFolder, Path: t}
+			if st, err := os.Stat(t); err == nil && st.IsDir() {
+				return identity.Match{How: byWorkFolder, Path: t}
+			}
 		}
 		if localHome == "" {
 			return m
@@ -434,7 +442,7 @@ func cmdImport(args []string) error {
 	}
 	imported.finish()
 
-	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
+	profile := restoreProfile(root, dest, *dryRun, *updateProfile, !*noPlugins)
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -587,6 +595,7 @@ func cmdPull(args []string) error {
 	archiveDir := fs.String("archive", "", "override the synced destination folder")
 	dryRun := fs.Bool("dry-run", false, "report what would be copied without writing")
 	update := fs.Bool("update", false, updateHelp)
+	updateProfile := fs.Bool("update-profile", false, updateProfileHelp)
 	noPlugins := fs.Bool("no-plugins", false, noPluginsHelp)
 	noWork := fs.Bool("no-work", false, noWorkHelp)
 	if err := parseFlags(fs, args, false); err != nil {
@@ -670,7 +679,7 @@ func cmdPull(args []string) error {
 	}
 	imported.finish()
 
-	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
+	profile := restoreProfile(root, dest, *dryRun, *updateProfile, !*noPlugins)
 	// Work folders at their recorded paths, under the same safety rules as import.
 	var workRes workRestoreResult
 	if cfg, err := archive.LoadConfig(root); err == nil && !*noWork {

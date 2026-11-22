@@ -36,6 +36,29 @@ All notable changes to this project are documented here. This project follows
   hour and backs each one up first.
 - **`doctor` has a `work folders` check:** it warns when the archived work folders
   total over 500 MB or a subfolder was too large to back up.
+- **`import --update-profile` and `pull --update-profile`** replace rule and skill files
+  here with newer archived copies, keeping this computer's in `profile/replaced/` first.
+
+### Changed
+- **`--update` no longer replaces rule and skill files.** It refreshes sessions and
+  memory; a `CLAUDE.md` or skill already here is only replaced with `--update-profile`.
+  On the first two-computer run, a Windows `CLAUDE.md` of 2.6 KB would have been
+  replaced by the Mac's shorter, later one.
+
+### Fixed
+- **A session that only gained metadata looked forked.** Claude Code appends lines that
+  add no turn (cost, the last prompt, a hook's output when a session is resumed), and
+  the hook lines carry an entry ID. `push` and `import --update` now compare copies by
+  their user, assistant and system entries only, so such a copy is behind a copy with
+  more turns, never a fork of it, and `import --update` takes the continuation.
+- **Subagent conversations kept the other computer's paths.** `import` now files
+  `<session>/subagents/*.jsonl` through the same path rewriting as the session itself;
+  saved tool output is still copied as it is.
+- **`import` filed projects into folders that are not here.** A project inside another
+  computer's work folder is filed there only when its folder exists once the work
+  folders are placed. A repository inside a container work folder (`~/Developer` with a
+  few loose files) does not come with it, and is now reported as not found instead of
+  getting a bucket of its own that the next push sent back.
 
 ## [0.3.1] - 2026-11-21
 

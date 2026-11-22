@@ -238,3 +238,23 @@ func TestConvertTailNoDoubleConversion(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+// A work folder moved from macOS to Windows, named in prose right before a closing
+// backtick or quote with no trailing slash (finding d of the first two-machine run).
+func TestApplyRewritesAPathBeforeABacktickOrQuote(t *testing.T) {
+	rules := RulesForMoves([]Move{{From: "/Users/a/SQL", To: `C:\Users\b\SQL`}})
+	for in, want := range map[string]string{
+		`{"t":"see ` + "`/Users/a/SQL`" + ` now"}`: `{"t":"see ` + "`C:\\\\Users\\\\b\\\\SQL`" + ` now"}`,
+		`{"t":"cd \"/Users/a/SQL\""}`:              `{"t":"cd \"C:\\Users\\b\\SQL\""}`,
+		`{"t":"open '/Users/a/SQL'"}`:              `{"t":"open 'C:\\Users\\b\\SQL'"}`,
+		`{"cwd":"/Users/a/SQL"}`:                   `{"cwd":"C:\\Users\\b\\SQL"}`,
+	} {
+		got := Apply(in, rules, nil)
+		if got != want {
+			t.Errorf("Apply(%s)\n got %s\nwant %s", in, got, want)
+		}
+		if !json.Valid([]byte(got)) {
+			t.Errorf("invalid JSON: %s", got)
+		}
+	}
+}

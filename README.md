@@ -450,9 +450,10 @@ archived.)
 - **Other repositories a session worked in** (a multi-folder workspace) are repointed
   too, but only to a same-named folder whose git remote matches.
 - **Rules and skills:** a file missing here is added, unless you deleted it here after
-  this computer had it. One that exists is replaced only with `--update` and a newer
-  copy, and the output says so. This computer's version is saved first in the archive
-  under `profile/replaced/<computer>/<time>/`.
+  this computer had it. One that exists is replaced only with `--update-profile` and a
+  newer copy, and the output says so: `--update` alone never replaces one, since one
+  computer's shorter `CLAUDE.md`, saved later, would otherwise win. This computer's
+  version is saved first in the archive under `profile/replaced/<computer>/<time>/`.
 - **Plugins** enabled on the other computer and not listed here are installed with
   `claude plugin install`, which needs `claude` on your `PATH`. A plugin turned off
   here is left off. Plugins from a marketplace on a local path are skipped. Use
@@ -493,7 +494,9 @@ into one, so:
   files it the same way.
 
 Copies are compared by each entry's ID, not by bytes, so a copy whose paths an import
-rewrote still counts as the same conversation.
+rewrote still counts as the same conversation. Only turns count: the lines Claude Code
+adds to a session without a new turn (its cost, the last prompt, a hook's output on
+resume) never make a copy look newer or continued on both computers.
 
 ---
 
@@ -544,7 +547,7 @@ claude-sessions import --archive "E:\claude-backup" --search-root "E:\work"
 
 That brings back the sessions and memory, your rules, skills, agents, commands and
 output styles (added if missing, even if you deleted them since; replaced only with
-`--update` and a newer copy, keeping this computer's version in
+`--update-profile` and a newer copy, keeping this computer's version in
 `~/.claude/session-sync-base/replaced/<time>/`), and installs the plugins that were
 enabled, unless you pass `--no-plugins`. Nothing is written into the backup folder,
 and paths under the old `~/.claude` and home folder are repointed. Three things stay in the zip on purpose, for you to copy if you
@@ -845,7 +848,8 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 |---|---|---|
 | `--dry-run` | `push`, `import`, `pull`, `restore`, `backup` | Show what would happen; write nothing |
 | `--repoint` | `import` | Fix conversations already on this computer that name another computer's work folders; skips any touched in the last hour and backs each up first |
-| `--update` | `import`, `pull`, `restore` | Also bring in sessions continued elsewhere and newer memory; with `import` and `pull`, newer rules and skills too |
+| `--update` | `import`, `pull`, `restore` | Also bring in sessions continued elsewhere and newer memory |
+| `--update-profile` | `import`, `pull` | Also replace rule and skill files here with newer archived copies; this computer's are kept in the archive's `profile/replaced/` first |
 | `--no-plugins` | `import`, `pull` | Do not install plugins enabled on another computer |
 | `--search-root <dirs>` | `import` | Where to look for projects (comma-separated; default: the parents of known projects, and your home) |
 | `--depth <n>` | `import` | How deep to look under each search root (default 3) |
