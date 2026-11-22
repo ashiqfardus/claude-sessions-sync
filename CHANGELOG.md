@@ -10,9 +10,10 @@ All notable changes to this project are documented here. This project follows
   whose files have not changed for 7 days, with at least 5 of them, is stored as one
   zip, `<subfolder>.cspack.zip`, so the sync client moves one file instead of thousands.
   A later edit or new file goes up on its own beside it, and the zip is rebuilt when
-  those pass 50 files or a quarter of its size. `import` and `pull` unpack it into plain
-  files under the same rules as any other restored file, after checking every entry's
-  name, type, size and checksum; of a zipped file and a later copy beside it, the newer
+  those pass 50 files or a quarter of its size and have not changed for 7 days.
+  `import` and `pull` unpack it into plain files under the same rules as any other
+  restored file, after checking every entry's name, type, size and checksum, and only
+  the entries they would file; of a zipped file and a later copy beside it, the newer
   wins. Older versions skip the zips: upgrade every computer.
 - **`import --no-work` and `pull --no-work`** bring conversations only and skip other
   computers' work folders. `--no-work` with `--repoint` is refused.
@@ -71,7 +72,8 @@ All notable changes to this project are documented here. This project follows
 - **Windows paths were only half converted on a Mac or Linux.** A path under another
   computer's Windows project, `~/.claude` or backup root kept its backslashes after the
   new prefix (`/Users/you/.claude\backups\x`), which names no file. The whole path now
-  takes `/`, for every kind of moved folder.
+  takes `/`, for every kind of moved folder. It still stops at a space in the rest of a
+  path: `E:\SQL\My Work\x` becomes `/Users/you/SQL/My Work\x`.
 - **`import` filed projects into folders that are not here.** A project inside another
   computer's work folder is filed there only when its folder exists once the work
   folders are placed. A repository inside a container work folder (`~/Developer` with a

@@ -582,7 +582,15 @@ After upgrading from an older version:
   version.
 - **Work subfolders are packed** from this version on, and an older version skips the
   zips: on a computer still running one, `import` and `pull` do not restore a subfolder
-  another computer packed. Upgrade every computer.
+  another computer packed, and print `refused: type` once for each zip on every run.
+  Upgrade every computer.
+- **The first push after upgrading packs** every work subfolder whose files have not
+  changed for 7 days, and deletes the archive's loose copies of them. On a large archive
+  that can be thousands of deletions, all going to Google Drive's trash.
+- **Buckets an earlier `import` made for projects that are not here stay.** A repository
+  inside another computer's container work folder got a bucket of its own, named for a
+  folder that does not exist on this computer. This version makes no new ones; delete
+  the old ones under `~/.claude/projects/` by hand.
 
 **Going back to an older version:** run `claude-sessions uninstall` with **this**
 version first, then install the older one. An older `uninstall` does not know the
@@ -662,9 +670,9 @@ caches, such as `~/Library`, `AppData` and `ProgramData`, are never backed up.
 7 days, with at least 5 of them, goes into the archive as one zip,
 `<subfolder>.cspack.zip`, so the sync client moves one file instead of thousands. A
 file you edit or add there later goes up on its own, beside the zip; the zip is rebuilt
-only when those pass 50 files or a quarter of its size. `import` and `pull` unpack it
-into plain files under the same rules as any other restored file. Of a zipped file and
-a later copy beside it, the newer is restored.
+only when those pass 50 files or a quarter of its size and none of them has changed for
+7 days. `import` and `pull` unpack it into plain files under the same rules as any other
+restored file. Of a zipped file and a later copy beside it, the newer is restored.
 
 **What it skips.** Git repositories (your remote has those), `~/.claude`, and temp
 folders.

@@ -140,8 +140,9 @@ files have all been unchanged for 7 days, with 5 to 20,000 of them, is stored as
 `<unit>.cspack.zip` beside its loose folder: a zip whose `/`-separated entry names are
 relative to the unit, each file's time in its header. Push builds it from local files,
 then deletes only the loose copies it holds. Later changes go loose beside it (the
-overlay) until they pass 50 files or a quarter of the pack's bytes; then push compacts
-them into a new pack, through a temp file and a rename. `work-packs.json` in
+overlay) until they pass 50 files or a quarter of the pack's bytes and every local one
+is 7 days old (a burst still changing would be packed again at every push); then push
+compacts them into a new pack, through a temp file and a rename. `work-packs.json` in
 `session-sync-base/` records each pack's entries and overlay, so push need not read the
 pack from the mount. Restore treats a pack as untrusted as a loose file. Before zip
 parses it, the whole pack is refused when the file is over 266 MB (250 MB of content
