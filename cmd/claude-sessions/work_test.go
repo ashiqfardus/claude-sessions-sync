@@ -917,13 +917,56 @@ func TestImportProjectInsideWorkFolder(t *testing.T) {
 	mustWrite(t, filepath.Join(po, "r.md"), "x\n")
 	workSession(t, a, po, []string{filepath.Join(po, "r.md")})
 	a.workRun(t, homeA, "push", "--no-html")
-	b.workRun(t, homeB, "import", "--no-plugins")
+	// One file system stands in for two: A's folder is not on B.
+	if err := os.RemoveAll(po); err != nil {
+		t.Fatal(err)
+	}
+	out := b.workRun(t, homeB, "import", "--no-plugins")
 
 	if _, err := os.Stat(b.session(filepath.Join(homeB, "SQL", "po"))); err != nil {
 		t.Fatalf("not filed for the placed folder: %v", err)
 	}
+	if !strings.Contains(out, "(matched by work folder)") {
+		t.Fatalf("output: %s", out)
+	}
 	if _, err := os.Stat(b.session(po)); !os.IsNotExist(err) {
 		t.Fatalf("filed for A's path: %v", err)
+	}
+}
+
+// A work folder above a repository - loose files in ~/Developer - must not pull the
+// repository in with it: a project with a git remote is found by that remote, where
+// this machine's own sessions for it are, never filed under the placed folder.
+func TestImportRepoInsideWorkFolderMatchesByRemote(t *testing.T) {
+	arch := t.TempDir()
+	a, b := newMachine(t, "WIN", arch), newMachine(t, "MAC", arch)
+	homeA, homeB := t.TempDir(), t.TempDir()
+	dev := filepath.Join(homeA, "Developer")
+	repo := gitRepo(t, filepath.Join(dev, "apps", "api"))
+	mustWrite(t, filepath.Join(dev, "notes.md"), "x\n")
+	workSession(t, a, repo, []string{filepath.Join(dev, "notes.md")})
+	a.workRun(t, homeA, "push", "--no-html")
+	if wf := workShard(t, a); len(wf) != 1 || wf[0].Path != dev {
+		t.Fatalf("work folders %+v, want %s", wf, dev)
+	}
+	// One file system stands in for two: A's clone is not on B.
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	clone := gitRepo(t, filepath.Join(homeB, "code", "api"))
+
+	out := b.workRun(t, homeB, "import", "--no-plugins")
+	if _, err := os.Stat(filepath.Join(homeB, "Developer", "notes.md")); err != nil {
+		t.Fatalf("work folder not placed: %v", err)
+	}
+	if _, err := os.Stat(b.session(filepath.Join(homeB, "Developer", "apps", "api"))); !os.IsNotExist(err) {
+		t.Fatalf("filed under the placed work folder: %v\n%s", err, out)
+	}
+	if got := mustRead(t, b.session(clone)); !strings.Contains(got, inJSON(clone)) {
+		t.Fatalf("not repointed to the clone:\n%s", got)
+	}
+	if !strings.Contains(out, "(matched by git remote)") {
+		t.Fatalf("output: %s", out)
 	}
 }
 

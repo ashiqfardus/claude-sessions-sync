@@ -163,11 +163,16 @@ func cmdImport(args []string) error {
 			}
 			return identity.Match{How: identity.ByManual, Path: local}
 		}
+		m := identity.Resolve(p.Path, p.Leaf, p.Remote, scanner)
+		if m.How == identity.ByRecordedPath || m.How == identity.ByGitRemote {
+			return m
+		}
+		// A fallback: a repository found by its remote is never work-folder content,
+		// however far up a placed folder reaches.
 		if t := placedPath(workRes.Placed, p.Path); t != "" {
 			return identity.Match{How: byWorkFolder, Path: t}
 		}
-		m := identity.Resolve(p.Path, p.Leaf, p.Remote, scanner)
-		if m.How == identity.ByRecordedPath || localHome == "" {
+		if localHome == "" {
 			return m
 		}
 		for _, h := range homes {
@@ -202,7 +207,7 @@ func cmdImport(args []string) error {
 		if m := resolve(name, p); m.Path != "" && !samePath(p.Path, m.Path) {
 			// A Windows project in a placed work folder: the rest of its paths are that
 			// folder's, and take '/' as the work move does.
-			tail := work.WindowsPath(p.Path) && runtime.GOOS != "windows" && placedPath(workRes.Placed, p.Path) != ""
+			tail := work.WindowsPath(p.Path) && runtime.GOOS != "windows" && m.How == byWorkFolder
 			moves = append(moves, rewrite.Move{From: p.Path, To: m.Path, ConvertTail: tail})
 		}
 	}
