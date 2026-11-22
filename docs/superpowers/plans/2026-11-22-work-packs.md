@@ -172,7 +172,7 @@ Items:
 - (a + f) **Copies with trailing metadata look forked or older.** Claude Code appends metadata-only lines with no new turns (`cost-state`, `last-prompt`, `tools-used`, `derived-from`, `bridge-session`). They must not make a copy look newer or forked.
   - `import --update` decides by `claude.Compare`, not by mtime. Today a local copy whose newer mtime comes only from such lines blocks a real continuation.
   - `Compare` / `lastUUID` count only conversation entries (`user` / `assistant` / `system` lines). A metadata line that carries a uuid must not decide the relation. On the real data, push filed a straight continuation as a FORK because of this.
-  - Inspect the tail of `<archive>/projects/e--airos-frontend/70e28154-ccf7-420d-abc9-68b2c86e2241.jsonl` (Windows copy, 47,622,190 bytes) against the `-Users-…-airos-frontend` copy to confirm which line types carry uuids.
+  - Inspect the tail of `<archive>/projects/<bucket>/<session-id>.jsonl` (Windows copy, 47,622,190 bytes) against the Mac bucket's copy (`-Users-a-…-<bucket>`) to confirm which line types carry uuids.
   - Test: a copy that has the same turns plus trailing metadata lines, set against a copy with more turns, gives `Extends` or `Behind` correctly, never `Forked`.
 - (b) **`--update` overwrites rule and skill files.** Today it replaces them newest-wins: a Windows `CLAUDE.md` of 2.6 KB would have been replaced by the Mac's 1.9 KB copy.
   - Under `--update`, profile files stay add-only unless the new flag `--update-profile` is given.
@@ -182,7 +182,7 @@ Items:
   - File them through the same rewrite rules as the main transcript, with `rewrite.File`, temp then rename, and the same `.jsonl` validity checks.
   - Other session files (`tool-results/*`) stay a byte copy.
   - Test: a subagent transcript naming the source project path is rewritten to the local path.
-- (d) **Some paths before a backtick or quote were not rewritten.** Eight mentions of `/Users/ashiqfardus/SQL` followed by a backtick or a quote, with no trailing slash, survived a work move from macOS to Windows.
+- (d) **Some paths before a backtick or quote were not rewritten.** Eight mentions of `/Users/a/…/SQL` followed by a backtick or a quote, with no trailing slash, survived a work move from macOS to Windows.
   - Reproduce it in a `rewrite` test with `` `/Users/a/SQL` `` and `"/Users/a/SQL"` inside a JSON string. Fix it if real; otherwise record why.
 - (e) **The `byWorkFolder` fallback creates buckets for folders that don't exist.** Mac projects under a container work folder (`~/Developer`, which had 7 loose files) got identity-less buckets on Windows.
   - The fallback applies only when the placed path exists locally after `restoreWork` has run. Otherwise keep `identity.Resolve`'s not-found or ambiguous result.
