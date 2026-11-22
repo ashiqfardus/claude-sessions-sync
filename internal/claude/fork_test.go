@@ -55,8 +55,8 @@ func TestCompareSeesAContinuation(t *testing.T) {
 // import rewrites paths, so a copy filed from the archive differs in bytes from it
 // while holding exactly the same conversation.
 func TestCompareIgnoresRewrittenPaths(t *testing.T) {
-	archived := writeTranscriptAt(t, "a.jsonl", `E:\\airos-frontend`, "u1", "u2")
-	local := writeTranscriptAt(t, "l.jsonl", "/Users/me/Developer/NextJs Applications/airos-frontend", "u1", "u2")
+	archived := writeTranscriptAt(t, "a.jsonl", `E:\\web-app`, "u1", "u2")
+	local := writeTranscriptAt(t, "l.jsonl", "/Users/me/Developer/NextJs Applications/web-app", "u1", "u2")
 	if got := Compare(local, archived); got != Same {
 		t.Fatalf("Compare = %v, want Same", got)
 	}
@@ -110,8 +110,8 @@ func TestHasUUIDAcrossAChunkBoundary(t *testing.T) {
 }
 
 func TestForkIDIsStableAndAUUID(t *testing.T) {
-	a := ForkID("70e28154-ccf7-420d-abc9-68b2c86e2241", "e--airos-frontend")
-	if a != ForkID("70e28154-ccf7-420d-abc9-68b2c86e2241", "e--airos-frontend") {
+	a := ForkID("70e28154-ccf7-420d-abc9-68b2c86e2241", "e--web-app")
+	if a != ForkID("70e28154-ccf7-420d-abc9-68b2c86e2241", "e--web-app") {
 		t.Fatal("ForkID is not deterministic, so a second import would file a second copy")
 	}
 	if a == ForkID("70e28154-ccf7-420d-abc9-68b2c86e2241", "other-bucket") {

@@ -254,8 +254,8 @@ field and would need a guess-the-shape migration later.
 ### Identity for memory-only buckets — a gap found in the live archive
 
 `Get-ProjectIdentity` reads `cwd` from the newest `.jsonl` in a bucket. Three buckets
-in the live archive (`e--airos-frontend`, `e--airv2-frontend-web`,
-`e--Laravel-Applications-innovix`) hold memory `.md` files and **zero transcripts**, so
+in the live archive (`e--web-app`, `e--old-web-app`,
+`e--Laravel-Applications-shop`) hold memory `.md` files and **zero transcripts**, so
 they get no manifest entry at all and can never be identity-matched on import — their
 memory is archived but unroutable.
 
@@ -440,7 +440,7 @@ inside the synced archive.
 ## 8. Testing
 
 The constraint that decides the release: **macOS and Linux builds cannot be compiled or
-tested from LAP-100203 (Windows only).** So CI is not optional and the README must not
+tested from the author's Windows-only machine.** So CI is not optional and the README must not
 claim cross-platform support until the matrix is actually green.
 
 - **Unit, table-driven:** slug computation, remote normalisation, the 4 rewrite forms,
@@ -450,8 +450,8 @@ claim cross-platform support until the matrix is actually green.
   one with an unknown entry shape, one with a truncated final line (a killed session),
   and one memory-only bucket.
 - **The scenario that proved the PowerShell version** (2026-08-31), as an integration
-  test: a session recorded at `/home/aislam/dev/airos-frontend` on Linux, imported onto
-  Windows where two different folders are both named `airos-frontend`. The git remote
+  test: a session recorded at `/home/you/dev/web-app` on Linux, imported onto
+  Windows where two different folders are both named `web-app`. The git remote
   must pick the right one; with the remote blanked it must refuse to choose and list
   both. Assert on both outcomes.
 - **CI:** GitHub Actions matrix `windows-latest` / `macos-latest` / `ubuntu-latest`,
@@ -498,23 +498,3 @@ touch the working one.
    `render` on the sweep only, not on every session end.
 5. **Should `import` be offered as a first-run prompt?** `install --pull` exists, but a
    new machine arguably wants `import` (identity matching), not `pull` (exact bucket).
-
----
-
-## 11. Still outstanding, unrelated to this port
-
-The **LAP-100056 transcripts have never been retrieved**. They are at
-`C:\Users\administrator.GG\.claude\projects\e--airv2-frontend-web\` on that machine,
-which is not reachable from LAP-100203 — no ping, no `C$` share — so the copy has to be
-done by hand off that box. The old `E:\airv2-frontend-web` is now `E:\airos-frontend`
-(`github.com/savoyit/airos-frontend`), so those transcripts need path rewriting, not
-just a move:
-
-```
-restore --source '<copied e--airv2-frontend-web>' \
-        --project-path 'E:\airos-frontend' \
-        --rewrite-from 'E:\airv2-frontend-web'
-```
-
-Run it once without `--include-bare-name` first; it reports how many lines still
-mention the bare name so that call can be made separately.

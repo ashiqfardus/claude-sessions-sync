@@ -9,10 +9,10 @@ import (
 
 func TestSlug(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{`E:\airos-frontend`, "E--airos-frontend"},
+		{`E:\web-app`, "E--web-app"},
 		{`C:\Users\Administrator`, "C--Users-Administrator"},
-		{"/home/aislam/dev/airos-frontend", "-home-aislam-dev-airos-frontend"},
-		{`E:\Laravel Applications\innovix`, "E--Laravel-Applications-innovix"},
+		{"/home/you/dev/web-app", "-home-you-dev-web-app"},
+		{`E:\Laravel Applications\shop`, "E--Laravel-Applications-shop"},
 		// Expected values below were produced by Claude Code's own function, run
 		// under node - not derived from this implementation.
 		{`C:\Users\Administrator\.claude\projects`, "C--Users-Administrator--claude-projects"},
@@ -34,9 +34,9 @@ func TestSlug(t *testing.T) {
 // different real paths collapse onto one bucket name, so the mapping cannot be
 // inverted. If this ever stops being true, the design can be simplified.
 func TestSlugIsNotInvertible(t *testing.T) {
-	a := Slug(`E:\Laravel Applications\innovix`)
-	b := Slug(`E:\Laravel-Applications\innovix`)
-	c := Slug(`E:\Laravel-Applications-innovix`)
+	a := Slug(`E:\Laravel Applications\shop`)
+	b := Slug(`E:\Laravel-Applications\shop`)
+	c := Slug(`E:\Laravel-Applications-shop`)
 	if a != b || b != c {
 		t.Fatalf("expected all three to collapse to one name, got %q %q %q", a, b, c)
 	}
@@ -47,16 +47,16 @@ func TestSlugIsNotInvertible(t *testing.T) {
 // bucket, or transcripts land somewhere /resume never looks.
 func TestFindBucketIsCaseInsensitive(t *testing.T) {
 	projects := t.TempDir()
-	onDisk := filepath.Join(projects, "e--airos-frontend")
+	onDisk := filepath.Join(projects, "e--web-app")
 	if err := os.MkdirAll(onDisk, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	b, ok := FindBucket(projects, Slug(`E:\airos-frontend`)) // computes "E--airos-frontend"
+	b, ok := FindBucket(projects, Slug(`E:\web-app`)) // computes "E--web-app"
 	if !ok {
 		t.Fatal("existing bucket not found: casing must not matter")
 	}
-	if b.Name != "e--airos-frontend" {
+	if b.Name != "e--web-app" {
 		t.Errorf("Name = %q, want the name as it is on disk", b.Name)
 	}
 }
@@ -74,7 +74,7 @@ func TestListBucketsSeparatesMemoryOnly(t *testing.T) {
 
 	// A bucket holding only memory is the case the PowerShell implementation loses:
 	// identity comes from a transcript cwd, so it records nothing at all for this.
-	memOnly := filepath.Join(projects, "e--airos-frontend", "memory")
+	memOnly := filepath.Join(projects, "e--web-app", "memory")
 	if err := os.MkdirAll(memOnly, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -97,10 +97,10 @@ func TestListBucketsSeparatesMemoryOnly(t *testing.T) {
 	if !byName["c--dev-a"].HasTranscripts() {
 		t.Error("c--dev-a should have a transcript")
 	}
-	if byName["e--airos-frontend"].HasTranscripts() {
-		t.Error("e--airos-frontend has no transcript")
+	if byName["e--web-app"].HasTranscripts() {
+		t.Error("e--web-app has no transcript")
 	}
-	if len(byName["e--airos-frontend"].Memory) != 1 {
+	if len(byName["e--web-app"].Memory) != 1 {
 		t.Error("memory files should still be listed for a transcript-less bucket")
 	}
 }

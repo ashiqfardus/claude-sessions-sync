@@ -11,19 +11,19 @@ import (
 // still match a bucket named with a capital drive and backslashes.
 func TestMatchBucketAcrossPathForms(t *testing.T) {
 	paths := []string{
-		"e:/airos-frontend",
+		"e:/web-app",
 		"C:/Users/Administrator",
-		`E:\Laravel Applications\innovix`,
+		`E:\Laravel Applications\shop`,
 	}
 
 	cases := []struct {
 		bucket string
 		want   string
 	}{
-		{"e--airos-frontend", "e:/airos-frontend"},
-		{"E--airos-frontend", "e:/airos-frontend"}, // casing differs from disk
+		{"e--web-app", "e:/web-app"},
+		{"E--web-app", "e:/web-app"}, // casing differs from disk
 		{"C--Users-Administrator", "C:/Users/Administrator"},
-		{"E--Laravel-Applications-innovix", `E:\Laravel Applications\innovix`},
+		{"E--Laravel-Applications-shop", `E:\Laravel Applications\shop`},
 		{"nothing--like--this", ""},
 	}
 
@@ -44,7 +44,7 @@ func TestMatchBucketAcrossPathForms(t *testing.T) {
 func TestProjectPathsReadsKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".claude.json")
-	body := `{"numStartups":41,"projects":{"e:/airos-frontend":{"allowedTools":[]},"C:/Users/me":{}}}`
+	body := `{"numStartups":41,"projects":{"e:/web-app":{"allowedTools":[]},"C:/Users/me":{}}}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

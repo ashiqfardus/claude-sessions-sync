@@ -23,7 +23,7 @@ func TestRoundTripPreservesEverything(t *testing.T) {
 
 	// Give the source files distinct, old timestamps so "preserved" cannot be
 	// confused with "happens to be recent".
-	transcript := filepath.Join(source.claudeDir, "projects", "e--work-airos-frontend",
+	transcript := filepath.Join(source.claudeDir, "projects", "e--work-web-app",
 		"11111111-2222-3333-4444-555555555555.jsonl")
 	memory := filepath.Join(source.claudeDir, "projects", "e--work-legacy-app", "memory", "MEMORY.md")
 	want := time.Date(2026, 3, 14, 9, 26, 53, 0, time.Local)

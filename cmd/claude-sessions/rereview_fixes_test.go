@@ -17,7 +17,7 @@ import (
 func TestLegacyMachineSurvivesPushes(t *testing.T) {
 	f := newFixture(t)
 	mustWrite(t, filepath.Join(f.archive, "projects.json"),
-		`{"e--work-old":{"path":"E:\\work\\old","leaf":"old","machine":"LAP-100056-admin"}}`)
+		`{"e--work-old":{"path":"E:\\work\\old","leaf":"old","machine":"LAP-2-admin"}}`)
 	mustMkdir(t, filepath.Join(f.archive, "projects", "e--work-old"))
 	for i := 0; i < 2; i++ {
 		if out, err := f.push(t, "--no-html"); err != nil {
@@ -30,7 +30,7 @@ func TestLegacyMachineSurvivesPushes(t *testing.T) {
 	if err := json.Unmarshal([]byte(mustRead(t, filepath.Join(f.archive, "projects.json"))), &view); err != nil {
 		t.Fatal(err)
 	}
-	if got := view["e--work-old"].Machine; got != "LAP-100056-admin" {
+	if got := view["e--work-old"].Machine; got != "LAP-2-admin" {
 		t.Errorf("after two pushes the legacy entry names %q", got)
 	}
 }

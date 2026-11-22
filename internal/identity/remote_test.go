@@ -67,8 +67,8 @@ func TestSameRemote(t *testing.T) {
 		a, b string
 		want bool
 	}{
-		{"git@github.com:savoyit/airos-frontend.git", "https://github.com/savoyit/airos-frontend.git", true},
-		{"https://github.com/savoyit/airos-frontend", "git@github.com:savoyit/airos-frontend", true},
+		{"git@github.com:example/web-app.git", "https://github.com/example/web-app.git", true},
+		{"https://github.com/example/web-app", "git@github.com:example/web-app", true},
 		{"https://user:token@github.com/o/r.git", "git@github.com:o/r", true},
 		{"HTTPS://GitHub.com/O/R.git", "git@github.com:o/r", true},
 		{"ssh://git@github.com:22/o/r.git", "https://github.com/o/r", true},

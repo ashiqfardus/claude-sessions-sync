@@ -256,7 +256,7 @@ func TestMappedProjectIsRepointedInOtherProjectsSessions(t *testing.T) {
 func TestPushFromHookDoesNotLogRoutineSkips(t *testing.T) {
 	f := newFixture(t)
 	f.archive = filepath.Join(t.TempDir(), "unmounted", "claude-sessions")
-	f.pushFromHook(t, filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend", hookSession+".jsonl"))
+	f.pushFromHook(t, filepath.Join(f.claudeDir, "projects", "e--work-web-app", hookSession+".jsonl"))
 	if raw, _ := os.ReadFile(filepath.Join(f.claudeDir, "session-sync.log")); strings.Contains(string(raw), "SKIP") {
 		t.Errorf("the per-reply hook logged a routine skip:\n%s", raw)
 	}

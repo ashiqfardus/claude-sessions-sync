@@ -34,7 +34,7 @@ func TestPushCopiesSessionsAndMemory(t *testing.T) {
 		t.Fatalf("push failed: %v\n%s", err, out)
 	}
 
-	transcript := filepath.Join(f.archive, "projects", "e--work-airos-frontend",
+	transcript := filepath.Join(f.archive, "projects", "e--work-web-app",
 		"11111111-2222-3333-4444-555555555555.jsonl")
 	if _, err := os.Stat(transcript); err != nil {
 		t.Errorf("transcript was not copied: %v", err)
@@ -73,7 +73,7 @@ func TestPushToleratesRoundedDestinationTimestamps(t *testing.T) {
 		t.Fatalf("first push failed: %v\n%s", err, out)
 	}
 
-	copied := filepath.Join(f.archive, "projects", "e--work-airos-frontend",
+	copied := filepath.Join(f.archive, "projects", "e--work-web-app",
 		"11111111-2222-3333-4444-555555555555.jsonl")
 	info, err := os.Stat(copied)
 	if err != nil {
@@ -130,11 +130,11 @@ func TestPushWritesShardedManifestWithIdentity(t *testing.T) {
 		t.Error("a shard must name the machine that wrote it")
 	}
 
-	p, ok := shard.Projects["e--work-airos-frontend"]
+	p, ok := shard.Projects["e--work-web-app"]
 	if !ok {
 		t.Fatal("the project with transcripts is missing from the manifest")
 	}
-	if p.Path != `E:\work\airos-frontend` {
+	if p.Path != `E:\work\web-app` {
 		t.Errorf("path = %q, want the cwd read from the transcript", p.Path)
 	}
 	if p.Source != "transcript" {
@@ -351,7 +351,7 @@ func TestPushRendersHTML(t *testing.T) {
 	if _, err := os.Stat(index); err != nil {
 		t.Fatalf("push did not render the index: %v", err)
 	}
-	page := filepath.Join(f.archive, "html", "e--work-airos-frontend",
+	page := filepath.Join(f.archive, "html", "e--work-web-app",
 		"11111111-2222-3333-4444-555555555555.html")
 	raw, err := os.ReadFile(page)
 	if err != nil {
@@ -382,7 +382,7 @@ func TestPushNeverReplacesArchiveWithStalerCopy(t *testing.T) {
 		t.Fatalf("first push failed: %v\n%s", err, out)
 	}
 
-	rel := filepath.Join("projects", "e--work-airos-frontend", "11111111-2222-3333-4444-555555555555.jsonl")
+	rel := filepath.Join("projects", "e--work-web-app", "11111111-2222-3333-4444-555555555555.jsonl")
 	archived := filepath.Join(f.archive, rel)
 	local := filepath.Join(f.claudeDir, rel)
 
@@ -445,7 +445,7 @@ func TestPushKeepsSessionsThatAgedOutLocally(t *testing.T) {
 	if out, err := f.push(t); err != nil {
 		t.Fatalf("push failed: %v\n%s", err, out)
 	}
-	if err := os.RemoveAll(filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend")); err != nil {
+	if err := os.RemoveAll(filepath.Join(f.claudeDir, "projects", "e--work-web-app")); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := f.push(t); err != nil {
@@ -460,8 +460,8 @@ func TestPushKeepsSessionsThatAgedOutLocally(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if merged["e--work-airos-frontend"].Path != `E:\work\airos-frontend` {
-		t.Errorf("the project lost its identity once its transcripts aged out: %+v", merged["e--work-airos-frontend"])
+	if merged["e--work-web-app"].Path != `E:\work\web-app` {
+		t.Errorf("the project lost its identity once its transcripts aged out: %+v", merged["e--work-web-app"])
 	}
 }
 

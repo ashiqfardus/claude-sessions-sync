@@ -127,7 +127,7 @@ common flags:
 examples:
   claude-sessions doctor
   claude-sessions config set-destination "G:\My Drive\claude-sessions"
-  claude-sessions ls --project airos --since 2026-08-01
+  claude-sessions ls --project web-app --since 2026-08-01
   claude-sessions search "connection pool"
   claude-sessions push --dry-run
   claude-sessions import --search-root ~/dev --dry-run

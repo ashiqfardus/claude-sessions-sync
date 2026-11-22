@@ -109,14 +109,14 @@ func newFixture(t *testing.T) fixture {
 	}
 
 	projects := filepath.Join(f.claudeDir, "projects")
-	mustMkdir(t, filepath.Join(projects, "e--work-airos-frontend"))
-	mustWrite(t, filepath.Join(projects, "e--work-airos-frontend", "11111111-2222-3333-4444-555555555555.jsonl"),
-		line(`{"type":"user","cwd":"E:\\work\\airos-frontend","sessionId":"11111111-2222-3333-4444-555555555555","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"fix the login redirect"}}`)+
+	mustMkdir(t, filepath.Join(projects, "e--work-web-app"))
+	mustWrite(t, filepath.Join(projects, "e--work-web-app", "11111111-2222-3333-4444-555555555555.jsonl"),
+		line(`{"type":"user","cwd":"E:\\work\\web-app","sessionId":"11111111-2222-3333-4444-555555555555","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"fix the login redirect"}}`)+
 			line(`{"type":"assistant","timestamp":"2026-08-30T09:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"looking"}]}}`))
 
 	// The session's own folder: Claude Code writes subagent conversations and oversized
 	// tool output here, not into the transcript. These were never archived.
-	session := filepath.Join(projects, "e--work-airos-frontend", "11111111-2222-3333-4444-555555555555")
+	session := filepath.Join(projects, "e--work-web-app", "11111111-2222-3333-4444-555555555555")
 	mustMkdir(t, filepath.Join(session, "subagents"))
 	mustMkdir(t, filepath.Join(session, "tool-results"))
 	mustWrite(t, filepath.Join(session, "subagents", "agent-a1b2.jsonl"),
@@ -136,13 +136,13 @@ func newFixture(t *testing.T) fixture {
 	cfg, _ := json.Marshal(map[string]string{"destination": f.archive})
 	mustWrite(t, filepath.Join(f.claudeDir, "session-sync.json"), string(cfg))
 
-	mustMkdir(t, filepath.Join(f.archive, "projects", "e--work-airos-frontend"))
+	mustMkdir(t, filepath.Join(f.archive, "projects", "e--work-web-app"))
 	mustMkdir(t, filepath.Join(f.archive, "projects", "e--work-legacy-app"))
 	mustWrite(t, filepath.Join(f.archive, "projects.json"), `{
-      "e--work-airos-frontend": {
-        "path": "E:\\work\\airos-frontend",
-        "leaf": "airos-frontend",
-        "remote": "https://github.com/example/airos-frontend.git",
+      "e--work-web-app": {
+        "path": "E:\\work\\web-app",
+        "leaf": "web-app",
+        "remote": "https://github.com/example/web-app.git",
         "machine": "OLD-BOX",
         "seen": "2026-08-30"
       }
@@ -172,10 +172,10 @@ func TestLsFindsRealPathFromTranscript(t *testing.T) {
 		t.Fatalf("ls failed: %v\n%s", err, out)
 	}
 
-	// The point of the tool: the bucket name is "e--work-airos-frontend", but the
+	// The point of the tool: the bucket name is "e--work-web-app", but the
 	// real path comes from the transcript's cwd, because a bucket name is lossy and
 	// cannot be decoded back.
-	if !strings.Contains(out, `E:\work\airos-frontend`) {
+	if !strings.Contains(out, `E:\work\web-app`) {
 		t.Errorf("expected the real cwd in the listing, got:\n%s", out)
 	}
 	if !strings.Contains(out, "fix the login redirect") {
@@ -206,7 +206,7 @@ func TestLsJSONIsMachineReadable(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
 	}
-	if rows[0].Project != `E:\work\airos-frontend` {
+	if rows[0].Project != `E:\work\web-app` {
 		t.Errorf("project = %q", rows[0].Project)
 	}
 	if rows[0].Session != "11111111-2222-3333-4444-555555555555" {
@@ -217,7 +217,7 @@ func TestLsJSONIsMachineReadable(t *testing.T) {
 func TestLsProjectFilter(t *testing.T) {
 	f := newFixture(t)
 
-	out, _ := f.run(t, "ls", "--project", "airos")
+	out, _ := f.run(t, "ls", "--project", "web")
 	if !strings.Contains(out, "1 session(s).") {
 		t.Errorf("filter should match, got:\n%s", out)
 	}
@@ -323,7 +323,7 @@ func TestDoctorFailsOnSecretsInArchive(t *testing.T) {
 // file inside a bucket, not at the archive root.
 func TestDoctorFindsSecretsNestedInArchive(t *testing.T) {
 	f := newFixture(t)
-	mustWrite(t, filepath.Join(f.archive, "projects", "e--work-airos-frontend", ".credentials.json"),
+	mustWrite(t, filepath.Join(f.archive, "projects", "e--work-web-app", ".credentials.json"),
 		`{"token":"not-a-real-token"}`)
 
 	out, err := f.run(t, "doctor")
@@ -526,7 +526,7 @@ func TestLsSinceUntilFilters(t *testing.T) {
 // each header printed again and again; --limit kept alphabetical-first, not newest.
 func TestSearchGroupsNewestSessionFirst(t *testing.T) {
 	f := newFixture(t)
-	bucket := filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend")
+	bucket := filepath.Join(f.claudeDir, "projects", "e--work-web-app")
 	newer := filepath.Join(bucket, "99999999-0000-0000-0000-000000000000.jsonl")
 	mustWrite(t, newer,
 		line(`{"type":"user","timestamp":"2026-08-29T09:00:00.000Z","message":{"role":"user","content":"login bug again"}}`)+
@@ -567,7 +567,7 @@ func TestSearchAndLsReadTheArchive(t *testing.T) {
 	if out, err := f.push(t); err != nil {
 		t.Fatalf("push failed: %v\n%s", err, out)
 	}
-	if err := os.RemoveAll(filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend")); err != nil {
+	if err := os.RemoveAll(filepath.Join(f.claudeDir, "projects", "e--work-web-app")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -644,8 +644,8 @@ func TestBackupZipsTheWholeProfileButNoSecrets(t *testing.T) {
 	}
 	for _, want := range []string{
 		"MANIFEST.txt", "CLAUDE.md", "settings.json",
-		"projects/e--work-airos-frontend/11111111-2222-3333-4444-555555555555.jsonl",
-		"projects/e--work-airos-frontend/11111111-2222-3333-4444-555555555555/subagents/agent-a1b2.jsonl",
+		"projects/e--work-web-app/11111111-2222-3333-4444-555555555555.jsonl",
+		"projects/e--work-web-app/11111111-2222-3333-4444-555555555555/subagents/agent-a1b2.jsonl",
 		"projects/e--work-legacy-app/memory/MEMORY.md",
 	} {
 		if !got[want] {
@@ -662,7 +662,7 @@ func TestBackupZipsTheWholeProfileButNoSecrets(t *testing.T) {
 // A backup with no conversations in it is the failure that lost a machine's history.
 func TestBackupWarnsWhenThereAreNoTranscripts(t *testing.T) {
 	f := newFixture(t)
-	if err := os.RemoveAll(filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend")); err != nil {
+	if err := os.RemoveAll(filepath.Join(f.claudeDir, "projects", "e--work-web-app")); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := f.run(t, "backup", "--out", t.TempDir(), "--dry-run")

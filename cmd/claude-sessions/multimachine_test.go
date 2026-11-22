@@ -95,7 +95,7 @@ func TestPushDoesNotDisturbAnotherMachinesShard(t *testing.T) {
 	if _, ok := merged["-Users-me-dev-web"]; !ok {
 		t.Error("the other machine's project vanished from the merged view")
 	}
-	if _, ok := merged["e--work-airos-frontend"]; !ok {
+	if _, ok := merged["e--work-web-app"]; !ok {
 		t.Error("this machine's project is missing from the merged view")
 	}
 }
@@ -195,7 +195,7 @@ func TestDoctorIgnoresExcludedProjectsWhenCheckingPages(t *testing.T) {
 
 	// Exclude the only project with sessions. doctor must not then claim the pages
 	// are missing or stale.
-	out, err = f.run(t, "doctor", "--exclude", "work-airos-frontend")
+	out, err = f.run(t, "doctor", "--exclude", "work-web-app")
 	if err != nil {
 		t.Fatalf("doctor failed: %v\n%s", err, out)
 	}
@@ -219,7 +219,7 @@ func TestDoctorIgnoresExcludedProjectsWhenCheckingPages(t *testing.T) {
 func TestExclusionHoldsOnEveryMachine(t *testing.T) {
 	a := newFixture(t)
 	mustWrite(t, filepath.Join(a.claudeDir, "session-sync.json"),
-		`{"destination":"","renderExclude":["airos-frontend"]}`)
+		`{"destination":"","renderExclude":["web-app"]}`)
 	if out, err := a.push(t); err != nil {
 		t.Fatalf("push from A failed: %v\n%s", err, out)
 	}
@@ -231,7 +231,7 @@ func TestExclusionHoldsOnEveryMachine(t *testing.T) {
 		t.Fatalf("push from B failed: %v\n%s", err, out)
 	}
 
-	page := filepath.Join(a.archive, "html", "e--work-airos-frontend", "11111111-2222-3333-4444-555555555555.html")
+	page := filepath.Join(a.archive, "html", "e--work-web-app", "11111111-2222-3333-4444-555555555555.html")
 	if _, err := os.Stat(page); err == nil {
 		t.Error("a machine without the setting published the excluded project")
 	}
@@ -239,7 +239,7 @@ func TestExclusionHoldsOnEveryMachine(t *testing.T) {
 	if strings.Contains(index, "fix the login redirect") {
 		t.Errorf("INDEX.md shows an excluded project's prompt:\n%s", index)
 	}
-	if !strings.Contains(mustRead(t, filepath.Join(a.archive, "render-exclude.txt")), "airos-frontend") {
+	if !strings.Contains(mustRead(t, filepath.Join(a.archive, "render-exclude.txt")), "web-app") {
 		t.Error("the exclusion was not shared through the archive")
 	}
 }

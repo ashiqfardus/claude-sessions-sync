@@ -130,7 +130,7 @@ func TestFourthReviewBackupUpdateWritesIntoBackupAndBreaksNextImport(t *testing.
 	unzipTo(t, zips[0], unzipped)
 
 	f := newImportFixture(t)
-	f.makeRepo(t, "airos-frontend", "")
+	f.makeRepo(t, "web-app", "")
 	// An older, different CLAUDE.md here.
 	mustWrite(t, filepath.Join(f.claudeDir, "CLAUDE.md"), "# old rules\n")
 	old := time.Now().Add(-time.Hour)

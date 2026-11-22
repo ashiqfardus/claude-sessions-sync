@@ -55,7 +55,7 @@ func TestImportFromABackupRestoresRulesSkillsAndPlugins(t *testing.T) {
 	unzipTo(t, zips[0], unzipped)
 
 	f := newImportFixture(t)
-	f.makeRepo(t, "airos-frontend", "")
+	f.makeRepo(t, "web-app", "")
 	importFrom := func(extra ...string) string {
 		args := append([]string{"import", "--claude-dir", f.claudeDir, "--archive", unzipped, "--search-root", f.dev}, extra...)
 		cmd := exec.Command(binary, args...)

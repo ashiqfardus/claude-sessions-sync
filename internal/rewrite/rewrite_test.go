@@ -11,16 +11,16 @@ import (
 )
 
 func TestApplyRewritesEveryForm(t *testing.T) {
-	rules := Rules(`E:\airv2-frontend-web`, `E:\airos-frontend`, false)
+	rules := Rules(`E:\old-web-app`, `E:\web-app`, false)
 	cases := []struct{ in, want string }{
-		{`{"cwd":"E:\\airv2-frontend-web"}`, `{"cwd":"E:\\airos-frontend"}`},
-		{`{"cwd":"e:\\AIRV2-frontend-web\\src\\App.tsx"}`, `{"cwd":"E:\\airos-frontend\\src\\App.tsx"}`},
-		{`{"t":"E:/airv2-frontend-web/src"}`, `{"t":"E:/airos-frontend/src"}`},
-		{`{"t":"projects/e--airv2-frontend-web/x.jsonl"}`, `{"t":"projects/E--airos-frontend/x.jsonl"}`},
+		{`{"cwd":"E:\\old-web-app"}`, `{"cwd":"E:\\web-app"}`},
+		{`{"cwd":"e:\\OLD-web-app\\src\\App.tsx"}`, `{"cwd":"E:\\web-app\\src\\App.tsx"}`},
+		{`{"t":"E:/old-web-app/src"}`, `{"t":"E:/web-app/src"}`},
+		{`{"t":"projects/e--old-web-app/x.jsonl"}`, `{"t":"projects/E--web-app/x.jsonl"}`},
 		// A path right after a \n escape in tool output.
-		{`{"t":"ok\nE:\\airv2-frontend-web\\a"}`, `{"t":"ok\nE:\\airos-frontend\\a"}`},
+		{`{"t":"ok\nE:\\old-web-app\\a"}`, `{"t":"ok\nE:\\web-app\\a"}`},
 		// A sentence-ending full stop is not part of the path.
-		{`{"t":"files in E:/airv2-frontend-web."}`, `{"t":"files in E:/airos-frontend."}`},
+		{`{"t":"files in E:/old-web-app."}`, `{"t":"files in E:/web-app."}`},
 	}
 	for _, tc := range cases {
 		if got := Apply(tc.in, rules, nil); got != tc.want {

@@ -33,11 +33,11 @@ func TestPushFromHookArchivesOnlyThatSession(t *testing.T) {
 	f := newFixture(t)
 	other := filepath.Join(f.claudeDir, "projects", "e--work-other", "77777777-7777-7777-7777-777777777777.jsonl")
 	mustWrite(t, other, uuidLines("o1"))
-	session := filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend", hookSession+".jsonl")
+	session := filepath.Join(f.claudeDir, "projects", "e--work-web-app", hookSession+".jsonl")
 
 	f.pushFromHook(t, session)
 
-	if _, err := os.Stat(filepath.Join(f.archive, "projects", "e--work-airos-frontend", hookSession+".jsonl")); err != nil {
+	if _, err := os.Stat(filepath.Join(f.archive, "projects", "e--work-web-app", hookSession+".jsonl")); err != nil {
 		t.Errorf("the session that replied was not archived: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(f.archive, "projects", "e--work-other")); err == nil {
@@ -52,10 +52,10 @@ func TestPushFromHookArchivesOnlyThatSession(t *testing.T) {
 // copy is only a minute behind is left for the next reply or the sweep.
 func TestPushFromHookThrottlesALargeSession(t *testing.T) {
 	f := newFixture(t)
-	session := filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend", hookSession+".jsonl")
+	session := filepath.Join(f.claudeDir, "projects", "e--work-web-app", hookSession+".jsonl")
 	big := uuidLines("u1") + `{"type":"x","text":"` + strings.Repeat("a", 6<<20) + `"}` + "\n"
 	mustWrite(t, session, big+uuidLines("u2"))
-	archived := filepath.Join(f.archive, "projects", "e--work-airos-frontend", hookSession+".jsonl")
+	archived := filepath.Join(f.archive, "projects", "e--work-web-app", hookSession+".jsonl")
 	mustWrite(t, archived, big)
 	now := time.Now()
 	os.Chtimes(session, now, now)

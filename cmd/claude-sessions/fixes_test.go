@@ -243,7 +243,7 @@ func TestFlagsAfterArguments(t *testing.T) {
 	}
 
 	// A command without positional arguments says so instead of ignoring them.
-	if out, err := f.run(t, "ls", "airos"); err == nil || !strings.Contains(out, "takes no arguments") {
+	if out, err := f.run(t, "ls", "web"); err == nil || !strings.Contains(out, "takes no arguments") {
 		t.Errorf("a stray argument was silently ignored: %v\n%s", err, out)
 	}
 }
@@ -253,7 +253,7 @@ func TestFlagsAfterArguments(t *testing.T) {
 func TestDoctorReportsSessionsNotArchived(t *testing.T) {
 	f := newFixture(t)
 	old := time.Now().Add(-2 * time.Hour)
-	transcript := filepath.Join(f.claudeDir, "projects", "e--work-airos-frontend", "11111111-2222-3333-4444-555555555555.jsonl")
+	transcript := filepath.Join(f.claudeDir, "projects", "e--work-web-app", "11111111-2222-3333-4444-555555555555.jsonl")
 	if err := os.Chtimes(transcript, old, old); err != nil {
 		t.Fatal(err)
 	}
@@ -279,12 +279,12 @@ func TestRenderExcludeSticks(t *testing.T) {
 	if out, err := f.push(t); err != nil {
 		t.Fatalf("push failed: %v\n%s", err, out)
 	}
-	page := filepath.Join(f.archive, "html", "e--work-airos-frontend", "11111111-2222-3333-4444-555555555555.html")
+	page := filepath.Join(f.archive, "html", "e--work-web-app", "11111111-2222-3333-4444-555555555555.html")
 	if _, err := os.Stat(page); err != nil {
 		t.Fatalf("no page to withdraw: %v", err)
 	}
 
-	if out, err := f.run(t, "render", "--archive", f.archive, "--exclude", "airos-frontend"); err != nil {
+	if out, err := f.run(t, "render", "--archive", f.archive, "--exclude", "web-app"); err != nil {
 		t.Fatalf("render --exclude failed: %v\n%s", err, out)
 	}
 	if out, err := f.push(t); err != nil {
@@ -324,7 +324,7 @@ func TestBackupImportsBackWhole(t *testing.T) {
 	zr.Close()
 
 	f := newImportFixture(t)
-	local := f.makeRepo(t, "airos-frontend", "")
+	local := f.makeRepo(t, "web-app", "")
 	cmd := exec.Command(binary, "import", "--claude-dir", f.claudeDir, "--archive", unzipped, "--search-root", f.dev)
 	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR=")
 	out, err := cmd.CombinedOutput()

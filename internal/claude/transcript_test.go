@@ -16,7 +16,7 @@ func TestScanTruncatedFinalLine(t *testing.T) {
 	path := filepath.Join(dir, "session.jsonl")
 
 	content := strings.Join([]string{
-		`{"type":"user","cwd":"E:\\airos-frontend","sessionId":"abc","timestamp":"2026-08-31T10:00:00.000Z","message":{"role":"user","content":"fix the build"}}`,
+		`{"type":"user","cwd":"E:\\web-app","sessionId":"abc","timestamp":"2026-08-31T10:00:00.000Z","message":{"role":"user","content":"fix the build"}}`,
 		`{"type":"assistant","timestamp":"2026-08-31T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"on it"}]}}`,
 		`{"type":"user","timestamp":"2026-08-31T10:0`, // killed mid-write
 	}, "\n")
@@ -28,8 +28,8 @@ func TestScanTruncatedFinalLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a truncated line must not be fatal: %v", err)
 	}
-	if s.Cwd != `E:\airos-frontend` {
-		t.Errorf("cwd = %q, want E:\\airos-frontend", s.Cwd)
+	if s.Cwd != `E:\web-app` {
+		t.Errorf("cwd = %q, want E:\\web-app", s.Cwd)
 	}
 	if s.FirstPrompt != "fix the build" {
 		t.Errorf("firstPrompt = %q", s.FirstPrompt)
