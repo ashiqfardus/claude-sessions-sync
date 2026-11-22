@@ -622,8 +622,11 @@ func TestExtractPackNotesQuoteNames(t *testing.T) {
 	if err != nil || len(notes) == 0 {
 		t.Fatalf("notes %q: %v", notes, err)
 	}
+	// POSIX creates "esc\x1b[2J" and refuses only the child below that file; Windows
+	// refuses the name itself as well. Either way no note carries the ESC or the temp path.
 	for _, n := range notes {
-		if strings.ContainsRune(n, 0x1b) || strings.Contains(n, tmp) || !strings.HasPrefix(n, `entry "esc[2J/child.md": `) {
+		if strings.ContainsRune(n, 0x1b) || strings.Contains(n, tmp) ||
+			!strings.HasPrefix(n, `entry "esc[2J/child.md": `) && !strings.HasPrefix(n, `entry "esc[2J": `) {
 			t.Errorf("note %q", n)
 		}
 	}
