@@ -2,9 +2,12 @@ package work
 
 import (
 	"archive/zip"
+	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +21,9 @@ const (
 	PackSuffix = ".cspack.zip"
 	// PackMaxEntries is the most entries a pack may hold; restore refuses more.
 	PackMaxEntries = 20000
+	// PackMaxBytes is the largest pack file read: MaxFolderBytes of content plus room
+	// for the headers of PackMaxEntries entries. Push never writes a larger one.
+	PackMaxBytes = MaxFolderBytes + 16<<20
 )
 
 // PackFile is one file to put in a pack: Rel, "/"-separated and relative to the unit,
@@ -48,12 +54,12 @@ func WritePack(dst string, files []PackFile) error {
 // CompactPack writes to dst the entries of the pack at old, copied as they are, except
 // those add replaces, plus add. old may be dst.
 func CompactPack(old, dst string, add []PackFile) error {
-	r, err := zip.OpenReader(old)
+	r, f, err := openPack(old)
 	if err != nil {
 		return err
 	}
 	tmp, err := buildPack(dst, r.File, add)
-	r.Close() // before the rename: Windows cannot replace an open file
+	f.Close() // before the rename: Windows cannot replace an open file
 	if err != nil {
 		return err
 	}
@@ -64,21 +70,21 @@ func CompactPack(old, dst string, add []PackFile) error {
 // are through a temp file and a rename, and removes the pack when none are left. It
 // returns how many entries it took out. A pack it cannot read is left as it is.
 func PrunePack(path string, drop func(name string) bool) (int, error) {
-	r, err := zip.OpenReader(path)
+	r, f, err := openPack(path)
 	if err != nil {
 		return 0, err
 	}
 	keep := slices.DeleteFunc(slices.Clone(r.File), func(f *zip.File) bool { return drop(f.Name) })
 	n := len(r.File) - len(keep)
 	if n == 0 || len(keep) == 0 {
-		r.Close()
+		f.Close()
 		if n > 0 {
 			err = os.Remove(path)
 		}
 		return n, err
 	}
 	tmp, err := buildPack(path, keep, nil)
-	r.Close() // before the rename: Windows cannot replace an open file
+	f.Close() // before the rename: Windows cannot replace an open file
 	if err != nil {
 		return 0, err
 	}
@@ -87,11 +93,11 @@ func PrunePack(path string, drop func(name string) bool) (int, error) {
 
 // ReadPackIndex reads a pack's entries from its central directory alone.
 func ReadPackIndex(path string) (map[string]PackEntry, error) {
-	r, err := zip.OpenReader(path)
+	r, f, err := openPack(path)
 	if err != nil {
 		return nil, err
 	}
-	defer r.Close()
+	defer f.Close()
 	idx := make(map[string]PackEntry, len(r.File))
 	for _, f := range r.File {
 		idx[f.Name] = PackEntry{Size: int64(f.UncompressedSize64), ModTime: f.Modified}
@@ -102,37 +108,19 @@ func ReadPackIndex(path string) (map[string]PackEntry, error) {
 // ExtractPack writes the entries of the pack at path that restore may take to
 // tmpDir/<name>, each stamped with its header's time, and returns them, with notes
 // naming the entries refused. A pack is shared archive data, as untrusted as a loose
-// file. Before anything is written, the whole pack is refused for more than
-// PackMaxEntries entries or more than MaxFolderBytes declared in all. Each entry is
+// file. Before anything is written, the whole pack is refused when openPack refuses
+// it or for more than MaxFolderBytes declared in all. Each entry is
 // refused alone for a name that is not a plain path inside the pack, a type other
 // than a regular file, more than MaxFileBytes declared or read, or a CRC mismatch.
 // skip, given each name and header time, drops an entry unread. With tmpDir "",
 // nothing is read or written: the entries are listed as they would be, for a dry run.
 // An error refuses the whole pack; the caller removes tmpDir.
 func ExtractPack(path, tmpDir string, skip func(rel string, mtime time.Time) bool) ([]PackFile, []string, error) {
-	l, err := os.Lstat(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !l.Mode().IsRegular() { // checked before the open: a pipe would block it
-		return nil, nil, errors.New("not a regular file")
-	}
-	in, err := os.Open(path)
+	r, in, err := openPack(path)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer in.Close()
-	st, err := in.Stat()
-	if err != nil || !st.Mode().IsRegular() || !os.SameFile(l, st) {
-		return nil, nil, errors.New("changed in the archive while restoring")
-	}
-	r, err := zip.NewReader(in, st.Size())
-	if err != nil && !errors.Is(err, zip.ErrInsecurePath) { // names are checked below, one by one
-		return nil, nil, fmt.Errorf("unreadable pack: %w", err)
-	}
-	if len(r.File) > PackMaxEntries {
-		return nil, nil, fmt.Errorf("over %d entries", PackMaxEntries)
-	}
 	var total uint64
 	for _, f := range r.File {
 		if total += min(f.UncompressedSize64, MaxFolderBytes+1); total > MaxFolderBytes { // capped: never wraps
@@ -158,6 +146,11 @@ func ExtractPack(path, tmpDir string, skip func(rel string, mtime time.Time) boo
 		if why == "" && tmpDir != "" {
 			pf.Path = filepath.Join(tmpDir, filepath.FromSlash(f.Name))
 			if err := extractOne(f, pf.Path); err != nil {
+				// Not the path: it is built from the name, which the note quotes.
+				var pe *fs.PathError
+				if errors.As(err, &pe) {
+					err = pe.Err
+				}
 				why = err.Error()
 			}
 		}
@@ -168,6 +161,97 @@ func ExtractPack(path, tmpDir string, skip func(rel string, mtime time.Time) boo
 		out = append(out, pf)
 	}
 	return out, notes, nil
+}
+
+// openPack opens the pack at path for zip to read, closing the file on an error;
+// the caller closes f. Every reader goes through it. The pack must be a regular file,
+// not a link, that stays the one checked while it is opened, no larger than
+// PackMaxBytes, and whose directory checkDirectory accepts. zip's insecure-path error
+// is ignored: ExtractPack checks every name itself.
+func openPack(path string) (r *zip.Reader, f *os.File, err error) {
+	l, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !l.Mode().IsRegular() { // checked before the open: a pipe would block it
+		return nil, nil, errors.New("not a regular file")
+	}
+	if f, err = os.Open(path); err != nil {
+		return nil, nil, err
+	}
+	st, err := f.Stat()
+	switch {
+	case err != nil || !st.Mode().IsRegular() || !os.SameFile(l, st):
+		err = errors.New("changed while being opened")
+	case st.Size() > PackMaxBytes:
+		err = fmt.Errorf("over %d MB", PackMaxBytes>>20)
+	default:
+		if err = checkDirectory(f, st.Size()); err == nil {
+			if r, err = zip.NewReader(f, st.Size()); errors.Is(err, zip.ErrInsecurePath) {
+				err = nil
+			}
+		}
+	}
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	return r, f, nil
+}
+
+// checkDirectory walks a zip's central directory before zip parses it. zip reads
+// directory headers until one fails and checks the end record's count only modulo
+// 65,536, so a lying end record lets a small file hold millions of entries, each
+// taking memory. A pack is refused unless, as push writes it, its end record closes
+// the file with no comment, the directory runs from its offset to that record, no
+// zip64 record is in play, and the headers tile it exactly, PackMaxEntries at most.
+// zip then starts and stops where this walk did.
+func checkDirectory(r io.ReaderAt, size int64) error {
+	bad := errors.New("not a complete zip")
+	le := binary.LittleEndian
+	var end [22]byte
+	if size < 22 {
+		return bad
+	}
+	if _, err := r.ReadAt(end[:], size-22); err != nil {
+		return bad
+	}
+	eocd := size - 22
+	records, dirSize, dirOff := int64(le.Uint16(end[10:])), int64(le.Uint32(end[12:])), int64(le.Uint32(end[16:]))
+	if le.Uint32(end[:]) != 0x06054b50 || le.Uint16(end[20:]) != 0 || dirOff+dirSize != eocd {
+		return bad
+	}
+	if records > PackMaxEntries {
+		return fmt.Errorf("over %d entries", PackMaxEntries)
+	}
+	// The other zip64 markers cannot pass the checks above; older Go also reads a
+	// zip64 record when the size is 0xffff and a locator precedes the end record.
+	if dirSize == 0xffff {
+		var loc [4]byte
+		if _, err := r.ReadAt(loc[:], eocd-20); err != nil || le.Uint32(loc[:]) == 0x07064b50 {
+			return bad
+		}
+	}
+	br := bufio.NewReader(io.NewSectionReader(r, dirOff, dirSize))
+	var h [46]byte
+	n := int64(0)
+	for pos := dirOff; pos < eocd; n++ {
+		if n == PackMaxEntries {
+			return fmt.Errorf("over %d entries", PackMaxEntries)
+		}
+		if _, err := io.ReadFull(br, h[:]); err != nil || le.Uint32(h[:]) != 0x02014b50 {
+			return bad
+		}
+		rest := int(le.Uint16(h[28:])) + int(le.Uint16(h[30:])) + int(le.Uint16(h[32:])) // name, extra, comment
+		if _, err := br.Discard(rest); err != nil {
+			return bad
+		}
+		pos += int64(len(h) + rest)
+	}
+	if n != records {
+		return bad
+	}
+	return nil
 }
 
 // packName reports whether n names a file inside a pack: "/"-separated names, none
@@ -235,6 +319,12 @@ func buildPack(dst string, keep []*zip.File, add []PackFile) (string, error) {
 	err = fillPack(tmp, keep, add)
 	if err == nil {
 		err = tmp.Sync() // a crash after the rename must not leave an empty pack
+	}
+	if err == nil {
+		var st os.FileInfo
+		if st, err = tmp.Stat(); err == nil && st.Size() > PackMaxBytes {
+			err = fmt.Errorf("pack over %d MB", PackMaxBytes>>20) // restore would refuse it
+		}
 	}
 	if cerr := tmp.Close(); err == nil {
 		err = cerr

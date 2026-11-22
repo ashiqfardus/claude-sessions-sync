@@ -2501,13 +2501,14 @@ func hostileSetup(t *testing.T) (b machine, homeB, pack string) {
 	return b, homeB, filepath.Join(workCopy(machine{name: "EVIL", archive: arch}, "/evil/proj"), "run.cspack.zip")
 }
 
-// packAt writes a zip at path holding entries, each name with its body and mode.
-func packAt(t *testing.T, path string, entries ...[3]string) {
+// packAt writes a zip at path holding entries dated at, each name with its body and
+// mode ("x": executable).
+func packAt(t *testing.T, path string, at time.Time, entries ...[3]string) {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for _, e := range entries {
-		h := &zip.FileHeader{Name: e[0], Method: zip.Deflate, Modified: time.Now().Add(-8 * 24 * time.Hour)}
+		h := &zip.FileHeader{Name: e[0], Method: zip.Deflate, Modified: at}
 		h.SetMode(0o644)
 		if e[2] == "x" {
 			h.SetMode(0o755)
@@ -2531,7 +2532,7 @@ func packAt(t *testing.T, path string, entries ...[3]string) {
 // not executable. The rest are counted refused.
 func TestImportHostilePack(t *testing.T) {
 	b, homeB, pack := hostileSetup(t)
-	packAt(t, pack,
+	packAt(t, pack, time.Now().Add(-8*24*time.Hour),
 		[3]string{"evil.pth", "import os\n"},
 		[3]string{"node_modules/x.js", "evil()\n"},
 		[3]string{".git/config", "[core]\n\tfsmonitor = evil\n"},
@@ -2558,7 +2559,7 @@ func TestImportPackWindowsName(t *testing.T) {
 		t.Skip("only Windows reads a ~ name as another")
 	}
 	b, homeB, pack := hostileSetup(t)
-	packAt(t, pack, [3]string{"ok.md", "ok\n"}, [3]string{"PROGRA~1.md", "x\n"})
+	packAt(t, pack, time.Now().Add(-8*24*time.Hour), [3]string{"ok.md", "ok\n"}, [3]string{"PROGRA~1.md", "x\n"})
 	out := b.workRun(t, homeB, "import", "--no-plugins")
 	if got := filesUnderDir(t, homeB); !reflect.DeepEqual(got, []string{"evil/proj/run/ok.md"}) {
 		t.Fatalf("wrote %v\n%s", got, out)
@@ -2626,7 +2627,7 @@ func TestExcludeInsideUnitIgnoresLinkedPack(t *testing.T) {
 	home, w, pack := packHome(t, m, 6)
 	m.workRun(t, home, "push", "--no-html")
 	private := filepath.Join(t.TempDir(), "private.zip")
-	packAt(t, private, [3]string{"sub/a.md", "a\n"}, [3]string{"secret.md", "private\n"})
+	packAt(t, private, time.Now(), [3]string{"sub/a.md", "a\n"}, [3]string{"secret.md", "private\n"})
 	if err := os.Remove(pack); err != nil {
 		t.Fatal(err)
 	}
@@ -2634,5 +2635,28 @@ func TestExcludeInsideUnitIgnoresLinkedPack(t *testing.T) {
 	configAs(t, m.claudeDir, "MAC", "exclude-folder", filepath.Join(w, "run1", "sub"))
 	if fi, err := os.Lstat(pack); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
 		t.Fatalf("link replaced by what it pointed to: %v %v", fi, err)
+	}
+}
+
+// R33 at its edges: an overlay file as old as its pack entry, or older by up to 2 s,
+// wins; one older by more loses; a newer one wins.
+func TestImportPackOverlayTie(t *testing.T) {
+	b, homeB, pack := hostileSetup(t)
+	at := time.Now().Add(-8 * 24 * time.Hour).Truncate(time.Second)
+	names := map[string]time.Duration{"eq.md": 0, "older1.md": -time.Second, "older3.md": -3 * time.Second, "newer3.md": 3 * time.Second}
+	var entries [][3]string
+	for name, d := range names {
+		entries = append(entries, [3]string{name, "pack\n"})
+		p := filepath.Join(filepath.Dir(pack), "run", name)
+		mustWrite(t, p, "overlay\n")
+		setTime(t, p, at.Add(d))
+	}
+	packAt(t, pack, at, entries...)
+	out := b.workRun(t, homeB, "import", "--no-plugins")
+	want := map[string]string{"eq.md": "overlay\n", "older1.md": "overlay\n", "older3.md": "pack\n", "newer3.md": "overlay\n"}
+	for name, w := range want {
+		if got := mustRead(t, filepath.Join(homeB, "evil", "proj", "run", name)); got != w {
+			t.Errorf("%s = %q, want %q\n%s", name, got, w, out)
+		}
 	}
 }

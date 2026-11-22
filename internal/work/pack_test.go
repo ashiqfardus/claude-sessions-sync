@@ -3,6 +3,7 @@ package work
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -482,5 +483,145 @@ func TestExtractPackDryRun(t *testing.T) {
 	}
 	if got := filesUnder(t, dir); !reflect.DeepEqual(got, []string{"run.cspack.zip"}) {
 		t.Fatalf("wrote %v", got)
+	}
+}
+
+// lyingEnd returns a zip of n empty entries whose end record says it holds 1, with no
+// zip64 records: Go compares that count only modulo 65,536 and reads every header.
+func lyingEnd(t *testing.T, n int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := 0; i < n; i++ {
+		if _, err := zw.CreateRaw(&zip.FileHeader{Name: fmt.Sprintf("%x", i), Method: zip.Store}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, le := buf.Bytes(), binary.LittleEndian
+	end := b[len(b)-22:]
+	size, off := uint64(le.Uint32(end[12:])), uint64(le.Uint32(end[16:]))
+	if off == 0xffffffff { // the zip64 record, before its locator, holds the real ones
+		z := b[len(b)-22-20-56:]
+		size, off = le.Uint64(z[40:]), le.Uint64(z[48:])
+	}
+	out := append([]byte{}, b[:off+size]...)
+	eocd := make([]byte, 22)
+	le.PutUint32(eocd, 0x06054b50)
+	le.PutUint16(eocd[8:], 1)
+	le.PutUint16(eocd[10:], 1)
+	le.PutUint32(eocd[12:], uint32(size))
+	le.PutUint32(eocd[16:], uint32(off))
+	return append(out, eocd...)
+}
+
+// An end record that undercounts its directory is refused before zip parses it, as
+// is a file too large to be a pack.
+func TestExtractPackDirectoryLimits(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []int{PackMaxEntries + 1, 65537} {
+		b := lyingEnd(t, n)
+		if n == 65537 { // the probe: zip alone accepts it whole
+			if r, err := zip.NewReader(bytes.NewReader(b), int64(len(b))); err != nil || len(r.File) != n {
+				t.Fatalf("zip read %v: %v", r, err)
+			}
+		}
+		if err := checkDirectory(bytes.NewReader(b), int64(len(b))); err == nil || !strings.Contains(err.Error(), "over 20000 entries") {
+			t.Fatalf("%d entries, the end record saying 1: %v", n, err)
+		}
+		pack := filepath.Join(dir, fmt.Sprintf("n%d.cspack.zip", n))
+		if err := os.WriteFile(pack, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := ExtractPack(pack, "", nil); err == nil {
+			t.Fatalf("%d entries extracted", n)
+		}
+		if _, err := ReadPackIndex(pack); err == nil {
+			t.Fatalf("%d entries indexed", n)
+		}
+	}
+
+	// A directory that does not reach its end record, or overruns it, or a comment.
+	src := filepath.Join(dir, "ok.cspack.zip")
+	zipAt(t, src, zipEntry{name: "a.md", body: "a\n"}, zipEntry{name: "b.md", body: "b\n"})
+	good, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkDirectory(bytes.NewReader(good), int64(len(good))); err != nil {
+		t.Fatalf("a pack zip wrote: %v", err)
+	}
+	le := binary.LittleEndian
+	for name, patch := range map[string]func(b []byte){
+		"count":   func(b []byte) { le.PutUint16(b[len(b)-12:], 1) },
+		"offset":  func(b []byte) { le.PutUint32(b[len(b)-6:], le.Uint32(b[len(b)-6:])+1) },
+		"comment": func(b []byte) { le.PutUint16(b[len(b)-2:], 1) },
+	} {
+		b := append([]byte{}, good...)
+		patch(b)
+		if err := checkDirectory(bytes.NewReader(b), int64(len(b))); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+
+	big := filepath.Join(dir, "big.cspack.zip")
+	if err := os.WriteFile(big, good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, PackMaxBytes+1); err != nil { // sparse
+		t.Fatal(err)
+	}
+	if _, _, err := ExtractPack(big, "", nil); err == nil || !strings.Contains(err.Error(), "MB") {
+		t.Fatalf("oversized pack: %v", err)
+	}
+}
+
+// Every reader opens a pack the same way: a link is never followed.
+func TestPackReadersRefuseLinks(t *testing.T) {
+	src, dir := t.TempDir(), t.TempDir()
+	real := filepath.Join(dir, "real.zip")
+	if err := WritePack(real, []PackFile{packFile(t, src, "sub/a.md", "a\n", time.Now()), packFile(t, src, "b.md", "b\n", time.Now())}); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "run.cspack.zip")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	if _, err := ReadPackIndex(link); err == nil {
+		t.Error("index read through a link")
+	}
+	if _, err := PrunePack(link, func(n string) bool { return strings.HasPrefix(n, "sub/") }); err == nil {
+		t.Error("pruned through a link")
+	}
+	if err := CompactPack(link, filepath.Join(dir, "out.cspack.zip"), nil); err == nil {
+		t.Error("compacted through a link")
+	}
+	if _, _, err := ExtractPack(link, "", nil); err == nil {
+		t.Error("extracted through a link")
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		t.Fatalf("link replaced: %v %v", fi, err)
+	}
+}
+
+// A note never carries an entry's control characters: the name is quoted, and the
+// temp path built from it is left out.
+func TestExtractPackNotesQuoteNames(t *testing.T) {
+	dir := t.TempDir()
+	pack, tmp := filepath.Join(dir, "run.cspack.zip"), filepath.Join(dir, "tmp")
+	zipAt(t, pack, zipEntry{name: "esc\x1b[2J", body: "file"}, zipEntry{name: "esc\x1b[2J/child.md", body: "c"})
+	if err := os.Mkdir(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, notes, err := ExtractPack(pack, tmp, nil)
+	if err != nil || len(notes) == 0 {
+		t.Fatalf("notes %q: %v", notes, err)
+	}
+	for _, n := range notes {
+		if strings.ContainsRune(n, 0x1b) || strings.Contains(n, tmp) {
+			t.Errorf("note %q", n)
+		}
 	}
 }

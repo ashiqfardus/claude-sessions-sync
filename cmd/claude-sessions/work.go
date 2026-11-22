@@ -1185,7 +1185,9 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 					notes = append(notes, fmt.Sprintf("  + would unpack %d file(s) from %s", len(files), wf.Path+sep+u))
 				}
 				if tmp != "" {
-					os.RemoveAll(tmp)
+					if err := os.RemoveAll(tmp); err != nil { // up to 250 MB left in the temp folder
+						notes = append(notes, fmt.Sprintf("  x %s: not removed: %v", tmp, err))
+					}
 				}
 			}
 			// WalkDir never follows a link; only regular files are read.
