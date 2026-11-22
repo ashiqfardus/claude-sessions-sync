@@ -464,3 +464,28 @@ func TestPushKeepsSessionsThatAgedOutLocally(t *testing.T) {
 		t.Errorf("the project lost its identity once its transcripts aged out: %+v", merged["e--work-airos-frontend"])
 	}
 }
+
+// A dry run copies nothing, so it must not log a PUSH line: doctor reads the newest
+// PUSH as the last real push and would hide a dead sweep.
+func TestPushDryRunLogsNoPush(t *testing.T) {
+	f := newFixture(t)
+	if out, err := f.push(t, "--dry-run"); err != nil {
+		t.Fatalf("dry run failed: %v\n%s", err, out)
+	}
+	raw, _ := os.ReadFile(filepath.Join(f.claudeDir, "session-sync.log"))
+	if strings.Contains(string(raw), "PUSH:") {
+		t.Errorf("dry run logged a PUSH line:\n%s", raw)
+	}
+	out, _ := f.run(t, "doctor", "--json")
+	var rep struct {
+		Checks []struct{ Name, Level, Detail string } `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("doctor --json: %v\n%s", err, out)
+	}
+	for _, c := range rep.Checks {
+		if c.Name == "last push" && c.Level != "warn" {
+			t.Errorf("a dry run counted as a push: %+v", c)
+		}
+	}
+}

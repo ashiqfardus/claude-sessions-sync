@@ -434,7 +434,13 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		}
 	}
 
-	logf("PUSH: %d copied, %d unchanged, %d session(s), %d project(s) -> %s",
+	// A dry run copied nothing: its line must never start with "PUSH:", which doctor
+	// reads as the last real push.
+	verb := "PUSH: %d copied"
+	if dryRun {
+		verb = "DRY-RUN: would copy %d"
+	}
+	logf(verb+", %d unchanged, %d session(s), %d project(s) -> %s",
 		res.Copied, res.Unchanged, res.Sessions, res.Projects, dest)
 
 	// Readable pages for phones and tablets. Best-effort by design: a rendering
@@ -870,7 +876,7 @@ func keepFork(dest, bucket, id, src string, srcInfo os.FileInfo, dryRun bool, lo
 			return false
 		}
 	}
-	if existing == nil { // said once, not after every reply that keeps it current
+	if existing == nil && !dryRun { // said once, not after every reply that keeps it current
 		logf("FORK: %s was continued here and on another machine; the archived copy is kept and this one is saved as forks/%s/%s/%s.jsonl",
 			id, bucket, id, machineName())
 	}
