@@ -6,6 +6,16 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Unchanged work subfolders are packed.** A first-level subfolder of a work folder
+  whose files have not changed for 7 days, with at least 5 of them, is stored as one
+  zip, `<subfolder>.cspack.zip`, so the sync client moves one file instead of thousands.
+  A later edit or new file goes up on its own beside it, and the zip is rebuilt when
+  those pass 50 files or a quarter of its size. `import` and `pull` unpack it into plain
+  files under the same rules as any other restored file, after checking every entry's
+  name, type, size and checksum; of a zipped file and a later copy beside it, the newer
+  wins. Older versions skip the zips: upgrade every computer.
+- **`import --no-work` and `pull --no-work`** bring conversations only and skip other
+  computers' work folders. `--no-work` with `--repoint` is refused.
 - **An excluded folder is not restored into either.** `config exclude-folder` now also
   stops `import` placing another computer's work folder there, or files below an excluded
   subfolder. The import counts them as "excluded here".

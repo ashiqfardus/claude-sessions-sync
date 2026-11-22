@@ -135,6 +135,21 @@ and is named in `skipped`, and the rest of the folder is. Each machine writes on
 own `work/<machine>/`. The archive is untrusted when restoring: see the deny-list and
 its residual risk in the README's Privacy section.
 
+A unit - a first-level subfolder of a work folder that is not an exact file - whose
+files have all been unchanged for 7 days, with 5 to 20,000 of them, is stored as
+`<unit>.cspack.zip` beside its loose folder: a zip whose `/`-separated entry names are
+relative to the unit, each file's time in its header. Push builds it from local files,
+then deletes only the loose copies it holds. Later changes go loose beside it (the
+overlay) until they pass 50 files or a quarter of the pack's bytes; then push compacts
+them into a new pack, through a temp file and a rename. `work-packs.json` in
+`session-sync-base/` records each pack's entries and overlay, so push need not read the
+pack from the mount. Restore treats a pack as untrusted as a loose file: it refuses the
+whole pack over 20,000 entries or 250 MB declared, refuses alone each entry that is not a
+plain relative path, not a regular file, over 10 MB declared or read, or failing its
+CRC, extracts the rest to a private temp folder, and files each through the same checks
+as a loose file. For one path, the newer of a pack entry and an overlay file is filed,
+the overlay on a tie (within 2 s).
+
 ### Local
 
 - Claude root: `$CLAUDE_CONFIG_DIR` if set, else `~/.claude`. **Always resolve through

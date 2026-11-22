@@ -2,11 +2,14 @@ package work
 
 import (
 	"archive/zip"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -94,6 +97,119 @@ func ReadPackIndex(path string) (map[string]PackEntry, error) {
 		idx[f.Name] = PackEntry{Size: int64(f.UncompressedSize64), ModTime: f.Modified}
 	}
 	return idx, nil
+}
+
+// ExtractPack writes the entries of the pack at path that restore may take to
+// tmpDir/<name>, each stamped with its header's time, and returns them, with notes
+// naming the entries refused. A pack is shared archive data, as untrusted as a loose
+// file. Before anything is written, the whole pack is refused for more than
+// PackMaxEntries entries or more than MaxFolderBytes declared in all. Each entry is
+// refused alone for a name that is not a plain path inside the pack, a type other
+// than a regular file, more than MaxFileBytes declared or read, or a CRC mismatch.
+// skip, given each name and header time, drops an entry unread. With tmpDir "",
+// nothing is read or written: the entries are listed as they would be, for a dry run.
+// An error refuses the whole pack; the caller removes tmpDir.
+func ExtractPack(path, tmpDir string, skip func(rel string, mtime time.Time) bool) ([]PackFile, []string, error) {
+	l, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !l.Mode().IsRegular() { // checked before the open: a pipe would block it
+		return nil, nil, errors.New("not a regular file")
+	}
+	in, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer in.Close()
+	st, err := in.Stat()
+	if err != nil || !st.Mode().IsRegular() || !os.SameFile(l, st) {
+		return nil, nil, errors.New("changed in the archive while restoring")
+	}
+	r, err := zip.NewReader(in, st.Size())
+	if err != nil && !errors.Is(err, zip.ErrInsecurePath) { // names are checked below, one by one
+		return nil, nil, fmt.Errorf("unreadable pack: %w", err)
+	}
+	if len(r.File) > PackMaxEntries {
+		return nil, nil, fmt.Errorf("over %d entries", PackMaxEntries)
+	}
+	var total uint64
+	for _, f := range r.File {
+		if total += min(f.UncompressedSize64, MaxFolderBytes+1); total > MaxFolderBytes { // capped: never wraps
+			return nil, nil, fmt.Errorf("over %d MB in all", MaxFolderBytes>>20)
+		}
+	}
+	var out []PackFile
+	var notes []string
+	for _, f := range r.File {
+		why := ""
+		switch {
+		case !packName(f.Name):
+			why = "not a plain path inside the pack"
+		case !f.Mode().IsRegular():
+			why = "not a regular file"
+		case f.UncompressedSize64 > MaxFileBytes:
+			why = fmt.Sprintf("over %d MB", MaxFileBytes>>20)
+		}
+		if why == "" && skip != nil && skip(f.Name, f.Modified) {
+			continue
+		}
+		pf := PackFile{Rel: f.Name, Size: int64(f.UncompressedSize64), ModTime: f.Modified}
+		if why == "" && tmpDir != "" {
+			pf.Path = filepath.Join(tmpDir, filepath.FromSlash(f.Name))
+			if err := extractOne(f, pf.Path); err != nil {
+				why = err.Error()
+			}
+		}
+		if why != "" {
+			notes = append(notes, fmt.Sprintf("entry %q: %s", f.Name, why))
+			continue
+		}
+		out = append(out, pf)
+	}
+	return out, notes, nil
+}
+
+// packName reports whether n names a file inside a pack: "/"-separated names, none
+// empty, "." or "..", with no backslash or drive, and local on this OS.
+func packName(n string) bool {
+	return n != "" && !strings.Contains(n, `\`) && !(len(n) >= 2 && n[1] == ':') &&
+		!slices.ContainsFunc(strings.Split(n, "/"), func(s string) bool { return s == "" || s == "." || s == ".." }) &&
+		filepath.IsLocal(filepath.FromSlash(n))
+}
+
+// extractOne writes entry f to p, a new file, read through the zip's own size and
+// CRC checks and never past MaxFileBytes, with f's time. A failed entry leaves no
+// file.
+func extractOne(f *zip.File, p string) error {
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	// O_EXCL: a second entry of one name, or of one a case-blind disk folds into it,
+	// never replaces the first.
+	out, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(out, io.LimitReader(rc, MaxFileBytes+1))
+	if err == nil && n > MaxFileBytes {
+		err = fmt.Errorf("over %d MB", MaxFileBytes>>20)
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chtimes(p, f.Modified, f.Modified)
+	}
+	if err != nil {
+		os.Remove(p)
+	}
+	return err
 }
 
 func commitPack(tmp, dst string) error {

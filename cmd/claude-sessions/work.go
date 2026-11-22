@@ -418,7 +418,8 @@ func packUnit(dest, dir, folder, u string, files []string, packs map[string]map[
 			logf("WARN: work folder %s: pack of %s unreadable (%v); its files are copied loose", folder, u, err)
 			return false
 		}
-		rec, ok = packRecord{Files: idx, Bytes: fi.Size()}, true
+		// The overlay stays: it lists loose copies that may be the only copy of an edit.
+		rec.Files, rec.Bytes, ok = idx, fi.Size(), true
 	}
 
 	if !ok {
@@ -794,8 +795,8 @@ func prunePack(root, dest, machine string, f archive.WorkFolder, p string, own b
 	}
 	unit, sub := in[len(at)], strings.Join(in[len(at)+1:], "/")
 	pack := filepath.Join(dir, unit+work.PackSuffix)
-	if _, err := os.Lstat(pack); err != nil {
-		return false, nil
+	if fi, err := os.Lstat(pack); err != nil || !fi.Mode().IsRegular() {
+		return false, nil // a link planted there is never read through
 	}
 	under := func(n string) bool { return sub == "" || work.Within(n, sub, fold) }
 	n := 1
@@ -806,24 +807,32 @@ func prunePack(root, dest, machine string, f archive.WorkFolder, p string, own b
 	} else if n, err = work.PrunePack(pack, under); err != nil {
 		return false, fmt.Errorf("pack %s: %w", pack, err)
 	}
-	if n == 0 || !own {
+	if !own {
 		return n > 0, nil
 	}
+	// The record loses p too, its overlay included, even when the pack held nothing
+	// there; it is written only when that changed it.
 	packs := loadPacks(root)
-	if rec, ok := packs[f.Path][unit]; ok {
-		st, serr := os.Stat(pack)
-		if serr != nil {
-			delete(packs[f.Path], unit)
-		} else {
-			for _, m := range []map[string]work.PackEntry{rec.Files, rec.Overlay} {
-				maps.DeleteFunc(m, func(n string, _ work.PackEntry) bool { return under(n) })
-			}
-			rec.Bytes = st.Size()
-			packs[f.Path][unit] = rec
-		}
-		return true, savePacks(root, packs)
+	rec, ok := packs[f.Path][unit]
+	if !ok {
+		return n > 0, nil
 	}
-	return true, nil
+	changed := n > 0
+	if st, serr := os.Stat(pack); serr != nil {
+		delete(packs[f.Path], unit)
+	} else {
+		for _, m := range []map[string]work.PackEntry{rec.Files, rec.Overlay} {
+			k := len(m)
+			maps.DeleteFunc(m, func(n string, _ work.PackEntry) bool { return under(n) })
+			changed = changed || len(m) < k
+		}
+		rec.Bytes = st.Size()
+		packs[f.Path][unit] = rec
+	}
+	if !changed {
+		return false, nil
+	}
+	return n > 0, savePacks(root, packs)
 }
 
 // heldWorkPath is this machine's record of work files restored from other machines
@@ -1134,6 +1143,51 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				}
 				continue
 			}
+			// Each unit's pack first, then the loose files. Of a pack entry and an overlay
+			// file with one path the newer is filed, the overlay on a tie (R33): lost holds
+			// the overlay files a newer entry replaces. Entries pass through file() as loose
+			// files do, from a private temp folder.
+			lost := map[string]bool{}
+			ents, _ := os.ReadDir(dir)
+			for _, d := range ents {
+				u, ok := packOf(d.Name())
+				if !ok || !d.Type().IsRegular() {
+					continue
+				}
+				pack, over := filepath.Join(dir, d.Name()), looseTimes(filepath.Join(dir, u))
+				tmp := ""
+				if !dryRun {
+					var err error
+					if tmp, err = os.MkdirTemp("", "cs-pack-*"); err != nil {
+						notes = append(notes, fmt.Sprintf("  x %s: %v", pack, err))
+						continue
+					}
+				}
+				files, bad, err := work.ExtractPack(pack, tmp, func(rel string, at time.Time) bool {
+					o, ok := over[rel]
+					return ok && !o.Before(at.Add(-archive.MTimeToleranceSeconds*time.Second))
+				})
+				if err != nil {
+					refuse(pack, err)
+				}
+				for _, why := range bad {
+					refuse(pack, why)
+				}
+				for _, f := range files {
+					if _, ok := over[f.Rel]; ok {
+						lost[u+"/"+f.Rel] = true
+					}
+					if fi, err := os.Lstat(f.Path); err == nil && !dryRun {
+						file(f.Path, u+"/"+f.Rel, fi)
+					}
+				}
+				if dryRun && len(files) > 0 {
+					notes = append(notes, fmt.Sprintf("  + would unpack %d file(s) from %s", len(files), wf.Path+sep+u))
+				}
+				if tmp != "" {
+					os.RemoveAll(tmp)
+				}
+			}
 			// WalkDir never follows a link; only regular files are read.
 			_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 				if err != nil || !d.Type().IsRegular() {
@@ -1141,8 +1195,9 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				}
 				fi, err := d.Info()
 				rel, rerr := filepath.Rel(dir, p)
-				if err == nil && rerr == nil {
-					file(p, filepath.ToSlash(rel), fi)
+				r := filepath.ToSlash(rel)
+				if _, pack := packOf(r); err == nil && rerr == nil && !pack && !lost[r] {
+					file(p, r, fi)
 				}
 				return nil
 			})
@@ -1167,6 +1222,30 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 	}
 	res.Prev = held.Prev
 	return moves, res
+}
+
+// packOf returns the unit that name - "/"-separated, below a work folder's archive
+// copy - is the pack of: a top-level <unit>.cspack.zip, the unit a plain name.
+func packOf(name string) (string, bool) {
+	u, ok := strings.CutSuffix(name, work.PackSuffix)
+	return u, ok && u != "" && u != "." && u != ".." && !strings.ContainsAny(u, `/\`)
+}
+
+// looseTimes maps each regular file below dir, by "/"-separated path, to its time.
+// A link is never followed, dir itself included.
+func looseTimes(dir string) map[string]time.Time {
+	out := map[string]time.Time{}
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			fi, ierr := d.Info()
+			rel, rerr := filepath.Rel(dir, p)
+			if ierr == nil && rerr == nil {
+				out[filepath.ToSlash(rel)] = fi.ModTime()
+			}
+		}
+		return nil
+	})
+	return out
 }
 
 // realArchivePath reports whether p, a work copy under dest/work, is a real folder

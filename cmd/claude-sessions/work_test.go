@@ -2270,3 +2270,369 @@ func TestPushCompactBoundary(t *testing.T) {
 		t.Fatalf("pack: %d entries", len(idx))
 	}
 }
+
+// packPair is WIN with <homeA>/SQL/run1 packed - six files 8 days old - and f02.md
+// edited since, so it sits loose beside the pack; and MAC, with its own home, on the
+// same archive.
+func packPair(t *testing.T) (a, b machine, homeA, homeB, w string) {
+	t.Helper()
+	arch := t.TempDir()
+	a, b = newMachine(t, "WIN", arch), newMachine(t, "MAC", arch)
+	homeA, w, _ = packHome(t, a, 6)
+	a.workRun(t, homeA, "push", "--no-html")
+	mustWrite(t, filepath.Join(w, "run1", "f02.md"), "edited\n") // under a quarter: no compaction
+	a.workRun(t, homeA, "push", "--no-html")
+	enc := "WIN/" + work.Encode(w) + "/"
+	if got := sortedWorkFiles(arch); !reflect.DeepEqual(got, []string{enc + "run1.cspack.zip", enc + "run1/f02.md"}) {
+		t.Fatalf("archived %v", got)
+	}
+	return a, b, homeA, t.TempDir(), w
+}
+
+// tmpRun runs as m with its temp folder at tmp, so a test sees what is left there.
+func (m machine) tmpRun(t *testing.T, home, tmp string, args ...string) string {
+	t.Helper()
+	cmd := m.workCmd(home, args...)
+	cmd.Env = append(cmd.Env, "TMPDIR="+tmp, "TMP="+tmp, "TEMP="+tmp)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+// unpacked checks run1 as restored at dir: the six files, f02.md the edited one, each
+// with the time it had on A.
+func unpacked(t *testing.T, dir, w string) {
+	t.Helper()
+	for i := 0; i < 6; i++ {
+		name := fmt.Sprintf("f%02d.md", i)
+		want := fmt.Sprintf("file %d\n", i)
+		if i == 2 {
+			want = "edited\n"
+		}
+		if got := mustRead(t, filepath.Join(dir, name)); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+		st, err := os.Stat(filepath.Join(dir, name))
+		src, serr := os.Stat(filepath.Join(w, "run1", name))
+		if err != nil || serr != nil || !archive.SameMTime(st.ModTime(), src.ModTime()) {
+			t.Errorf("%s: time %v, on A %v (%v %v)", name, st, src, err, serr)
+		}
+	}
+}
+
+// A packed unit plus its overlay unpacks to plain files: the overlay's edit wins, a
+// leftover loose copy older than its pack entry loses to it (R33), and times come from
+// the pack. A dry run unpacks nothing; the temp folder is cleared after.
+func TestImportPackWithOverlay(t *testing.T) {
+	a, b, _, homeB, w := packPair(t)
+	stale := filepath.Join(workCopy(a, w), "run1", "f03.md")
+	mustWrite(t, stale, "stale\n")
+	setTime(t, stale, time.Now().Add(-30*24*time.Hour))
+	tmp := t.TempDir()
+
+	dry := b.tmpRun(t, homeB, tmp, "import", "--no-plugins", "--dry-run")
+	if !strings.Contains(dry, "would unpack 5 file(s) from "+filepath.Join(w, "run1")) || !strings.Contains(dry, "(1 file(s) would be filed") {
+		t.Fatalf("dry run output: %s", dry)
+	}
+	if _, err := os.Stat(filepath.Join(homeB, "SQL")); !os.IsNotExist(err) {
+		t.Fatalf("dry run placed files: %v", err)
+	}
+	out := b.tmpRun(t, homeB, tmp, "import", "--no-plugins")
+	placed := filepath.Join(homeB, "SQL", "run1")
+	unpacked(t, placed, w)
+	if got := filesUnderDir(t, placed); len(got) != 6 {
+		t.Fatalf("restored %v", got)
+	}
+	if !strings.Contains(out, "(6 file(s) filed, 0 kept, 0 beside, 0 refused") {
+		t.Fatalf("output: %s", out)
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Fatalf("left in the temp folder: %v", left)
+	}
+	h := work.LoadHeld(filepath.Join(b.claudeDir, "session-sync-base", "work-held.json"))
+	if hf, ok := h.Files[filepath.Join(placed, "f00.md")]; !ok || hf.Machine != "WIN" || hf.From != filepath.Join(w, "run1", "f00.md") {
+		t.Fatalf("not held: %+v", h.Files)
+	}
+}
+
+// filesUnderDir lists the files below dir, "/"-separated and sorted.
+func filesUnderDir(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(dir, p)
+			out = append(out, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	slices.Sort(out)
+	return out
+}
+
+// Unpacked files are held: B's push sends none of them back, loose or packed.
+func TestImportPackHeldNotPushedBack(t *testing.T) {
+	_, b, _, homeB, _ := packPair(t)
+	b.workRun(t, homeB, "import", "--no-plugins")
+	sqlB := filepath.Join(homeB, "SQL")
+	mustWrite(t, filepath.Join(sqlB, "run1", "b.md"), "B's own\n")
+	workSession(t, b, gitRepo(t, filepath.Join(t.TempDir(), "dev", "web")), nil, `cd "`+sqlB+`" && ls`)
+	b.workRun(t, homeB, "push", "--no-html")
+	var mine []string
+	for _, f := range sortedWorkFiles(b.archive) {
+		if strings.HasPrefix(f, "MAC/") {
+			mine = append(mine, f)
+		}
+	}
+	if want := []string{"MAC/" + work.Encode(sqlB) + "/run1/b.md"}; !reflect.DeepEqual(mine, want) {
+		t.Fatalf("B archived %v, want %v", mine, want)
+	}
+}
+
+// pull unpacks at the recorded paths.
+func TestPullRestoresPack(t *testing.T) {
+	_, b, homeA, _, w := packPair(t)
+	if err := os.RemoveAll(w); err != nil { // one file system stands in for two
+		t.Fatal(err)
+	}
+	b.workRun(t, homeA, "pull", "--no-plugins")
+	if got := filesUnderDir(t, w); !reflect.DeepEqual(got, []string{"run1/f00.md", "run1/f01.md", "run1/f02.md", "run1/f03.md", "run1/f04.md", "run1/f05.md"}) {
+		t.Fatalf("restored %v", got)
+	}
+	for i := 0; i < 6; i++ {
+		want := fmt.Sprintf("file %d\n", i)
+		if i == 2 {
+			want = "edited\n"
+		}
+		if got := mustRead(t, filepath.Join(w, "run1", fmt.Sprintf("f%02d.md", i))); got != want {
+			t.Errorf("f%02d.md = %q", i, got)
+		}
+	}
+}
+
+// A truncated pack - a partial sync - is refused with a note; the unit's overlay and
+// the folder's other units are restored all the same.
+func TestImportCorruptPack(t *testing.T) {
+	arch := t.TempDir()
+	a, b := newMachine(t, "WIN", arch), newMachine(t, "MAC", arch)
+	homeA, w, pack := packHome(t, a, 6)
+	for i := 0; i < 5; i++ {
+		mustWrite(t, filepath.Join(w, "run2", fmt.Sprintf("g%d.md", i)), "g\n")
+	}
+	ageFiles(t, w)
+	a.workRun(t, homeA, "push", "--no-html")
+	mustWrite(t, filepath.Join(w, "run1", "f02.md"), "edited\n")
+	a.workRun(t, homeA, "push", "--no-html")
+	if _, err := os.Stat(filepath.Join(workCopy(a, w), "run2.cspack.zip")); err != nil {
+		t.Fatalf("run2 not packed: %v", err)
+	}
+	st, err := os.Stat(pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(pack, st.Size()/2); err != nil {
+		t.Fatal(err)
+	}
+	homeB := t.TempDir()
+	out := b.workRun(t, homeB, "import", "--no-plugins")
+	want := []string{"run1/f02.md", "run2/g0.md", "run2/g1.md", "run2/g2.md", "run2/g3.md", "run2/g4.md"}
+	if got := filesUnderDir(t, filepath.Join(homeB, "SQL")); !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored %v\n%s", got, out)
+	}
+	if !strings.Contains(out, pack+": refused: ") || !strings.Contains(out, "1 refused") {
+		t.Fatalf("output: %s", out)
+	}
+}
+
+// Two machines packing the same unit name, placed onto one folder here: each pack is
+// under its own machine's folder, and restore keeps to add-only and the copy beside.
+func TestImportPacksFromTwoMachines(t *testing.T) {
+	arch := t.TempDir()
+	lin, win, b := newMachine(t, "LIN", arch), newMachine(t, "WIN", arch), newMachine(t, "MAC", arch)
+	homeL, _, packL := packHome(t, lin, 6)
+	homeW, ww, packW := packHome(t, win, 6)
+	mustWrite(t, filepath.Join(ww, "run1", "f00.md"), "WIN's file 0, longer\n")
+	ageFiles(t, ww)
+	lin.workRun(t, homeL, "push", "--no-html")
+	win.workRun(t, homeW, "push", "--no-html")
+	if filepath.Dir(packL) == filepath.Dir(packW) {
+		t.Fatalf("one folder for both packs: %s", packL)
+	}
+	for _, p := range []string{packL, packW} {
+		if idx := packIndex(t, p); len(idx) != 6 {
+			t.Fatalf("%s: %v", p, idx)
+		}
+	}
+	homeB := t.TempDir()
+	b.workRun(t, homeB, "import", "--no-plugins", "--update")
+	placed := filepath.Join(homeB, "SQL", "run1")
+	want := []string{"f00.WIN.md", "f00.md", "f01.md", "f02.md", "f03.md", "f04.md", "f05.md"}
+	if got := filesUnderDir(t, placed); !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored %v", got)
+	}
+	if got := mustRead(t, filepath.Join(placed, "f00.md")); got != "file 0\n" {
+		t.Fatalf("f00.md = %q", got)
+	}
+	if got := mustRead(t, filepath.Join(placed, "f00.WIN.md")); got != "WIN's file 0, longer\n" {
+		t.Fatalf("f00.WIN.md = %q", got)
+	}
+}
+
+// hostileSetup is MAC with "/evil" mapped to <homeB>/evil, on an archive where WIN
+// pushed a session and EVIL's shard lists the folder /evil/proj. It returns MAC, its
+// home and where EVIL's pack of the unit "run" goes.
+func hostileSetup(t *testing.T) (b machine, homeB, pack string) {
+	t.Helper()
+	arch := t.TempDir()
+	a := newMachine(t, "WIN", arch)
+	b = newMachine(t, "MAC", arch)
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, a.session(repo), sessionLines(repo, "u1"))
+	a.workRun(t, t.TempDir(), "push", "--no-html")
+	homeB = t.TempDir()
+	mapped := filepath.Join(homeB, "evil")
+	mustMkdir(t, mapped)
+	configAs(t, b.claudeDir, "MAC", "map-folder", "/evil", mapped)
+	raw, _ := json.Marshal(map[string]any{"schemaVersion": 1, "machine": "EVIL", "home": "/", "projects": map[string]any{},
+		"workFolders": []any{map[string]any{"path": "/evil/proj"}}})
+	mustWrite(t, filepath.Join(arch, "manifest", "EVIL.json"), string(raw))
+	return b, homeB, filepath.Join(workCopy(machine{name: "EVIL", archive: arch}, "/evil/proj"), "run.cspack.zip")
+}
+
+// packAt writes a zip at path holding entries, each name with its body and mode.
+func packAt(t *testing.T, path string, entries ...[3]string) {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, e := range entries {
+		h := &zip.FileHeader{Name: e[0], Method: zip.Deflate, Modified: time.Now().Add(-8 * 24 * time.Hour)}
+		h.SetMode(0o644)
+		if e[2] == "x" {
+			h.SetMode(0o755)
+		}
+		w, err := zw.CreateHeader(h)
+		if err == nil {
+			_, err = w.Write([]byte(e[1]))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, path, buf.String())
+}
+
+// A hostile pack writes nothing a loose file could not: of a .pth file, a module in
+// node_modules, a git config, a name climbing out and a script, only the script lands,
+// not executable. The rest are counted refused.
+func TestImportHostilePack(t *testing.T) {
+	b, homeB, pack := hostileSetup(t)
+	packAt(t, pack,
+		[3]string{"evil.pth", "import os\n"},
+		[3]string{"node_modules/x.js", "evil()\n"},
+		[3]string{".git/config", "[core]\n\tfsmonitor = evil\n"},
+		[3]string{"../../x", "escaped\n"},
+		[3]string{"a.sh", "#!/bin/sh\n", "x"},
+	)
+	out := b.workRun(t, homeB, "import", "--no-plugins", "--update")
+	if got := filesUnderDir(t, homeB); !reflect.DeepEqual(got, []string{"evil/proj/run/a.sh"}) {
+		t.Fatalf("wrote %v\n%s", got, out)
+	}
+	if fi, err := os.Stat(filepath.Join(homeB, "evil", "proj", "run", "a.sh")); runtime.GOOS != "windows" && (err != nil || fi.Mode().Perm() != 0o644) {
+		t.Fatalf("a.sh mode: %v %v", fi, err)
+	}
+	if !strings.Contains(out, "work folders from EVIL: ") || !strings.Contains(out, "(1 file(s) filed, 0 kept, 0 beside, 4 refused") ||
+		!strings.Contains(out, `"../../x"`) || !strings.Contains(out, "evil.pth: refused: type") {
+		t.Fatalf("output: %s", out)
+	}
+}
+
+// A name only Windows refuses (8.3 short names alias another) is refused alone on a
+// Windows host; the rest of the pack restores (Review Focus 1).
+func TestImportPackWindowsName(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("only Windows reads a ~ name as another")
+	}
+	b, homeB, pack := hostileSetup(t)
+	packAt(t, pack, [3]string{"ok.md", "ok\n"}, [3]string{"PROGRA~1.md", "x\n"})
+	out := b.workRun(t, homeB, "import", "--no-plugins")
+	if got := filesUnderDir(t, homeB); !reflect.DeepEqual(got, []string{"evil/proj/run/ok.md"}) {
+		t.Fatalf("wrote %v\n%s", got, out)
+	}
+	if !strings.Contains(out, "1 refused") || !strings.Contains(out, "a name Windows reads as another") {
+		t.Fatalf("output: %s", out)
+	}
+}
+
+// Excluding a path the pack holds nothing under still drops its overlay entries from
+// the record, and leaves the pack alone.
+func TestExcludeOverlayOnlyPathPrunesRecord(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	configAs(t, m.claudeDir, "MAC", "set-destination", m.archive)
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	sub := filepath.Join(w, "run1", "sub")
+	mustWrite(t, filepath.Join(sub, "new.md"), "n\n")
+	m.workRun(t, home, "push", "--no-html")
+	rec := filepath.Join(m.claudeDir, "session-sync-base", "work-packs.json")
+	if !strings.Contains(mustRead(t, rec), "sub/new.md") {
+		t.Fatalf("overlay not recorded: %s", mustRead(t, rec))
+	}
+	before := backdate(t, pack)
+	configAs(t, m.claudeDir, "MAC", "exclude-folder", sub)
+	if r := mustRead(t, rec); strings.Contains(r, "sub/new.md") {
+		t.Fatalf("record still lists the excluded file: %s", r)
+	}
+	samePack(t, pack, before)
+	if _, err := os.Stat(filepath.Join(workCopy(m, w), "run1", "sub")); !os.IsNotExist(err) {
+		t.Fatalf("excluded overlay kept: %v", err)
+	}
+}
+
+// A record whose pack changed size on disk is rebuilt from the pack's index with its
+// overlay kept: an overlay copy of a file deleted here, dated before its pack entry,
+// is the only copy of that edit and must stay.
+func TestPushPackRecordStaleKeepsOverlay(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	f := filepath.Join(w, "run1", "f02.md")
+	mustWrite(t, f, "edited\n")
+	setTime(t, f, time.Now().Add(-30*24*time.Hour))
+	m.workRun(t, home, "push", "--no-html")
+	ov := filepath.Join(workCopy(m, w), "run1", "f02.md")
+	if got := mustRead(t, ov); got != "edited\n" {
+		t.Fatalf("overlay copy = %q", got)
+	}
+	if err := os.Remove(f); err != nil {
+		t.Fatal(err)
+	}
+	growPack(t, pack, 0)
+	m.workRun(t, home, "push", "--no-html")
+	if _, err := os.Stat(ov); err != nil {
+		t.Fatalf("overlay copy deleted: %v", err)
+	}
+}
+
+// A link planted where this machine's pack goes is never read through by an exclusion
+// inside the unit: the file it points to never reaches the archive.
+func TestExcludeInsideUnitIgnoresLinkedPack(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	configAs(t, m.claudeDir, "MAC", "set-destination", m.archive)
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	private := filepath.Join(t.TempDir(), "private.zip")
+	packAt(t, private, [3]string{"sub/a.md", "a\n"}, [3]string{"secret.md", "private\n"})
+	if err := os.Remove(pack); err != nil {
+		t.Fatal(err)
+	}
+	symlink(t, private, pack)
+	configAs(t, m.claudeDir, "MAC", "exclude-folder", filepath.Join(w, "run1", "sub"))
+	if fi, err := os.Lstat(pack); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		t.Fatalf("link replaced by what it pointed to: %v %v", fi, err)
+	}
+}

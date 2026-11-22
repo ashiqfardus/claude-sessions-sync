@@ -579,6 +579,9 @@ After upgrading from an older version:
   upgrade can come back once. Delete it again and it stays deleted.
 - **Home folders are matched** only after the other computer has pushed with this
   version.
+- **Work subfolders are packed** from this version on, and an older version skips the
+  zips: on a computer still running one, `import` and `pull` do not restore a subfolder
+  another computer packed. Upgrade every computer.
 
 **Going back to an older version:** run `claude-sessions uninstall` with **this**
 version first, then install the older one. An older `uninstall` does not know the
@@ -653,6 +656,14 @@ filtering for each first-level subfolder of a work folder, with the files direct
 the folder counted as one more: a subfolder over it is skipped, the rest of the folder
 is backed up, and `doctor` names the subfolder. Folders that hold app settings or
 caches, such as `~/Library`, `AppData` and `ProgramData`, are never backed up.
+
+**Packed subfolders.** A first-level subfolder whose files have all been unchanged for
+7 days, with at least 5 of them, goes into the archive as one zip,
+`<subfolder>.cspack.zip`, so the sync client moves one file instead of thousands. A
+file you edit or add there later goes up on its own, beside the zip; the zip is rebuilt
+only when those pass 50 files or a quarter of its size. `import` and `pull` unpack it
+into plain files under the same rules as any other restored file. Of a zipped file and
+a later copy beside it, the newer is restored.
 
 **What it skips.** Git repositories (your remote has those), `~/.claude`, and temp
 folders.
@@ -851,6 +862,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `--update` | `import`, `pull`, `restore` | Also bring in sessions continued elsewhere and newer memory |
 | `--update-profile` | `import`, `pull` | Also replace rule and skill files here with newer archived copies; this computer's are kept in the archive's `profile/replaced/` first |
 | `--no-plugins` | `import`, `pull` | Do not install plugins enabled on another computer |
+| `--no-work` | `import`, `pull` | Bring conversations only; skip other computers' work folders. Not with `--repoint` |
 | `--search-root <dirs>` | `import` | Where to look for projects (comma-separated; default: the parents of known projects, and your home) |
 | `--depth <n>` | `import` | How deep to look under each search root (default 3) |
 | `--include-bare-name` | `import`, `restore` | Also replace the bare folder name in transcripts (it can hit package names and prose) |
@@ -922,6 +934,8 @@ claude-sessions completion powershell | Out-String | Add-Content $PROFILE
   profile/replaced/<computer>/<time>/       rule files an import replaced on that computer
   profile/plugins/<computer>.json           each computer's enabled plugins
   work/<computer>/<folder path>/            each computer's work folders (text-like files only)
+  work/<computer>/<folder path>/<sub>.cspack.zip
+                                            a subfolder unchanged for 7 days, as one zip
   manifest/<computer>.json                  each computer's projects: path, git remote, home, version
   index/<computer>.json                     each computer's list of sessions
   projects.json                             a merged view, for the older PowerShell scripts
