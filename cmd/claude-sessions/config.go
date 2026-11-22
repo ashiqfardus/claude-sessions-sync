@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -233,6 +234,9 @@ flags:
 		if len(rest) != 3 {
 			return fmt.Errorf("usage: claude-sessions config map-folder <original path> <local folder>")
 		}
+		if runtime.GOOS == "windows" && gitBashRewritten(rest[1]) {
+			return gitBashError(rest[1])
+		}
 		if !rewrite.AbsoluteAnywhere(rest[1]) {
 			return fmt.Errorf("%q is not an absolute path: give the folder's path as it was on the machine that archived it", rest[1])
 		}
@@ -263,6 +267,10 @@ flags:
 			return err
 		}
 		if _, ok := cfg.WorkMap[rest[1]]; !ok {
+			// A key Git Bash rewrote that is mapped is one it stored earlier: removable.
+			if runtime.GOOS == "windows" && gitBashRewritten(rest[1]) {
+				return gitBashError(rest[1])
+			}
 			return fmt.Errorf("%s is not mapped", rest[1])
 		}
 		return saveWork(root, func(c *archive.Config) {
@@ -351,6 +359,16 @@ flags:
 }
 
 // saveWork loads the config, applies change and saves it.
+// gitBashRewritten reports whether p looks like a Unix path Git Bash (MSYS) rewrote
+// before this program saw it: /Users/me/SQL arrives as C:/Program Files/Git/Users/me/SQL.
+func gitBashRewritten(p string) bool {
+	return work.WindowsPath(p) && strings.Contains(strings.ToLower(strings.ReplaceAll(p[2:], `\`, "/")), "/program files/git/")
+}
+
+func gitBashError(p string) error {
+	return fmt.Errorf("%s looks like Git Bash rewrote the path; run it from PowerShell or prefix it with MSYS_NO_PATHCONV=1", p)
+}
+
 func saveWork(root string, change func(*archive.Config), msg string) error {
 	cfg, err := archive.LoadConfig(root)
 	if err != nil {
