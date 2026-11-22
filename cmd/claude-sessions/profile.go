@@ -31,6 +31,8 @@ import (
 var profileDirs = []string{"skills", "agents", "commands", "output-styles"}
 
 const noPluginsHelp = "do not install plugins that are enabled on another machine and missing here"
+const noWorkHelp = "bring conversations only; skip other machines' work folders"
+const noWorkNote = "work folders skipped (--no-work)"
 
 func profileDir(dest string) string { return filepath.Join(dest, "profile") }
 

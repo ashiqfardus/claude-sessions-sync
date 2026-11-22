@@ -1682,3 +1682,46 @@ func TestImportWorkExcludedSubfolderSkipped(t *testing.T) {
 		t.Fatalf("output: %s", out)
 	}
 }
+
+func TestImportNoWork(t *testing.T) {
+	p := newWorkPair(t)
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins", "--no-work")
+	if _, err := os.Stat(filepath.Join(p.homeB, "My Work")); !os.IsNotExist(err) {
+		t.Fatalf("work folder placed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.homeB, "Desktop", "todo.md")); !os.IsNotExist(err) {
+		t.Fatalf("exact file placed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.b.claudeDir, "session-sync-base", "work-held.json")); !os.IsNotExist(err) {
+		t.Fatalf("held record written: %v", err)
+	}
+	s := mustRead(t, p.b.session(p.repo))
+	if !strings.Contains(s, inJSON(p.homeA)) || strings.Contains(s, inJSON(p.homeB)) {
+		t.Fatalf("transcript rewritten by work moves:\n%s", s)
+	}
+	if !strings.Contains(out, "work folders skipped (--no-work)") || strings.Contains(out, "--repoint") {
+		t.Fatalf("output: %s", out)
+	}
+}
+
+func TestPullNoWork(t *testing.T) {
+	p := newWorkPair(t)
+	if err := os.RemoveAll(p.folder); err != nil { // one file system stands in for two
+		t.Fatal(err)
+	}
+	out := p.b.workRun(t, p.homeB, "pull", "--no-plugins", "--no-work")
+	if _, err := os.Stat(p.folder); !os.IsNotExist(err) {
+		t.Fatalf("work folder restored: %v", err)
+	}
+	if !strings.Contains(out, "work folders skipped (--no-work)") {
+		t.Fatalf("output: %s", out)
+	}
+}
+
+func TestNoWorkRefusesRepoint(t *testing.T) {
+	p := newWorkPair(t)
+	out, err := p.b.workCmd(p.homeB, "import", "--no-plugins", "--no-work", "--repoint").CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "--no-work") || !strings.Contains(string(out), "--repoint") {
+		t.Fatalf("err=%v out=%s", err, out)
+	}
+}

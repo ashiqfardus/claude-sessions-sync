@@ -43,9 +43,13 @@ func cmdImport(args []string) error {
 	update := fs.Bool("update", false, updateHelp)
 	noPlugins := fs.Bool("no-plugins", false, noPluginsHelp)
 	asJSON := fs.Bool("json", false, "machine-readable output")
+	noWork := fs.Bool("no-work", false, noWorkHelp)
 	repoint := fs.Bool("repoint", false, "also rewrite conversations already here that name other machines' work folders (originals are backed up; any used in the last hour is skipped)")
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
+	}
+	if *noWork && *repoint {
+		return fmt.Errorf("--no-work and --repoint cannot be combined: --repoint rewrites conversations to work folders that --no-work does not restore")
 	}
 
 	root, _, err := resolveRoot(*claudeDir)
@@ -151,11 +155,18 @@ func cmdImport(args []string) error {
 	if cerr != nil {
 		wcfg.WorkBackup = "off"
 	}
-	workMoves, workRes := restoreWork(root, dest, shards, wcfg, *dryRun, *update, false)
-	// A folder placed elsewhere since an earlier import repoints from where it was, until
-	// a --repoint has moved every conversation off it (spec §7a).
-	remaps, remapNotes := remapMoves(workRes.Prev, workRes.ByMachine)
-	workMoves = append(workMoves, remaps...)
+	// --no-work leaves all of this empty: no placement, no moves, no held record.
+	var workMoves []rewrite.Move
+	var workRes workRestoreResult
+	var remapNotes []string
+	if !*noWork {
+		workMoves, workRes = restoreWork(root, dest, shards, wcfg, *dryRun, *update, false)
+		// A folder placed elsewhere since an earlier import repoints from where it was, until
+		// a --repoint has moved every conversation off it (spec §7a).
+		var remaps []rewrite.Move
+		remaps, remapNotes = remapMoves(workRes.Prev, workRes.ByMachine)
+		workMoves = append(workMoves, remaps...)
+	}
 	resolve := func(bucket string, p archive.Project) identity.Match {
 		if local, ok := cfg.Mapped(bucket); ok {
 			if st, err := os.Stat(local); err != nil || !st.IsDir() {
@@ -442,6 +453,9 @@ func cmdImport(args []string) error {
 	for _, n := range append(workRes.Notes, remapNotes...) {
 		fmt.Println(n)
 	}
+	if *noWork {
+		fmt.Println(noWorkNote)
+	}
 	if len(workRes.Placed) > 0 {
 		fmt.Println("  to place them elsewhere: claude-sessions config map-folder '<path from above>' '<local folder>', or claude-sessions config work-placement home|machine")
 	}
@@ -574,6 +588,7 @@ func cmdPull(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "report what would be copied without writing")
 	update := fs.Bool("update", false, updateHelp)
 	noPlugins := fs.Bool("no-plugins", false, noPluginsHelp)
+	noWork := fs.Bool("no-work", false, noWorkHelp)
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
@@ -658,13 +673,16 @@ func cmdPull(args []string) error {
 	profile := restoreProfile(root, dest, *dryRun, *update, !*noPlugins)
 	// Work folders at their recorded paths, under the same safety rules as import.
 	var workRes workRestoreResult
-	if cfg, err := archive.LoadConfig(root); err == nil {
+	if cfg, err := archive.LoadConfig(root); err == nil && !*noWork {
 		shards, _, _ := archive.ReadShards(dest)
 		_, workRes = restoreWork(root, dest, shards, cfg, *dryRun, *update, true)
 	}
 
 	fmt.Printf("\n%s %d transcript(s) and %d memory file(s), %d already present.\n",
 		verbFor(*dryRun), pulled, memory, already)
+	if *noWork {
+		fmt.Println(noWorkNote)
+	}
 	for _, n := range workRes.Notes {
 		fmt.Println(n)
 	}
