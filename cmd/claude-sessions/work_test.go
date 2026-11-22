@@ -2059,9 +2059,10 @@ func TestPushUnreadablePackKept(t *testing.T) {
 	m := newMachine(t, "MAC", t.TempDir())
 	configAs(t, m.claudeDir, "MAC", "set-destination", m.archive)
 	home, w, pack := packHome(t, m, 7)
+	sub := filepath.Join(w, "run1", "sub")
+	mustWrite(t, filepath.Join(sub, "s.md"), "private\n")
+	ageFiles(t, w)
 	m.workRun(t, home, "push", "--no-html")
-	nothere := filepath.Join(w, "run1", "nothere")
-	configAs(t, m.claudeDir, "MAC", "exclude-folder", nothere)
 	if err := os.Remove(filepath.Join(w, "run1", "f06.md")); err != nil { // only in the pack now
 		t.Fatal(err)
 	}
@@ -2076,6 +2077,10 @@ func TestPushUnreadablePackKept(t *testing.T) {
 		f.Close()
 		t.Skip("files stay readable here")
 	}
+	// Excluded while the pack holds sub and cannot be read: nothing is taken out yet.
+	if out, err := configExpectErr(t, m.claudeDir, "MAC", "exclude-folder", sub); err == nil {
+		t.Fatalf("exclude-folder: %s", out)
+	}
 	m.workRun(t, home, "push", "--no-html")
 	if err := os.Chmod(pack, 0o644); err != nil {
 		t.Fatal(err)
@@ -2083,10 +2088,10 @@ func TestPushUnreadablePackKept(t *testing.T) {
 	if _, err := os.Stat(gone); err != nil {
 		t.Fatalf("archive-only file deleted: %v", err)
 	}
-	if idx := packIndex(t, pack); len(idx) != 7 || idx["f06.md"] != 7 {
+	if idx := packIndex(t, pack); len(idx) != 8 || idx["f06.md"] != 7 || idx["sub/s.md"] != 8 {
 		t.Fatalf("pack: %v", idx)
 	}
-	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log, "WARN: excluded folder "+nothere) {
+	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log, "WARN: excluded folder "+sub) {
 		t.Fatalf("log: %s", log)
 	}
 }
@@ -2797,5 +2802,47 @@ func TestPushCompactionWaitsToSettle(t *testing.T) {
 	}
 	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); strings.Count(log, "WORK: compacted") != 1 {
 		t.Fatalf("log: %s", log)
+	}
+}
+
+// Once an exclusion inside a packed unit is out of the pack, later pushes trust the
+// record and leave the pack unread: one zeroed since, at its size, draws no warning.
+func TestExcludeInsideUnitReadsPackOnce(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	configAs(t, m.claudeDir, "MAC", "set-destination", m.archive)
+	home, w, pack := packHome(t, m, 7)
+	sub := filepath.Join(w, "run1", "sub")
+	mustWrite(t, filepath.Join(sub, "s.md"), "private\n")
+	ageFiles(t, w)
+	m.workRun(t, home, "push", "--no-html")
+	configAs(t, m.claudeDir, "MAC", "exclude-folder", sub)
+	st, err := os.Stat(pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, pack, strings.Repeat("\x00", int(st.Size())))
+	m.workRun(t, home, "push", "--no-html")
+	m.workRun(t, home, "push", "--no-html")
+	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); strings.Contains(log, "WARN: excluded folder") {
+		t.Fatalf("pack read again: %s", log)
+	}
+}
+
+// An exclusion prunes the pack under a name this machine went by before even when
+// that name's shard is gone: the pack is found from the excluded path's own folders.
+func TestExcludeFolderPrunesFormerNamePack(t *testing.T) {
+	arch := t.TempDir()
+	m := newMachine(t, "MAC", arch)
+	configAs(t, m.claudeDir, "MAC", "set-destination", arch)
+	configAs(t, m.claudeDir, "OLD", "set-machine", "MAC")
+	dir := t.TempDir()
+	pack := filepath.Join(workCopy(machine{name: "OLD", archive: arch}, dir), "run1.cspack.zip")
+	packAt(t, pack, time.Now().Add(-8*24*time.Hour), [3]string{"keep.md", "k\n"}, [3]string{"sub/s.md", "private\n"})
+	if _, err := os.Stat(filepath.Join(arch, "manifest", "OLD.json")); !os.IsNotExist(err) {
+		t.Fatalf("OLD has a shard: %v", err)
+	}
+	configAs(t, m.claudeDir, "MAC", "exclude-folder", filepath.Join(dir, "run1", "sub"))
+	if idx := packIndex(t, pack); !reflect.DeepEqual(idx, map[string]int64{"keep.md": 2}) {
+		t.Fatalf("pack: %v", idx)
 	}
 }

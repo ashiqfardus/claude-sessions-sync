@@ -772,9 +772,16 @@ func purgeWork(root, dest, machine, folder string) ([]string, error) {
 		if err := drop(m, folder); err != nil {
 			return removed, err
 		}
-		entries := shard.WorkFolders
+		entries := slices.Clone(shard.WorkFolders)
 		if m != machine {
 			entries = readShard(dest, m).WorkFolders
+		}
+		// The folders above folder are looked for on disk too: a former name's shard may
+		// be gone while its packs stay.
+		for a := filepath.Dir(folder); a != filepath.Dir(a); a = filepath.Dir(a) {
+			if !slices.ContainsFunc(entries, func(f archive.WorkFolder) bool { return f.Path == a }) {
+				entries = append(entries, archive.WorkFolder{Path: a})
+			}
 		}
 		for _, f := range entries {
 			gone, err := prunePack(root, dest, m, f, folder, m == machine, real)
@@ -813,10 +820,28 @@ func prunePack(root, dest, machine string, f archive.WorkFolder, p string, own b
 	}
 	unit, sub := in[len(at)], strings.Join(in[len(at)+1:], "/")
 	pack := filepath.Join(dir, unit+work.PackSuffix)
-	if fi, err := os.Lstat(pack); err != nil || !fi.Mode().IsRegular() {
+	fi, err := os.Lstat(pack)
+	if err != nil || !fi.Mode().IsRegular() {
 		return false, nil // a link planted there is never read through
 	}
 	under := func(n string) bool { return sub == "" || work.Within(n, sub, fold) }
+	var packs map[string]map[string]packRecord
+	if own {
+		// Every push repeats each exclusion: a pack the record says is the one there and
+		// holds nothing under p is not opened again.
+		packs = loadPacks(root)
+		holds := func(m map[string]work.PackEntry) bool {
+			for k := range m {
+				if under(k) {
+					return true
+				}
+			}
+			return false
+		}
+		if rec, ok := packs[f.Path][unit]; ok && rec.Bytes == fi.Size() && !holds(rec.Files) && !holds(rec.Overlay) {
+			return false, nil
+		}
+	}
 	n := 1
 	if sub == "" { // the whole unit is excluded: every entry goes, unread
 		if err := os.Remove(pack); err != nil {
@@ -830,7 +855,6 @@ func prunePack(root, dest, machine string, f archive.WorkFolder, p string, own b
 	}
 	// The record loses p too, its overlay included, even when the pack held nothing
 	// there; it is written only when that changed it.
-	packs := loadPacks(root)
 	rec, ok := packs[f.Path][unit]
 	if !ok {
 		return n > 0, nil
