@@ -29,14 +29,26 @@ const quietWorkBudget = 30 * time.Second
 
 // workPushResult is what pushWork did. New holds "<folder> (<n> files, <size>)" for
 // each folder backed up for the first time; Would, under --dry-run, the files a real
-// run would copy.
+// run would copy, and WouldPack the units it would pack or compact.
 type workPushResult struct {
 	Folders, Copied, Unchanged int
+	Packed, Compacted          int
 	Bytes                      int64
 	New                        []string
 	Deferred                   bool
-	Would                      []string
+	Would, WouldPack           []string
 }
+
+// A unit - a first-level subfolder of a work folder - whose files have not changed
+// for packAge, with at least packMinFiles of them, is archived as one zip: the sync
+// client then moves one file, not thousands. Later changes are copied loose beside
+// it, until there are more than packOverlayFiles of them or they pass a quarter of
+// the pack's bytes; then the pack is rebuilt with them.
+const (
+	packAge          = 7 * 24 * time.Hour
+	packMinFiles     = 5
+	packOverlayFiles = 50
+)
 
 // workEnv is what choosing work folders needs to know about this machine.
 // CLAUDE_SESSIONS_TEMP_DIRS replaces the temp list; the tests need it, as every test
@@ -109,6 +121,14 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 		for _, x := range cfg.WorkExclude {
 			if _, err := purgeWork(dest, shard.Machine, x); err != nil {
 				logf("WARN: excluded folder %s: %v", x, err)
+			}
+		}
+	}
+	packs := loadPacks(root)
+	for fp, units := range packs {
+		for u := range units {
+			if excluded(filepath.Join(fp, u)) {
+				delete(units, u)
 			}
 		}
 	}
@@ -202,41 +222,61 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 			e.Skipped = "over 250 MB: " + strings.Join(names, ", ")
 		}
 		linked := false
-		for _, p := range c.Files {
-			if budget > 0 && time.Since(start) > budget {
-				return e, false
-			}
-			target := dir
-			if !f.Exact {
-				rel, _ := filepath.Rel(f.Path, p)
-				target = filepath.Join(dir, rel)
-			}
+		// copyLoose copies p to target unless the archive copy is up to date, and
+		// reports whether the archive then holds p as it is (or would, in a dry run).
+		copyLoose := func(p, target string, src os.FileInfo) bool {
 			if !realWorkDirs(dest, filepath.Dir(target), real) {
 				if !linked {
 					logf("WARN: work folder %s: its archive copy is reached through a link; not written", f.Path)
 					linked = true
 				}
-				continue
-			}
-			src, err := os.Stat(p)
-			if err != nil {
-				continue
+				return false
 			}
 			// Unlike a transcript, a file may shrink: an edit within the mtime tolerance
 			// that changed its size is copied too.
 			if dst := archive.StatOrNil(target); !archive.NeedsCopy(src, dst) &&
 				!(dst != nil && src.Size() != dst.Size() && archive.SameMTime(src.ModTime(), dst.ModTime())) {
 				res.Unchanged++
-				continue
+				return true
 			}
 			if dryRun {
 				res.Would = append(res.Would, p)
 			} else if err := archive.CopyFile(p, target); err != nil {
 				logf("WARN: %s: %v", p, err)
-				continue
+				return false
 			}
 			res.Copied++
+			return true
 		}
+		byUnit := map[string][]string{}
+		for _, p := range c.Files {
+			byUnit[unit(p)] = append(byUnit[unit(p)], p)
+		}
+		names := make([]string, 0, len(byUnit))
+		for u := range byUnit {
+			names = append(names, u)
+		}
+		sort.Strings(names)
+		for _, u := range names {
+			// Checked before a unit, never inside one: a pack is built whole or not at all.
+			if budget > 0 && time.Since(start) > budget {
+				return e, false
+			}
+			if !f.Exact && u != loose && packUnit(dest, dir, f.Path, u, byUnit[u], packs, real, dryRun, &res, copyLoose, logf) {
+				continue
+			}
+			for _, p := range byUnit[u] {
+				target := dir
+				if !f.Exact {
+					rel, _ := filepath.Rel(f.Path, p)
+					target = filepath.Join(dir, rel)
+				}
+				if src, err := os.Stat(p); err == nil {
+					copyLoose(p, target, src)
+				}
+			}
+		}
+		e.Packed = len(packs[f.Path])
 		e.Files, e.Bytes = len(c.Files), c.Bytes
 		res.Folders++
 		res.Bytes += c.Bytes
@@ -280,8 +320,270 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 		if err := archive.WriteFileAtomic(workFoldersPath(root), append(data, '\n'), 0o644); err != nil {
 			logf("WARN: work folders record: %v", err)
 		}
+		if err := savePacks(root, packs); err != nil {
+			logf("WARN: work packs record: %v", err)
+		}
 	}
 	return res
+}
+
+// packRecord is what this machine packed of one unit: Files, the pack's entries by
+// "/"-separated path; Overlay, the files copied loose beside it since; Bytes, the
+// pack's size on disk, which tells whether the pack there is still the one recorded.
+type packRecord struct {
+	Files   map[string]work.PackEntry `json:"files"`
+	Overlay map[string]work.PackEntry `json:"overlay,omitempty"`
+	Bytes   int64                     `json:"bytes"`
+}
+
+// workPacksPath is this machine's record of its packs. It lets push see what changed
+// since a pack without reading the pack from the cloud mount.
+func workPacksPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "work-packs.json")
+}
+
+// loadPacks reads that record, by folder path, then unit. Missing or unreadable gives
+// an empty one: push then reads each pack's own index once.
+func loadPacks(root string) map[string]map[string]packRecord {
+	var m map[string]map[string]packRecord
+	raw, err := os.ReadFile(workPacksPath(root))
+	if err != nil || json.Unmarshal(raw, &m) != nil || m == nil {
+		return map[string]map[string]packRecord{}
+	}
+	return m
+}
+
+// savePacks writes that record, without folders left with no pack.
+func savePacks(root string, m map[string]map[string]packRecord) error {
+	for fp, units := range m {
+		if len(units) == 0 {
+			delete(m, fp)
+		}
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return archive.WriteFileAtomic(workPacksPath(root), append(data, '\n'), 0o644)
+}
+
+// packUnit backs up unit u of folder as a pack plus loose overlay, and reports false
+// when u is to be copied loose instead: not packed, and not ready to be. dir is the
+// folder's archive copy, files the unit's collected files; packs is updated.
+func packUnit(dest, dir, folder, u string, files []string, packs map[string]map[string]packRecord, real map[string]bool,
+	dryRun bool, res *workPushResult, copyLoose func(p, target string, src os.FileInfo) bool, logf func(string, ...any)) bool {
+	if !realWorkDirs(dest, dir, real) {
+		return false // copyLoose warns
+	}
+	name, pack, loose := filepath.Join(folder, u), filepath.Join(dir, u+work.PackSuffix), filepath.Join(dir, u)
+	info, local := map[string]os.FileInfo{}, map[string]string{} // by "/"-separated path in the unit
+	var total int64
+	for _, p := range files {
+		st, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		rel, _ := filepath.Rel(name, p)
+		r := filepath.ToSlash(rel)
+		info[r], local[r] = st, p
+		total += st.Size()
+	}
+	set := func(r packRecord) {
+		if packs[folder] == nil {
+			packs[folder] = map[string]packRecord{}
+		}
+		packs[folder][u] = r
+	}
+
+	rec, ok := packs[folder][u]
+	fi, err := os.Lstat(pack)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		delete(packs[folder], u) // removed (an exclusion): the unit is unpacked again
+		ok = false
+	case err != nil || !fi.Mode().IsRegular():
+		logf("WARN: work folder %s: %s is no pack; %s is copied loose", folder, pack, u)
+		return false
+	case !ok || rec.Bytes != fi.Size():
+		idx, err := work.ReadPackIndex(pack)
+		if err != nil { // loose copies beside it win on restore: nothing is lost
+			logf("WARN: work folder %s: pack of %s unreadable (%v); its files are copied loose", folder, u, err)
+			return false
+		}
+		rec, ok = packRecord{Files: idx, Bytes: fi.Size()}, true
+	}
+
+	if !ok {
+		if len(info) < packMinFiles {
+			return false
+		}
+		cutoff := time.Now().Add(-packAge)
+		for _, st := range info {
+			if !st.ModTime().Before(cutoff) {
+				return false
+			}
+		}
+		if len(info) > work.PackMaxEntries {
+			logf("WARN: work folder %s: subfolder %s has over %d files; it stays loose", folder, u, work.PackMaxEntries)
+			return false
+		}
+		add := packFiles(info, local)
+		if dryRun {
+			res.WouldPack = append(res.WouldPack, fmt.Sprintf("pack %s (%d files, %s)", name, len(add), humanSize(total)))
+			return true
+		}
+		if err := work.WritePack(pack, add); err != nil {
+			logf("WARN: work folder %s: packing %s: %v; its files are copied loose", folder, u, err)
+			return false
+		}
+		r := packRecord{Files: map[string]work.PackEntry{}}
+		for _, f := range add {
+			r.Files[f.Rel] = work.PackEntry{Size: f.Size, ModTime: f.ModTime}
+		}
+		removeLoose(dest, loose, r.Files, real)
+		if st, err := os.Stat(pack); err == nil {
+			r.Bytes = st.Size()
+		}
+		set(r)
+		res.Packed++
+		logf("WORK: packed %s (%d files)", name, len(add))
+		return true
+	}
+
+	// Packed: what differs from both the pack and the overlay is new or changed.
+	ov := map[string]work.PackEntry{}
+	for r, e := range rec.Overlay {
+		ov[r] = e
+	}
+	var changed []string
+	for r, st := range info {
+		ref, in := rec.Overlay[r]
+		if !in {
+			ref, in = rec.Files[r]
+		}
+		if in && ref.Size == st.Size() && archive.SameMTime(ref.ModTime, st.ModTime()) {
+			res.Unchanged++
+			continue
+		}
+		changed = append(changed, r)
+		ov[r] = work.PackEntry{Size: st.Size(), ModTime: st.ModTime()}
+	}
+	sort.Strings(changed)
+	if r, done := compactPack(dest, folder, u, pack, loose, rec, ov, info, local, real, dryRun, res, logf); done {
+		if !dryRun {
+			set(r)
+		}
+		return true
+	}
+	if rec.Overlay == nil {
+		rec.Overlay = map[string]work.PackEntry{}
+	}
+	for _, r := range changed {
+		if copyLoose(local[r], filepath.Join(loose, filepath.FromSlash(r)), info[r]) {
+			rec.Overlay[r] = ov[r]
+		}
+	}
+	set(rec)
+	return true
+}
+
+// compactPack rebuilds a unit's pack with its overlay ov when ov has grown past the
+// limits. It reports whether it did (or would, in a dry run), with the new record.
+func compactPack(dest, folder, u, pack, loose string, rec packRecord, ov map[string]work.PackEntry, info map[string]os.FileInfo,
+	local map[string]string, real map[string]bool, dryRun bool, res *workPushResult, logf func(string, ...any)) (packRecord, bool) {
+	var ovBytes, packBytes int64
+	for _, e := range ov {
+		ovBytes += e.Size
+	}
+	for _, e := range rec.Files {
+		packBytes += e.Size
+	}
+	if len(ov) <= packOverlayFiles && ovBytes*4 <= packBytes {
+		return rec, false
+	}
+	merged := map[string]work.PackEntry{}
+	for _, m := range []map[string]work.PackEntry{rec.Files, ov} {
+		for r, e := range m {
+			merged[r] = e
+		}
+	}
+	var total int64
+	for _, e := range merged {
+		total += e.Size
+	}
+	name := filepath.Join(folder, u)
+	if len(merged) > work.PackMaxEntries || total > work.MaxFolderBytes {
+		logf("WARN: work folder %s: subfolder %s is too large to pack again; its changes stay loose", folder, u)
+		return rec, false
+	}
+	if dryRun {
+		res.WouldPack = append(res.WouldPack, fmt.Sprintf("compact %s (%d files, %s)", name, len(merged), humanSize(total)))
+		return rec, true
+	}
+	// The newest copy of each overlay file: the local one, or, for one deleted here
+	// since, the archive's.
+	add := packFiles(info, local)
+	add = slices.DeleteFunc(add, func(f work.PackFile) bool { _, in := ov[f.Rel]; return !in })
+	for r := range ov {
+		if _, here := local[r]; here {
+			continue
+		}
+		q := filepath.Join(loose, filepath.FromSlash(r))
+		if st, err := os.Lstat(q); err == nil && st.Mode().IsRegular() && realWorkDirs(dest, filepath.Dir(q), real) {
+			add = append(add, work.PackFile{Rel: r, Path: q, Size: st.Size(), ModTime: st.ModTime()})
+		}
+	}
+	if err := work.CompactPack(pack, pack, add); err != nil {
+		logf("WARN: work folder %s: packing %s again: %v; its changes are copied loose", folder, u, err)
+		return rec, false
+	}
+	r := packRecord{Files: rec.Files}
+	added := map[string]work.PackEntry{}
+	for _, f := range add {
+		added[f.Rel] = work.PackEntry{Size: f.Size, ModTime: f.ModTime}
+		r.Files[f.Rel] = added[f.Rel]
+	}
+	removeLoose(dest, loose, added, real)
+	if st, err := os.Stat(pack); err == nil {
+		r.Bytes = st.Size()
+	}
+	res.Compacted++
+	logf("WORK: compacted %s", name)
+	return r, true
+}
+
+// packFiles lists the unit's local files for a pack, sorted.
+func packFiles(info map[string]os.FileInfo, local map[string]string) []work.PackFile {
+	out := make([]work.PackFile, 0, len(info))
+	for r, st := range info {
+		out = append(out, work.PackFile{Rel: r, Path: local[r], Size: st.Size(), ModTime: st.ModTime()})
+	}
+	slices.SortFunc(out, func(a, b work.PackFile) int { return strings.Compare(a.Rel, b.Rel) })
+	return out
+}
+
+// removeLoose deletes the archive's loose copies under loose of the files now in its
+// pack (in, by "/"-separated path), and the folders that leaves empty. A loose copy of
+// a file not in the pack - deleted here, still in the archive - stays.
+func removeLoose(dest, loose string, in map[string]work.PackEntry, real map[string]bool) {
+	var dirs []string
+	_ = filepath.WalkDir(loose, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !realWorkDirs(dest, filepath.Dir(p), real) {
+			return nil
+		}
+		if d.IsDir() {
+			dirs = append(dirs, p)
+			return nil
+		}
+		rel, _ := filepath.Rel(loose, p)
+		if _, ok := in[filepath.ToSlash(rel)]; ok && d.Type().IsRegular() {
+			os.Remove(p)
+		}
+		return nil
+	})
+	for i := len(dirs) - 1; i >= 0; i-- {
+		os.Remove(dirs[i]) // fails, as it should, on one still holding files
+	}
 }
 
 // originOf names where folder f came from when it is, or lies below, a folder placed
@@ -433,6 +735,19 @@ func purgeWork(dest, machine, folder string) ([]string, error) {
 		if err := drop(m, folder); err != nil {
 			return removed, err
 		}
+		entries := shard.WorkFolders
+		if m != machine {
+			entries = readShard(dest, m).WorkFolders
+		}
+		for _, f := range entries {
+			gone, err := dropPack(dest, m, f, folder, real)
+			if err != nil {
+				return removed, err
+			}
+			if gone && !slices.Contains(removed, folder) {
+				removed = append(removed, folder)
+			}
+		}
 	}
 	if !changed {
 		return removed, nil
@@ -442,6 +757,41 @@ func purgeWork(dest, machine, folder string) ([]string, error) {
 		shard.Machine = machine
 	}
 	return removed, writeManifest(dest, shard)
+}
+
+// dropPack removes the pack of the unit of work folder f that p lies in, and the
+// unit's loose copies, when the pack holds p: the next push packs the unit again
+// without it. A pack that no longer holds p stays, as purge runs on every push.
+func dropPack(dest, machine string, f archive.WorkFolder, p string, real map[string]bool) (bool, error) {
+	fold := runtime.GOOS != "linux" || work.WindowsPath(f.Path) || work.WindowsPath(p)
+	sep := func(r rune) bool { return r == '/' || r == '\\' }
+	in, at := strings.FieldsFunc(p, sep), strings.FieldsFunc(f.Path, sep)
+	if f.Exact || len(in) <= len(at) || !work.Within(p, f.Path, fold) || in[len(at)] == ".." || in[len(at)] == "." {
+		return false, nil
+	}
+	dir, err := workDir(dest, machine, f.Path)
+	if err != nil || !realWorkDirs(dest, dir, real) {
+		return false, nil // hostile or malformed: skip, never delete
+	}
+	unit, sub := in[len(at)], strings.Join(in[len(at)+1:], "/")
+	pack := filepath.Join(dir, unit+work.PackSuffix)
+	if _, err := os.Lstat(pack); err != nil {
+		return false, nil
+	}
+	if sub != "" {
+		idx, err := work.ReadPackIndex(pack)
+		holds := err != nil // unreadable: it may hold p
+		for n := range idx {
+			holds = holds || work.Within(n, sub, fold)
+		}
+		if !holds {
+			return false, nil
+		}
+	}
+	if err := os.Remove(pack); err != nil {
+		return false, err
+	}
+	return true, os.RemoveAll(filepath.Join(dir, unit)) // never follows a link
 }
 
 // heldWorkPath is this machine's record of work files restored from other machines

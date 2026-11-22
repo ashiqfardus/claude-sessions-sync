@@ -1536,6 +1536,10 @@ func TestDoctorWork(t *testing.T) {
 	if l, d, _ := doctorWorkLine(t, m); l != "ok" || !strings.Contains(d, "1 folder(s), 3 file(s)") {
 		t.Fatalf("on: %s %s", l, d)
 	}
+	shard(map[string]any{"path": "/w/a", "files": 3, "bytes": 100, "packed": 2})
+	if l, d, _ := doctorWorkLine(t, m); l != "ok" || !strings.Contains(d, "1 folder(s), 3 file(s), 2 packed unit(s)") {
+		t.Fatalf("packed: %s %s", l, d)
+	}
 
 	shard(map[string]any{"path": "/w/a", "files": 3, "bytes": work.WarnBytes + 1})
 	if l, _, a := doctorWorkLine(t, m); l != "warn" || !strings.Contains(a, "config exclude-folder") {
@@ -1724,4 +1728,295 @@ func TestNoWorkRefusesRepoint(t *testing.T) {
 	if err == nil || !strings.Contains(string(out), "--no-work") || !strings.Contains(string(out), "--repoint") {
 		t.Fatalf("err=%v out=%s", err, out)
 	}
+}
+
+// packHome makes <home>/SQL/run1 holding n files 8 days old, and a session that works
+// in SQL. It returns home, SQL and where run1's pack goes in the archive.
+func packHome(t *testing.T, m machine, n int) (home, w, pack string) {
+	t.Helper()
+	home = t.TempDir()
+	w = filepath.Join(home, "SQL")
+	for i := 0; i < n; i++ {
+		mustWrite(t, filepath.Join(w, "run1", fmt.Sprintf("f%02d.md", i)), fmt.Sprintf("file %d\n", i))
+	}
+	ageFiles(t, w)
+	workSession(t, m, home, nil, `cd "`+w+`" && ls`)
+	return home, w, filepath.Join(workCopy(m, w), "run1.cspack.zip")
+}
+
+// ageFiles makes every file under dir 8 days old.
+func ageFiles(t *testing.T, dir string) {
+	t.Helper()
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			err = os.Chtimes(p, old, old)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// packIndex lists a pack's entries, sorted, with their sizes.
+func packIndex(t *testing.T, pack string) map[string]int64 {
+	t.Helper()
+	idx, err := work.ReadPackIndex(pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]int64{}
+	for n, e := range idx {
+		out[n] = e.Size
+	}
+	return out
+}
+
+func sortedWorkFiles(arch string) []string {
+	got := workFiles(arch)
+	slices.Sort(got)
+	return got
+}
+
+// backdate sets the pack's time an hour back, so a rewrite shows, and returns its info.
+func backdate(t *testing.T, pack string) os.FileInfo {
+	t.Helper()
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(pack, old, old); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi
+}
+
+func samePack(t *testing.T, pack string, before os.FileInfo) {
+	t.Helper()
+	fi, err := os.Stat(pack)
+	if err != nil || fi.Size() != before.Size() || !fi.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("pack rewritten: %v %v", fi, err)
+	}
+}
+
+func TestPushPacksOldUnit(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+
+	enc := "MAC/" + work.Encode(w) + "/"
+	if got := sortedWorkFiles(m.archive); !reflect.DeepEqual(got, []string{enc + "run1.cspack.zip"}) {
+		t.Fatalf("archived %v", got)
+	}
+	if idx := packIndex(t, pack); len(idx) != 6 || idx["f00.md"] != 7 || idx["f05.md"] != 7 {
+		t.Fatalf("pack: %v", idx)
+	}
+	if wf := workShard(t, m); len(wf) != 1 || wf[0].Packed != 1 || wf[0].Files != 6 || wf[0].Bytes != 42 {
+		t.Fatalf("shard: %+v", wf)
+	}
+	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log, "WORK: packed "+filepath.Join(w, "run1")+" (6 files)") {
+		t.Fatalf("log: %s", log)
+	}
+}
+
+func TestPushSkipsYoungOrSmallUnit(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, _ := packHome(t, m, 6)
+	day := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(filepath.Join(w, "run1", "f03.md"), day, day); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		mustWrite(t, filepath.Join(w, "run2", fmt.Sprintf("g%d.md", i)), "g\n")
+	}
+	ageFiles(t, filepath.Join(w, "run2"))
+	m.workRun(t, home, "push", "--no-html")
+
+	got := sortedWorkFiles(m.archive)
+	if len(got) != 10 || slices.ContainsFunc(got, func(s string) bool { return strings.HasSuffix(s, ".zip") }) {
+		t.Fatalf("archived %v", got)
+	}
+	if wf := workShard(t, m); len(wf) != 1 || wf[0].Packed != 0 || wf[0].Files != 10 {
+		t.Fatalf("shard: %+v", wf)
+	}
+}
+
+// The first pack is built from local files. Only archive copies of files in it are
+// removed: a file deleted here but still in the archive stays.
+func TestPushKeepsArchiveOnlyFiles(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	mustWrite(t, filepath.Join(workCopy(m, w), "run1", "gone.md"), "only in the archive\n")
+	mustWrite(t, filepath.Join(workCopy(m, w), "run1", "f00.md"), "file 0\n")
+	m.workRun(t, home, "push", "--no-html")
+
+	enc := "MAC/" + work.Encode(w) + "/"
+	if got := sortedWorkFiles(m.archive); !reflect.DeepEqual(got, []string{enc + "run1.cspack.zip", enc + "run1/gone.md"}) {
+		t.Fatalf("archived %v", got)
+	}
+	if idx := packIndex(t, pack); len(idx) != 6 {
+		t.Fatalf("pack: %v", idx)
+	}
+}
+
+// After packing, an edit and a new file are copied loose beside the pack, which is
+// left alone.
+func TestPushOverlayOnly(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	before := backdate(t, pack)
+
+	mustWrite(t, filepath.Join(w, "run1", "f02.md"), "e\n") // 4 of 42 bytes, under a quarter
+	mustWrite(t, filepath.Join(w, "run1", "new.md"), "n\n")
+	m.workRun(t, home, "push", "--no-html")
+	enc := "MAC/" + work.Encode(w) + "/"
+	if got := sortedWorkFiles(m.archive); !reflect.DeepEqual(got, []string{enc + "run1.cspack.zip", enc + "run1/f02.md", enc + "run1/new.md"}) {
+		t.Fatalf("archived %v", got)
+	}
+	if got := mustRead(t, filepath.Join(workCopy(m, w), "run1", "f02.md")); got != "e\n" {
+		t.Fatalf("overlay f02.md = %q", got)
+	}
+	samePack(t, pack, before)
+
+	out := m.workRun(t, home, "push", "--no-html")
+	samePack(t, pack, before)
+	if !strings.Contains(out, "copied 0 file(s)") {
+		t.Fatalf("copied again: %s", out)
+	}
+}
+
+// Changes past 50 files, or past a quarter of the pack's bytes, are folded into a new
+// pack and the loose copies go.
+func TestPushCompacts(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	mustWrite(t, filepath.Join(w, "run1", "f00.md"), "edited 0\n") // 9 of 42 bytes: loose
+	m.workRun(t, home, "push", "--no-html")
+	if _, err := os.Stat(filepath.Join(workCopy(m, w), "run1", "f00.md")); err != nil {
+		t.Fatalf("no overlay: %v", err)
+	}
+
+	for i := 0; i < 51; i++ {
+		mustWrite(t, filepath.Join(w, "run1", fmt.Sprintf("n%02d.md", i)), "n\n")
+	}
+	m.workRun(t, home, "push", "--no-html")
+	enc := "MAC/" + work.Encode(w) + "/"
+	if got := sortedWorkFiles(m.archive); !reflect.DeepEqual(got, []string{enc + "run1.cspack.zip"}) {
+		t.Fatalf("archived %v", got)
+	}
+	if idx := packIndex(t, pack); len(idx) != 57 || idx["f00.md"] != 9 || idx["f01.md"] != 7 || idx["n50.md"] != 2 {
+		t.Fatalf("pack: %v", idx)
+	}
+	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log, "WORK: compacted "+filepath.Join(w, "run1")) {
+		t.Fatalf("log: %s", log)
+	}
+
+	// One file growing past a quarter of the pack's bytes.
+	m2 := newMachine(t, "MAC", t.TempDir())
+	home2, w2, pack2 := packHome(t, m2, 6)
+	m2.workRun(t, home2, "push", "--no-html")
+	mustWrite(t, filepath.Join(w2, "run1", "f00.md"), strings.Repeat("x", 20))
+	m2.workRun(t, home2, "push", "--no-html")
+	if got := sortedWorkFiles(m2.archive); len(got) != 1 {
+		t.Fatalf("archived %v", got)
+	}
+	if idx := packIndex(t, pack2); len(idx) != 6 || idx["f00.md"] != 20 {
+		t.Fatalf("pack: %v", idx)
+	}
+}
+
+// Without the local record, push reads the pack's own index; without the pack too,
+// the unit is backed up loose again.
+func TestPushPackRecordLost(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, pack := packHome(t, m, 6)
+	m.workRun(t, home, "push", "--no-html")
+	rec := filepath.Join(m.claudeDir, "session-sync-base", "work-packs.json")
+	before := backdate(t, pack)
+
+	if err := os.Remove(rec); err != nil {
+		t.Fatal(err)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	samePack(t, pack, before)
+	enc := "MAC/" + work.Encode(w) + "/"
+	if got := sortedWorkFiles(m.archive); !reflect.DeepEqual(got, []string{enc + "run1.cspack.zip"}) {
+		t.Fatalf("archived %v", got)
+	}
+	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); strings.Count(log, "WORK: packed") != 1 {
+		t.Fatalf("packed again: %s", log)
+	}
+	if _, err := os.Stat(rec); err != nil {
+		t.Fatalf("record not rebuilt: %v", err)
+	}
+
+	mustWrite(t, filepath.Join(w, "run1", "f01.md"), "edited\n")
+	if err := os.Remove(rec); err != nil {
+		t.Fatal(err)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	samePack(t, pack, before)
+	if got := sortedWorkFiles(m.archive); !reflect.DeepEqual(got, []string{enc + "run1.cspack.zip", enc + "run1/f01.md"}) {
+		t.Fatalf("archived %v", got)
+	}
+
+	if err := os.Remove(pack); err != nil {
+		t.Fatal(err)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	got := sortedWorkFiles(m.archive)
+	if len(got) != 6 || got[0] != enc+"run1/f00.md" {
+		t.Fatalf("not backed up loose: %v", got)
+	}
+}
+
+func TestPushPackDryRun(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home, w, _ := packHome(t, m, 6)
+	out := m.workRun(t, home, "push", "--no-html", "--dry-run")
+	if !strings.Contains(out, "would pack "+filepath.Join(w, "run1")+" (6 files, ") || strings.Contains(out, "would copy "+filepath.Join(w, "run1")) {
+		t.Fatalf("output: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(m.archive, "work")); !os.IsNotExist(err) {
+		t.Fatalf("dry run wrote work/: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(m.claudeDir, "session-sync-base", "work-packs.json")); !os.IsNotExist(err) {
+		t.Fatalf("dry run wrote the pack record: %v", err)
+	}
+}
+
+// Excluding a path inside a packed unit removes the pack and its loose copies; the
+// next push packs the unit again without it, and the push after leaves that pack be.
+func TestExcludeInsideUnitRemovesPack(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	configAs(t, m.claudeDir, "MAC", "set-destination", m.archive)
+	home, w, pack := packHome(t, m, 6)
+	sub := filepath.Join(w, "run1", "sub")
+	mustWrite(t, filepath.Join(sub, "s.md"), "private\n")
+	ageFiles(t, w)
+	m.workRun(t, home, "push", "--no-html")
+	if idx := packIndex(t, pack); idx["sub/s.md"] != 8 {
+		t.Fatalf("pack: %v", idx)
+	}
+	mustWrite(t, filepath.Join(w, "run1", "f00.md"), "edited\n")
+	m.workRun(t, home, "push", "--no-html")
+
+	if out := configAs(t, m.claudeDir, "MAC", "exclude-folder", sub); !strings.Contains(out, "removed "+sub) {
+		t.Fatalf("output: %s", out)
+	}
+	if got := workFiles(m.archive); len(got) != 0 {
+		t.Fatalf("left in the archive: %v", got)
+	}
+
+	ageFiles(t, w)
+	m.workRun(t, home, "push", "--no-html")
+	if idx := packIndex(t, pack); len(idx) != 6 || idx["f00.md"] != 7 {
+		t.Fatalf("pack: %v", idx)
+	}
+	before := backdate(t, pack)
+	m.workRun(t, home, "push", "--no-html")
+	samePack(t, pack, before)
 }

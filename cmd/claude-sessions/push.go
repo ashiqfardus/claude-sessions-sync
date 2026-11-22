@@ -472,6 +472,12 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		for _, p := range wr.Would {
 			fmt.Printf("would copy %s\n", p)
 		}
+		for _, p := range wr.WouldPack {
+			fmt.Printf("would %s\n", p)
+		}
+		if wr.Packed+wr.Compacted > 0 {
+			fmt.Printf("%d subfolder(s) packed, %d packed again.\n", wr.Packed, wr.Compacted)
+		}
 		verb := "copied"
 		if dryRun {
 			verb = "would copy"

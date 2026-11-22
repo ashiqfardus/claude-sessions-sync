@@ -242,25 +242,30 @@ func cmdDoctor(args []string) error {
 		add(check{"work folders", levelInfo, "off", "`claude-sessions config work on` backs up the folders Claude worked in outside git."})
 	} else {
 		folders := readShard(dest, machineName()).WorkFolders
-		var files int
+		var files, packed int
 		var bytes int64
 		var skipped []string
 		for _, f := range folders {
 			files += f.Files
+			packed += f.Packed
 			bytes += f.Bytes
 			if f.Skipped != "" {
 				skipped = append(skipped, f.Path+" ("+f.Skipped+")")
 			}
+		}
+		sum := fmt.Sprintf("%d folder(s), %d file(s)", len(folders), files)
+		if packed > 0 {
+			sum += fmt.Sprintf(", %d packed unit(s)", packed)
 		}
 		switch {
 		case len(skipped) > 0:
 			add(check{"work folders", levelWarn, "not backed up: " + strings.Join(skipped, ", "),
 				"A subfolder over 250 MB is not archived; the rest of the folder is. Keep it out of the way with `claude-sessions config exclude-folder <folder>`, or move the big files out."})
 		case bytes > work.WarnBytes:
-			add(check{"work folders", levelWarn, fmt.Sprintf("%d folder(s), %d file(s), %d MB archived", len(folders), files, bytes>>20),
+			add(check{"work folders", levelWarn, fmt.Sprintf("%s, %d MB archived", sum, bytes>>20),
 				"The archive is growing large. Drop a folder you do not need with `claude-sessions config exclude-folder <folder>`."})
 		default:
-			add(check{"work folders", levelOK, fmt.Sprintf("%d folder(s), %d file(s)", len(folders), files), ""})
+			add(check{"work folders", levelOK, sum, ""})
 		}
 	}
 

@@ -90,6 +90,7 @@ type WorkFolder struct {
 	Bytes   int64       `json:"bytes,omitempty"`
 	Skipped string      `json:"skipped,omitempty"`
 	Origin  *WorkOrigin `json:"origin,omitempty"`
+	Packed  int         `json:"packed,omitempty"` // units stored as one zip each
 }
 
 // WorkOrigin names the machine and path a folder was first archived from.
