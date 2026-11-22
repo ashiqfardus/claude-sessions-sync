@@ -10,8 +10,8 @@ All notable changes to this project are documented here. This project follows
   repositories, such as a notes or scripts folder, are copied to `work/<computer>/` in
   the archive. Only text-like files go in. Images, video and audio, archives, binaries,
   databases, secret-shaped names, anything over 10 MB and every dot file or folder are
-  never copied, and a folder over 250 MB after filtering is not backed up. On by
-  default; `config work off` stops it. Folders come only from what sessions on this
+  never copied, and a first-level subfolder over 250 MB after filtering is left out
+  while the rest of the folder is backed up. On by default; `config work off` stops it. Folders come only from what sessions on this
   computer wrote. A conversation imported from another computer adds none, except
   through a fork Claude Code makes of it (`--fork-session`). Someone who can write the
   archive can still reach you through plugins (`--no-plugins` stops those) and through
@@ -32,7 +32,7 @@ All notable changes to this project are documented here. This project follows
   another computer's folders. It is opt-in, skips conversations touched in the last
   hour and backs each one up first.
 - **`doctor` has a `work folders` check:** it warns when the archived work folders
-  total over 500 MB or a folder was too large to back up.
+  total over 500 MB or a subfolder was too large to back up.
 
 ## [0.3.1] - 2026-11-21
 

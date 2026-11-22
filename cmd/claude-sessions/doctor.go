@@ -255,7 +255,7 @@ func cmdDoctor(args []string) error {
 		switch {
 		case len(skipped) > 0:
 			add(check{"work folders", levelWarn, "not backed up: " + strings.Join(skipped, ", "),
-				"Too large to archive. Keep it out of the way with `claude-sessions config exclude-folder <folder>`, or move the big files out."})
+				"A subfolder over 250 MB is not archived; the rest of the folder is. Keep it out of the way with `claude-sessions config exclude-folder <folder>`, or move the big files out."})
 		case bytes > work.WarnBytes:
 			add(check{"work folders", levelWarn, fmt.Sprintf("%d folder(s), %d file(s), %d MB archived", len(folders), files, bytes>>20),
 				"The archive is growing large. Drop a folder you do not need with `claude-sessions config exclude-folder <folder>`."})

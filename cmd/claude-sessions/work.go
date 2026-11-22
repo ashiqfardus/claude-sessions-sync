@@ -168,10 +168,38 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 			return true
 		})
 		e := archive.WorkFolder{Path: f.Path, Exact: f.Exact}
-		if c.Bytes > work.MaxFolderBytes {
-			logf("WARN: work folder %s is over 250 MB after filtering; not backed up (exclude parts with config exclude-folder)", f.Path)
-			e.Skipped = "over 250 MB"
-			return e, true
+		// The cap holds for each first-level subfolder, and for the files directly in the
+		// folder as one more unit, so a folder of dated run folders is never all left out.
+		const loose = "(files in the folder itself)"
+		unit := func(p string) string {
+			rel, _ := filepath.Rel(f.Path, p)
+			if first, _, ok := strings.Cut(filepath.ToSlash(rel), "/"); ok {
+				return first
+			}
+			return loose
+		}
+		units := map[string]int64{}
+		for _, p := range c.Files {
+			units[unit(p)] += c.Size[p]
+		}
+		var over []string
+		for u, n := range units {
+			if n > work.MaxFolderBytes {
+				over = append(over, u)
+				c.Bytes -= n
+			}
+		}
+		if len(over) > 0 {
+			sort.Strings(over)
+			for _, u := range over {
+				logf("WARN: work folder %s: subfolder %s is over 250 MB after filtering; not backed up (exclude parts with config exclude-folder)", f.Path, u)
+			}
+			c.Files = slices.DeleteFunc(c.Files, func(p string) bool { return slices.Contains(over, unit(p)) })
+			names := over
+			if len(over) > 5 {
+				names = append(slices.Clone(over[:5]), fmt.Sprintf("and %d more", len(over)-5))
+			}
+			e.Skipped = "over 250 MB: " + strings.Join(names, ", ")
 		}
 		linked := false
 		for _, p := range c.Files {

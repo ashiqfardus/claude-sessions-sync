@@ -13,7 +13,7 @@ import (
 
 const (
 	MaxFileBytes   = 10 << 20  // larger files are skipped
-	MaxFolderBytes = 250 << 20 // per folder, after filtering
+	MaxFolderBytes = 250 << 20 // per first-level subfolder, after filtering
 	WarnBytes      = 500 << 20 // doctor warns above this
 )
 
@@ -68,7 +68,8 @@ func Allowed(rel string, size int64) (bool, string) {
 
 // Collected is the filtered file list of one folder. Skipped counts files only.
 type Collected struct {
-	Files   []string // absolute, sorted
+	Files   []string         // absolute, sorted
+	Size    map[string]int64 // of each file in Files
 	Bytes   int64
 	Skipped map[string]int
 }
@@ -76,7 +77,7 @@ type Collected struct {
 // Collect lists the files of f that may be archived, minus excluded paths. An
 // excluded folder is not walked at all.
 func Collect(f Folder, exclude []string) (Collected, error) {
-	c := Collected{Skipped: map[string]int{}}
+	c := Collected{Size: map[string]int64{}, Skipped: map[string]int{}}
 	fold := runtime.GOOS != "linux" // macOS and Windows ignore case
 	excluded := func(p string) bool {
 		return slices.ContainsFunc(exclude, func(x string) bool { return Within(p, x, fold) })
@@ -99,6 +100,7 @@ func Collect(f Folder, exclude []string) (Collected, error) {
 			return
 		}
 		c.Files = append(c.Files, path)
+		c.Size[path] = size
 		c.Bytes += size
 	}
 	if f.Exact {

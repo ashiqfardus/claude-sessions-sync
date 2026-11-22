@@ -129,10 +129,11 @@ with a Windows drive's colon dropped (`E:\SQL` -> `E/SQL`), so the archive reads
 same on every OS. Only text-like files go in: never media, archives, binaries,
 databases, `.pth`, secret-shaped names, files over 10 MB or any dot file or folder;
 code folders (`node_modules`, `venv`, `vendor`, `__pycache__`, `site-packages`,
-`dist-packages`) are never work folders. A folder over 250 MB after filtering is not
-copied and is reported. Each machine writes only its own `work/<machine>/`. The archive
-is untrusted when restoring: see the deny-list and its residual risk in the README's
-Privacy section.
+`dist-packages`) are never work folders. Each first-level subfolder, and the folder's
+own files as one more, is capped at 250 MB after filtering; one over it is not copied
+and is named in `skipped`, and the rest of the folder is. Each machine writes only its
+own `work/<machine>/`. The archive is untrusted when restoring: see the deny-list and
+its residual risk in the README's Privacy section.
 
 ### Local
 
@@ -214,7 +215,7 @@ folder by hand.
 
 `workFolders` lists the folders archived under `work/<machine>/`, each a `WorkFolder`:
 `path`, `exactFile` (the path is one file, not a folder), `files`, `bytes`, `skipped`
-(set, for example `over 250 MB`, when the folder was not copied) and `origin`, a
+(set, for example `over 250 MB: big`, naming the subfolders not copied) and `origin`, a
 `WorkOrigin` `{machine, path}` naming where a restored folder first came from.
 `workIndexed` records that every transcript has been scanned for work folders once, so
 later pushes scan only the ones that changed. Both are omitted when empty.

@@ -258,7 +258,7 @@ func TestPushWorkFolder(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workCopy(m, po), "shot.png")); !os.IsNotExist(err) {
 		t.Errorf("image archived: %v", err)
 	}
-	if wf := workShard(t, m); len(wf) != 1 || wf[0].Path != po || wf[0].Files != 2 {
+	if wf := workShard(t, m); len(wf) != 1 || wf[0].Path != po || wf[0].Files != 2 || wf[0].Skipped != "" || wf[0].Bytes != 33+8 {
 		t.Fatalf("shard: %+v", wf)
 	}
 	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log, "WORK: now backing up "+po+" (2 files") {
@@ -299,28 +299,65 @@ func TestPushWorkIgnoresRepoAndTemp(t *testing.T) {
 	}
 }
 
-func TestPushWorkOverCap(t *testing.T) {
-	m := newMachine(t, "MAC", t.TempDir())
-	home := t.TempDir()
-	big := filepath.Join(home, "data")
-	for i := 0; i < 26; i++ {
-		p := filepath.Join(big, fmt.Sprintf("part%02d.csv", i))
+// sparseParts writes n files of 9.9 MB in dir: sparse, so they count toward the cap
+// without using the disk. 26 of them pass 250 MB.
+func sparseParts(t *testing.T, dir string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("part%02d.csv", i))
 		mustWrite(t, p, "")
-		// Sparse: it counts toward the cap without using the disk.
 		if err := os.Truncate(p, (99<<20)/10); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+// The cap holds per first-level subfolder: an over-cap subfolder is skipped and named,
+// and the rest of the folder is backed up.
+func TestPushWorkSubfolderOverCap(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home := t.TempDir()
+	w := filepath.Join(home, "SQL")
+	sparseParts(t, filepath.Join(w, "big"), 26)
+	mustWrite(t, filepath.Join(w, "small", "a.md"), "aa\n")
+	mustWrite(t, filepath.Join(w, "small", "deep", "b.sql"), "select 1;\n")
+	mustWrite(t, filepath.Join(w, "top.md"), "top\n")
+	workSession(t, m, home, []string{filepath.Join(w, "top.md")})
+
+	if out := m.workRun(t, home, "push", "--no-html", "--dry-run"); strings.Contains(out, "part00") || !strings.Contains(out, "would copy "+filepath.Join(w, "small", "a.md")) {
+		t.Fatalf("dry run: %s", out)
+	}
+	m.workRun(t, home, "push", "--no-html")
+	enc := "MAC/" + work.Encode(w) + "/"
+	if got, want := workFiles(m.archive), []string{enc + "small/a.md", enc + "small/deep/b.sql", enc + "top.md"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("archived %v, want %v", got, want)
+	}
+	if wf := workShard(t, m); len(wf) != 1 || wf[0].Path != w || wf[0].Skipped != "over 250 MB: big" || wf[0].Files != 3 || wf[0].Bytes != 3+10+4 {
+		t.Fatalf("shard: %+v", wf)
+	}
+	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log,
+		"WARN: work folder "+w+": subfolder big is over 250 MB after filtering; not backed up (exclude parts with config exclude-folder)") {
+		t.Fatalf("log: %s", log)
+	}
+}
+
+// Loose files over the cap are skipped as one unit; the subfolders are still copied.
+func TestPushWorkOverCap(t *testing.T) {
+	m := newMachine(t, "MAC", t.TempDir())
+	home := t.TempDir()
+	big := filepath.Join(home, "data")
+	sparseParts(t, big, 26)
+	mustWrite(t, filepath.Join(big, "notes", "n.md"), "n\n")
 	workSession(t, m, home, []string{filepath.Join(big, "part00.csv")})
 
 	m.workRun(t, home, "push", "--no-html")
-	if got := workFiles(m.archive); len(got) != 0 {
-		t.Fatalf("copied %d file(s)", len(got))
+	if got, want := workFiles(m.archive), []string{"MAC/" + work.Encode(big) + "/notes/n.md"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("archived %v, want %v", got, want)
 	}
-	if wf := workShard(t, m); len(wf) != 1 || wf[0].Path != big || wf[0].Skipped != "over 250 MB" {
+	if wf := workShard(t, m); len(wf) != 1 || wf[0].Path != big || wf[0].Skipped != "over 250 MB: (files in the folder itself)" || wf[0].Files != 1 || wf[0].Bytes != 2 {
 		t.Fatalf("shard: %+v", wf)
 	}
-	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log, "WARN: work folder "+big+" is over 250 MB") {
+	if log := mustRead(t, filepath.Join(m.claudeDir, "session-sync.log")); !strings.Contains(log, "WARN: work folder "+big+": subfolder (files in the folder itself) is over 250 MB") {
 		t.Fatalf("log: %s", log)
 	}
 }
@@ -1462,9 +1499,9 @@ func TestDoctorWork(t *testing.T) {
 		t.Fatalf("big: %s %s", l, a)
 	}
 
-	shard(map[string]any{"path": "/w/huge", "skipped": "over 250 MB"})
-	if l, d, _ := doctorWorkLine(t, m); l != "warn" || !strings.Contains(d, "/w/huge") {
-		t.Fatalf("skipped: %s %s", l, d)
+	shard(map[string]any{"path": "/w/huge", "files": 4, "bytes": 100, "skipped": "over 250 MB: big, logs"})
+	if l, d, a := doctorWorkLine(t, m); l != "warn" || !strings.Contains(d, "/w/huge (over 250 MB: big, logs)") || !strings.Contains(a, "subfolder") {
+		t.Fatalf("skipped: %s %s %s", l, d, a)
 	}
 }
 

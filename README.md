@@ -645,8 +645,10 @@ like. **Never copied:** images, video and audio, archives, binaries, databases,
 10 MB, and every dot file and dot folder. `node_modules`, `venv`, `vendor`,
 `__pycache__`, `site-packages` and `dist-packages` are never work folders. Inside a
 work folder, subfolders named `dist`, `build`, `target` and `.cache` are skipped too,
-so a hand-written `build/` folder is not backed up. A folder over 250 MB after that
-filtering is not backed up at all; `doctor` names it. Folders that hold app settings or
+so a hand-written `build/` folder is not backed up. The limit is 250 MB after that
+filtering for each first-level subfolder of a work folder, with the files directly in
+the folder counted as one more: a subfolder over it is skipped, the rest of the folder
+is backed up, and `doctor` names the subfolder. Folders that hold app settings or
 caches, such as `~/Library`, `AppData` and `ProgramData`, are never backed up.
 
 **What it skips.** Git repositories (your remote has those), `~/.claude`, and temp
