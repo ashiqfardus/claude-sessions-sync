@@ -798,11 +798,12 @@ func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushe
 // zipCompared is a local transcript as push compared it with its bucket's zipped copy,
 // and that zip as it then was.
 type zipCompared struct {
-	Size     int64     `json:"size"`
-	MTime    time.Time `json:"mtime"`
-	ZipSize  int64     `json:"zipSize"`
-	ZipMTime time.Time `json:"zipMtime"`
-	Diverged bool      `json:"diverged,omitempty"` // the zip and the loose copy beside it each lack turns
+	Size       int64     `json:"size"`
+	MTime      time.Time `json:"mtime"`
+	ZipSize    int64     `json:"zipSize"`
+	ZipMTime   time.Time `json:"zipMtime"`
+	Diverged   bool      `json:"diverged,omitempty"`   // the zip and the loose copy beside it each lack turns
+	Unreadable bool      `json:"unreadable,omitempty"` // the zip could not be read or unzipped
 }
 
 // zipRecord remembers, by "bucket/id", how a local transcript compared with its zipped
@@ -843,9 +844,10 @@ func (z *zipRecord) save(root string) error {
 
 // judge settles a local transcript whose bucket's copy is the zip zp, before the rules
 // in archiveTranscript run. A zip holding every turn of it and of its folder stays, and
-// nothing is archived: done, keptZipped. A zip that cannot be read: done, copyFailed.
-// Otherwise the zip is unzipped and the rules judge the loose copy - also when the zip
-// diverged from a loose copy beside it, which then stays beside it: no branch lost.
+// nothing is archived: done, keptZipped. Otherwise the zip is unzipped, and the rules
+// judge the loose copy. Two zips stay beside the loose copy, which readers prefer and a
+// later unzip compares with them, so no branch is lost: one diverged from it, and one
+// that cannot be read or unzipped - said once for the zip as it is.
 func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun bool, logf func(string, ...any)) (archiveOutcome, bool) {
 	zst, err := os.Lstat(zp)
 	if err != nil {
@@ -854,9 +856,18 @@ func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun b
 	key := bucket + "/" + id
 	prev, had := z.m[key]
 	now := zipCompared{Size: src.Size(), MTime: src.ModTime(), ZipSize: zst.Size(), ZipMTime: zst.ModTime()}
-	if had && prev.Size == now.Size && archive.SameMTime(prev.MTime, now.MTime) &&
-		prev.ZipSize == now.ZipSize && archive.SameMTime(prev.ZipMTime, now.ZipMTime) {
+	sameZip := had && prev.ZipSize == now.ZipSize && archive.SameMTime(prev.ZipMTime, now.ZipMTime)
+	if sameZip && prev.Unreadable {
+		return 0, false
+	}
+	if sameZip && prev.Size == now.Size && archive.SameMTime(prev.MTime, now.MTime) {
 		return keptZipped, !prev.Diverged // a diverged pair: the rules judge the loose copy
+	}
+	unreadable := func(err error) (archiveOutcome, bool) {
+		logf("WARN: %s: %v; this copy is archived loose beside the zip", id, err)
+		now.Unreadable = true
+		z.m[key], z.dirty = now, true
+		return 0, false
 	}
 	if !zipHolds(zp, id, path, src) {
 		p, done, err := convzip.Materialize(filepath.Dir(zp), id, z.tmp)
@@ -864,8 +875,7 @@ func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun b
 			return 0, false
 		}
 		if err != nil {
-			logf("WARN: %s: %v", id, err)
-			return copyFailed, true
+			return unreadable(err)
 		}
 		r := claude.Compare(path, p)
 		holds := (r == claude.Same || r == claude.Behind) &&
@@ -884,8 +894,7 @@ func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun b
 				z.m[key], z.dirty = now, true
 				return 0, false
 			case err != nil && !errors.Is(err, os.ErrNotExist):
-				logf("WARN: %s: %v", id, err)
-				return copyFailed, true
+				return unreadable(err)
 			}
 			if had {
 				delete(z.m, key)
@@ -1039,20 +1048,15 @@ func zippedCopy(dest, bucket, id string) string {
 	return p
 }
 
-// copyStat is the size and time of bucket's archived transcript of id, loose or zipped.
-// A zip's come from its index alone: a held copy is checked again without unpacking it.
+// copyStat is the size and time of bucket's archived copy of id: its loose transcript's,
+// or else its zip file's own, so a held copy is checked again without reading any zip.
 func copyStat(dest, bucket, id string) (int64, time.Time, bool) {
-	if p := archivedCopy(dest, bucket, id); p != "" {
-		if st, err := os.Stat(p); err == nil {
-			return st.Size(), st.ModTime(), true
-		}
+	p := archivedCopy(dest, bucket, id)
+	if p == "" {
+		p = zippedCopy(dest, bucket, id)
 	}
-	if zp := zippedCopy(dest, bucket, id); zp != "" {
-		if ents, err := convzip.Entries(zp); err == nil {
-			if e, ok := ents[id+".jsonl"]; ok {
-				return e.Size, e.ModTime, true
-			}
-		}
+	if st, err := os.Lstat(p); p != "" && err == nil {
+		return st.Size(), st.ModTime(), true
 	}
 	return 0, time.Time{}, false
 }

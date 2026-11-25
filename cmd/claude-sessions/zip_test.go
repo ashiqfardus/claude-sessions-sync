@@ -125,7 +125,12 @@ func TestHeldCheckReadsAZippedCopy(t *testing.T) {
 	ago := time.Now().Add(-time.Hour)
 	os.Chtimes(win.session(winRepo), ago, ago)
 	win.run(t, "push", "--no-html")
-	win.run(t, "push", "--no-html")
+	// From what it remembered, by the zip's own size and time: one that read the zip
+	// would now fail on it, and WIN would archive its own copy.
+	garble(t, convzip.Path(filepath.Join(archive, "projects", claude.Slug(macRepo)), forkSession))
+	if out := win.run(t, "push", "--no-html"); strings.Contains(out, "WARN") {
+		t.Errorf("the held check read the zip:\n%s", out)
+	}
 
 	if got := archived(t, archive, winRepo); got != "" {
 		t.Fatalf("WIN archived the session it imported a second time, under its own folder:\n%s", got)
@@ -231,12 +236,7 @@ func TestPushLeavesAZipAheadOfTheLocalCopy(t *testing.T) {
 		}
 		onlyZip(t, bucket)
 		if i == 0 {
-			st, err := os.Stat(zp)
-			if err != nil {
-				t.Fatal(err)
-			}
-			mustWrite(t, zp, strings.Repeat("x", int(st.Size())))
-			os.Chtimes(zp, st.ModTime(), st.ModTime())
+			garble(t, zp)
 		}
 	}
 }
@@ -278,3 +278,76 @@ func TestPushComparesAgainWithACorruptZipRecord(t *testing.T) {
 		t.Errorf("the record was not compared again and rewritten (%v):\n%s", err, mustRead(t, rec))
 	}
 }
+
+// garble overwrites a file with junk of the same size and time: a push that reads it fails.
+func garble(t *testing.T, p string) {
+	t.Helper()
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, p, strings.Repeat("x", int(st.Size())))
+	os.Chtimes(p, st.ModTime(), st.ModTime())
+}
+
+// A dry run writes nothing: neither the unzip nor the record of what it compared.
+func TestDryRunLeavesAZippedCopyAndNoRecord(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	bucket := zipArchived(t, archive, repo)
+	later(t, mac.session(repo)) // the same turns: compared, and remembered by a real push
+	mac.run(t, "push", "--no-html", "--dry-run")
+	appendTurns(t, mac.session(repo), repo, "w1") // continued: a real push unzips
+	mac.run(t, "push", "--no-html", "--dry-run")
+	onlyZip(t, bucket)
+	if rec := filepath.Join(mac.claudeDir, "session-sync-base", "zip-compared.json"); fileExists(rec) {
+		t.Errorf("a dry run saved what it compared:\n%s", mustRead(t, rec))
+	}
+}
+
+// A zip of this machine's own copy that cannot be read does not stop the session being
+// archived: the loose copy goes beside it, and the WARN is said once for that zip.
+func TestPushArchivesBesideAnUnreadableZip(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	bucket := zipArchived(t, archive, repo)
+	zp := convzip.Path(bucket, forkSession)
+	mustWrite(t, zp, "not a zip")
+	appendTurns(t, mac.session(repo), repo, "w1")
+	out := mac.run(t, "push", "--no-html")
+	appendTurns(t, mac.session(repo), repo, "w2")
+	out += mac.run(t, "push", "--no-html")
+	if n := strings.Count(out, "WARN: "+forkSession); n != 1 {
+		t.Errorf("%d WARN line(s) for the session across two pushes, want 1:\n%s", n, out)
+	}
+	got := archived(t, archive, repo)
+	for _, turn := range []string{"u1", "m1", "w1", "w2"} {
+		if !strings.Contains(got, `"`+turn+`"`) {
+			t.Errorf("the archived transcript lacks %s:\n%s", turn, got)
+		}
+	}
+	if !fileExists(filepath.Join(bucket, forkSession, "subagents", "agent-a1.jsonl")) {
+		t.Error("the session's subagent is not archived beside the zip")
+	}
+	if mustRead(t, zp) != "not a zip" {
+		t.Error("the unreadable zip was changed")
+	}
+}
+
+// The transcript is as zipped, but a subagent written here since is not in the zip: it
+// is unzipped, and the subagent archived.
+func TestPushUnzipsForAFolderFileTheZipLacks(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	bucket := zipArchived(t, archive, repo)
+	mustWrite(t, filepath.Join(filepath.Dir(mac.session(repo)), forkSession, "subagents", "agent-a2.jsonl"), sessionLines(repo, "s2"))
+	mac.run(t, "push", "--no-html")
+	if !fileExists(filepath.Join(bucket, forkSession, "subagents", "agent-a2.jsonl")) {
+		t.Error("the subagent the zip lacked is not archived")
+	}
+	if fileExists(convzip.Path(bucket, forkSession)) {
+		t.Error("the zip stayed though it lacks a file of the session's folder")
+	}
+	if got := archived(t, archive, repo); !strings.Contains(got, `"m1"`) {
+		t.Errorf("the transcript is not archived loose:\n%s", got)
+	}
+}
+
+func fileExists(p string) bool { _, err := os.Lstat(p); return err == nil }
