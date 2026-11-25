@@ -944,8 +944,9 @@ func zipHoldouts(dest string) ([]string, error) {
 }
 
 // zipSkippedPath remembers, by "bucket/id", the size of each archived copy push could
-// not zip as it was: over the cap, or a leftover beside its zip that diverged from it.
-// Each is said once, and tried again only once that size changes.
+// not zip as it was: over the cap, a leftover beside its zip that diverged from it, or a
+// zip or unzip that failed. Each is said once, and tried again only once that size
+// changes.
 func zipSkippedPath(root string) string {
 	return filepath.Join(root, "session-sync-base", "zip-skipped.json")
 }
@@ -981,20 +982,23 @@ each:
 			case !isTranscript && (!e.IsDir() || zp == "" || archive.StatOrNil(filepath.Join(dir, id+".jsonl")) != nil):
 				continue
 			}
+			// A conversation in use is told by its transcript, without walking its folder.
+			if info, err := e.Info(); isTranscript && (err != nil || info.ModTime().After(cutoff)) {
+				continue
+			}
 			if st, err := os.Stat(filepath.Join(claude.ProjectsDir(root), bucket, id+".jsonl")); err == nil && st.ModTime().After(cutoff) {
 				continue // still in use here
 			}
-			size, idle := looseSize(dir, id, cutoff)
-			if !idle {
+			if _, idle := looseSize(dir, id, cutoff); !idle {
 				continue
 			}
-			if st, err := os.Lstat(zp); zp != "" && err == nil {
-				size += st.Size()
-			}
-			key := bucket + "/" + id
+			key, size := bucket+"/"+id, copyBytes(dir, id)
 			if s, ok := skipped[key]; ok && s == size {
 				continue
 			}
+			// Said once, then left until the copy changes: a failure that recurs would
+			// otherwise be logged, and up to 250 MB read again, on every sweep.
+			remember := func() { skipped[key], dirty = copyBytes(dir, id), true }
 			if dryRun {
 				if zp != "" || size <= work.MaxFolderBytes {
 					logf("would zip %s", key)
@@ -1005,22 +1009,26 @@ each:
 				switch err := convzip.Unzip(dir, id); {
 				case errors.Is(err, convzip.ErrDiverged):
 					logf("WARN: %s: %v; the zip and the loose copy beside it are both kept", id, err)
-					skipped[key], dirty = size, true
+					remember()
 					continue
 				case err != nil:
-					logf("WARN: %s: not zipped: %v", id, err)
+					logf("WARN: %s: not unzipped to zip again; the zip and the loose files beside it are kept: %v", id, err)
+					remember()
 					continue
 				}
-				size, _ = looseSize(dir, id, cutoff) // as Zip now finds it
 			}
 			res, err := convzip.Zip(dir, id)
 			switch {
 			case errors.Is(err, convzip.ErrTooLarge):
 				logf("ZIP: %s is over %d MB; it stays loose", key, work.MaxFolderBytes>>20)
-				skipped[key], dirty = size, true
+				remember()
 			case errors.Is(err, convzip.ErrZipExists): // zipped elsewhere since the listing: next run
+			case err != nil && res.Files > 0: // written and checked; removing the loose files failed
+				logf("WARN: %s: zipped, but loose files stay beside the zip: %v", id, err)
+				remember()
 			case err != nil:
-				logf("WARN: %s: not zipped: %v", id, err)
+				logf("WARN: %s: not zipped; it stays loose: %v", id, err)
+				remember()
 			default:
 				zipped, raw, packed = zipped+1, raw+res.Raw, packed+res.Packed
 				if _, ok := skipped[key]; ok {
@@ -1064,11 +1072,18 @@ func looseSize(dir, id string, cutoff time.Time) (size int64, idle bool) {
 			idle = idle && !info.ModTime().After(cutoff)
 			return nil
 		})
-		if !idle { // a conversation in use is told by its transcript, without walking its folder
-			return size, false
-		}
 	}
 	return size, idle
+}
+
+// copyBytes is how zip-skipped.json knows a copy again: the bytes of its loose files and
+// of its zip, as they are now.
+func copyBytes(dir, id string) int64 {
+	n, _ := looseSize(dir, id, time.Time{})
+	if st, err := os.Lstat(convzip.Path(dir, id)); err == nil {
+		n += st.Size()
+	}
+	return n
 }
 
 // heldStat is a local transcript as push found it, held in whole by the archived

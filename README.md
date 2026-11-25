@@ -616,10 +616,10 @@ After upgrading from an older version:
 - **The first push after upgrading packs** every work subfolder whose files have not
   changed for 7 days, and deletes the archive's loose copies of them. On a large archive
   that can be thousands of deletions, all going to Google Drive's trash.
-- **Conversations are zipped** only once every computer has updated and pushed. The
-  first push after that zips every conversation idle for 30 days, and deletes the
-  archive's loose copies of them: on a large archive, thousands of deletions, all going
-  to Google Drive's trash.
+- **Conversations are zipped** only once every computer has updated and pushed. After
+  that, each sweep zips about 45 seconds' worth of conversations idle for 30 days, and
+  `push` from a terminal zips them all. Each zip deletes the archive's loose copies: on
+  a large archive, thousands of deletions, all going to Google Drive's trash.
 - **Buckets an earlier `import` made for projects that are not here stay.** A repository
   inside another computer's container work folder got a bucket of its own, named for a
   folder that does not exist on this computer. This version makes no new ones; delete
@@ -1001,9 +1001,10 @@ space. Push zips it once every archived file of it, and this computer's own tran
 of it if there is one, has gone unchanged for 30 days, in the projects this computer
 pushes to. It reads the zip back and checks that it holds every turn before it deletes
 the loose files. A conversation over 250 MB stays loose. The hooks never zip, so the
-end of a session is never held up; the sweep zips for at most 45 seconds a run and leaves
-the rest for the next, and `push` from a terminal zips everything due.
-`push --dry-run` lists what it would zip.
+end of a session is never held up. The sweep starts no new zip after 45 seconds and
+leaves the rest for its next run; one large conversation started just before can take
+it past that. `push` from a terminal zips everything due, and `push --dry-run` lists
+what it would zip.
 
 Every command reads a zipped conversation as if it were loose. Continue one, on any
 computer, and the next push unzips it and archives the new turns; it is zipped again
@@ -1020,7 +1021,9 @@ made stay readable, and `on` starts it again.
 conversation and would upload it loose again, so push zips nothing until every computer
 that has pushed to the archive runs this version and has pushed once with it. `doctor`
 names the computers it waits for: update them, or retire one no longer in use with
-`claude-sessions machines --forget <name>`.
+`claude-sessions machines --forget <name>`. The older PowerShell scripts are not
+supported alongside zipping and do not hold it back: a computer still running them would
+only upload its own copies of conversations again, and never loses a turn.
 
 ---
 

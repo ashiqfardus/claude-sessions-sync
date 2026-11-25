@@ -6,17 +6,19 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Added
-- **Idle conversations are zipped.** An archived conversation unchanged for 30 days,
-  and on this computer too, becomes one file, `projects/<project>/<session-id>.conv.zip`,
+- **Idle conversations are zipped.** An archived conversation unchanged for 30 days, and
+  on this computer too, becomes one file, `projects/<project>/<session-id>.conv.zip`,
   with its subagent and tool-output files: usually about a third of the space, and one
   file for the sync app instead of dozens. Push reads the zip back and checks every turn
   before it deletes the loose files. A conversation over 250 MB stays loose, and
-  `session-sync-base/zip-skipped.json` remembers it so the log says so once. Pages stay
-  as they are. The sweep and `push` from a terminal zip; the hooks never do.
-  `push --dry-run` lists what it would zip, and `config zip-sessions off` stops it. Zipping waits until every computer that pushes to the archive runs this
-  version and has pushed once, as an older one would upload the conversation loose
-  again; `doctor` names the computers it waits for. Update them, or
-  `machines --forget` one no longer in use.
+  `session-sync-base/zip-skipped.json` remembers it, and a zip or unzip that keeps
+  failing, so the log says so once. Pages stay as they are. The sweep and `push` from a
+  terminal zip; the hooks never do. `push --dry-run` lists what it would zip, and
+  `config zip-sessions off` stops it. Zipping waits until every computer that pushes to
+  the archive runs this version and has pushed once, as an older one would upload the
+  conversation loose again; `doctor` names the computers it waits for. Update them, or
+  `machines --forget` one no longer in use. The older PowerShell scripts are not
+  supported alongside zipping.
 
 ## [0.5.0] - 2026-11-25
 

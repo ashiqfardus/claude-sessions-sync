@@ -122,20 +122,73 @@ func TestZipWaitsForOlderShard(t *testing.T) {
 	stillLoose(t, archive, repo)
 
 	out := mac.doctor(t)
-	var line string
-	for _, l := range strings.Split(out, "\n") {
-		if strings.Contains(l, "zips") && strings.Contains(l, "LAP-2") {
-			line = l
-		}
-	}
-	if line == "" || !strings.Contains(out, "machines --forget") || !strings.Contains(out, "Update") {
-		t.Errorf("doctor does not say zipping waits for LAP-2, or how to end the wait:\n%s", out)
+	if detail, advice := doctorZips(out); !strings.Contains(detail, "LAP-2") ||
+		!strings.Contains(advice, "machines --forget") || !strings.Contains(advice, "Update") {
+		t.Errorf("doctor's zips check does not say zipping waits for LAP-2, or how to end the wait:\n%s", out)
 	}
 
 	// Forgotten, it holds nothing back.
 	mac.run(t, "machines", "--forget", "LAP-2")
 	mac.run(t, "push", "--no-html")
 	onlyZip(t, archiveBucket(archive, repo))
+}
+
+// doctorZips is doctor's zips check: its line, and its advice line.
+func doctorZips(out string) (detail, advice string) {
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if a, ok := strings.CutPrefix(l, "zips: "); ok {
+			advice = a
+		} else if f := strings.Fields(l); len(f) > 1 && f[1] == "zips" {
+			detail = l
+		}
+	}
+	return detail, advice
+}
+
+// A shard that cannot be read may be a machine that does not read zips: nothing is zipped.
+func TestBadShardStopsZipping(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	mustWrite(t, filepath.Join(archive, "manifest", "LAP-3.json"), "{not json")
+	ageSession(t, mac, repo, 31*day)
+	mac.run(t, "push", "--no-html")
+	stillLoose(t, archive, repo)
+	if detail, _ := doctorZips(mac.doctor(t)); !strings.Contains(detail, "LAP-3.json") {
+		t.Errorf("doctor's zips check does not name the bad shard: %q", detail)
+	}
+}
+
+// Only the buckets this machine pushes to are zipped: another machine's, idle as long,
+// is left as it is.
+func TestZipLeavesOtherMachinesBuckets(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	const other = "77777777-7777-7777-7777-777777777777"
+	theirs := filepath.Join(archive, "projects", "home-you-src-web-app", other+".jsonl")
+	mustWrite(t, theirs, sessionLines(repo, "o1"))
+	ageSession(t, mac, repo, 31*day)
+	agePaths(t, 31*day, theirs)
+	mac.run(t, "push", "--no-html")
+	onlyZip(t, archiveBucket(archive, repo))
+	if !fileExists(theirs) || fileExists(convzip.Path(filepath.Dir(theirs), other)) {
+		t.Error("a bucket this machine does not push to was zipped")
+	}
+}
+
+// A zip that cannot be unpacked to be zipped again is said once, not on every sweep,
+// and neither it nor the loose copy beside it is touched.
+func TestPushSaysOnceWhenAZipCannotBeRedone(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	ageSession(t, mac, repo, 31*day)
+	bucket := zipArchived(t, archive, repo)
+	garble(t, convzip.Path(bucket, forkSession))
+	mac.run(t, "push", "--no-html") // archives the local copy beside the zip it cannot read
+	mac.run(t, "push", "--no-html")
+	if n := strings.Count(pushLog(t, mac), "not unzipped to zip again"); n != 1 {
+		t.Errorf("%d line(s) for the zip across two pushes, want 1:\n%s", n, pushLog(t, mac))
+	}
+	if archived(t, archive, repo) == "" || !fileExists(convzip.Path(bucket, forkSession)) {
+		t.Error("the loose copy or the zip beside it is gone")
+	}
 }
 
 func TestZipSessionsOff(t *testing.T) {
