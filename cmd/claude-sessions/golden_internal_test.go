@@ -16,13 +16,20 @@ import (
 // captureStdout runs fn with os.Stdout swapped for a pipe, and returns what it printed.
 func captureStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
+	return captureFile(t, &os.Stdout, fn)
+}
+
+// captureFile runs fn with *f, os.Stdout or os.Stderr, swapped for a pipe, and returns
+// what it printed there.
+func captureFile(t *testing.T, f **os.File, fn func() error) (string, error) {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	stdout := os.Stdout
-	os.Stdout = w
-	defer func() { os.Stdout = stdout }()
+	was := *f
+	*f = w
+	defer func() { *f = was }()
 	done := make(chan string)
 	go func() {
 		b, _ := io.ReadAll(r)

@@ -62,9 +62,10 @@ type searchOpts struct {
 // searchResult is what a search found: its hits, how many sessions it read and could
 // not read, and whether it stopped at the limit.
 type searchResult struct {
-	Hits                []hit
-	Scanned, Unreadable int
-	Stopped             bool
+	Hits       []hit `json:"hits"`
+	Scanned    int   `json:"scanned"`
+	Unreadable int   `json:"unreadable"`
+	Stopped    bool  `json:"stopped"`
 }
 
 // runSearch prints the hits on s.Out and returns them.

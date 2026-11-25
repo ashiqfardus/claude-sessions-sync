@@ -1905,7 +1905,8 @@ var safeMachine = strings.NewReplacer("/", "-", `\`, "-", ":", "-", " ", "-", "*
 // this machine went by before it, loaded by resolveRoot: every command finds its
 // profile through it before it names anything. machineMu guards both: the panel runs
 // commands from concurrent requests. Write them with setSavedMachine, read the names
-// with savedFormer.
+// with savedFormer. It is one value for the whole process, so the panel assumes one
+// Claude profile per process.
 var (
 	savedMachine   string
 	formerMachines []string

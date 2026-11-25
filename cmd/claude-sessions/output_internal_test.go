@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 )
 
 // The panel runs command code from concurrent requests, and every command loads the
@@ -72,5 +74,44 @@ func TestRunLsWritesOnlyToItsStreams(t *testing.T) {
 	}
 	if got := buf.String(); !strings.Contains(got, id) || !strings.Contains(got, "1 session(s).") {
 		t.Errorf("the listing is not in its stream:\n%s", got)
+	}
+}
+
+// A zip that cannot be read is noted on the command's own error stream, never on the
+// process's: the panel's queries pass streams that drop it.
+func TestUnreadableZipIsNotedOnItsStream(t *testing.T) {
+	claudeDir, dest := t.TempDir(), t.TempDir()
+	const id = "11111111-1111-1111-1111-111111111111"
+	writeFile(t, convzip.Path(filepath.Join(archive.ProjectsDir(dest), "-x-web-app"), id), "not a zip")
+
+	for name, run := range map[string]func(streams) error{
+		"ls": func(s streams) error {
+			_, err := runLs(s, lsOpts{ClaudeDir: claudeDir, ArchiveDir: dest})
+			return err
+		},
+		"search": func(s streams) error {
+			_, err := runSearch(s, searchOpts{ClaudeDir: claudeDir, ArchiveDir: dest, Query: "x"})
+			return err
+		},
+		"stats": func(s streams) error {
+			_, err := runStats(s, statsOpts{ClaudeDir: claudeDir, ArchiveDir: dest})
+			return err
+		},
+	} {
+		var out, errs bytes.Buffer
+		var stdout string
+		stderr, err := captureFile(t, &os.Stderr, func() (err error) {
+			stdout, err = captureStdout(t, func() error { return run(streams{&out, &errs}) })
+			return err
+		})
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+		if stdout != "" || stderr != "" {
+			t.Errorf("%s wrote to the process: stdout %q, stderr %q", name, stdout, stderr)
+		}
+		if !strings.Contains(errs.String(), "skipped "+convzip.Path(filepath.Join(archive.ProjectsDir(dest), "-x-web-app"), id)) {
+			t.Errorf("%s: the skipped note is not on s.Err: %q (s.Out %q)", name, errs.String(), out.String())
+		}
 	}
 }

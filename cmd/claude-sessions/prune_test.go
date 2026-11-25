@@ -2105,9 +2105,12 @@ func TestAgeRuleFormerNameIsNotAnotherClock(t *testing.T) {
 	writeJSON(t, filepath.Join(archive.ManifestDir(dest), "LAP-2.json"), lap)
 	writeJSON(t, filepath.Join(archive.ManifestDir(dest), "old-mac.json"),
 		archive.Shard{SchemaVersion: archive.SchemaVersion, Machine: "old-mac", HonorsDeleted: true, LastPush: ahead.UTC().Truncate(time.Hour)})
-	was := formerMachines
-	formerMachines = []string{"old-mac"}
-	t.Cleanup(func() { formerMachines = was })
+	machineMu.RLock()
+	name := savedMachine
+	machineMu.RUnlock()
+	was := savedFormer()
+	setSavedMachine(name, []string{"old-mac"})
+	t.Cleanup(func() { setSavedMachine(name, was) })
 	ret, _ := archive.LoadRetention(dest)
 	if n, err := runAgeRule(claudeDir, dest, ret, ahead, 0, func(string, ...any) {}); n != 1 || err != nil {
 		t.Errorf("deleted %d, %v: want the 120-day-old one", n, err)
