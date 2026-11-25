@@ -526,6 +526,11 @@ Added 2026-11-25 with the owner's approval. See the spec addendum "several compu
   - `TestFourComputersGateAndForget`: one machine without `readsZips` means nothing is zipped. After `machines forget` it zips. The same holds for `honorsDeleted` and prune.
   - `TestKeepByRemoteCoversFourBuckets` and `TestPruneRemovesEveryBucketsCopy`.
   - `TestCleanWithFourShards`: only true duplicates are deleted.
+  - `TestLastPushWrittenHourly`:
+    - `Shard` gains `LastPush time.Time \`json:"lastPush,omitempty"\``: UTC, truncated to the hour, set by a full (non-hook) push;
+    - two pushes in the same hour leave the shard file byte-identical;
+    - a push after the hour changes updates it;
+    - `machines` prints it.
   - `TestSameNameWarns`: two roots with the same `CLAUDE_SESSIONS_MACHINE` and different install IDs. The second push logs the WARN and doctor fails with the exact message. With one root pushing twice, there is no warning.
 
 - [ ] **Step 2: Run and see them fail.** `go test ./cmd/claude-sessions/ -run 'FourComputers|ThreeComputers|TwoWindows|KeepByRemoteCoversFour|PruneRemovesEvery|CleanWithFour|SameNameWarns' -v`. Expected: the name-clash test fails (no install ID yet). Any other failure is a real multi-computer bug: fix it in the code that owns it, and say so in the report.

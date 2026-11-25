@@ -332,3 +332,14 @@ folder, `import`, and `install`.
 
 Linux is already a supported platform. CI runs on ubuntu, and `install` uses a systemd
 user timer or cron there. The test above covers its paths.
+
+**4. When each computer last backed up** (added for the 0.7.0 panel; it must ship in 0.6.0
+so every computer reports it from its first update). The archive does not record when a
+computer last pushed: `MachineInfo.LastSeen` is the newest archived session.
+- **The field:** the shard gains `lastPush`, the time of the last successful full push,
+  in UTC and cut to the hour.
+- **When it is written:** push writes it only when the hour changes. Google Drive then
+  keeps at most one extra shard version per computer per hour, instead of one per
+  reply.
+- **Where it shows:** `machines` and `doctor` show it. The panel shows a computer as
+  "backing up normally" when its `lastPush` is within the last 2 hours.
