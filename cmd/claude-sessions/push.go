@@ -920,11 +920,12 @@ func (z *zipRecord) save(root string) error {
 
 // judge settles a local transcript whose bucket's copy is the zip zp, before the rules
 // in archiveTranscript run. A zip holding every turn of it and of its folder stays, and
-// nothing is archived: done, keptZipped. Otherwise the zip is unzipped, and the rules
-// judge the loose copy. Two zips stay beside the loose copy, which readers prefer and a
-// later unzip compares with them, so no branch is lost: one diverged from it, and one
-// that cannot be read or unzipped - said once for the zip as it is. Nor is a zip with
-// loose files beside it unzipped: see below.
+// nothing is archived: done, keptZipped. So does one this machine's branch forked from,
+// when that branch is archived as its fork already and unchanged since. Otherwise the
+// zip is unzipped, and the rules judge the loose copy. Two zips stay beside the loose
+// copy, which readers prefer and a later unzip compares with them, so no branch is
+// lost: one diverged from it, and one that cannot be read or unzipped - said once for
+// the zip as it is. Nor is a zip with loose files beside it unzipped: see below.
 func (z *zipRecord) judge(dest, bucket, id, zp, path string, src os.FileInfo, dryRun bool, logf func(string, ...any)) (archiveOutcome, bool) {
 	zst, err := os.Lstat(zp)
 	if err != nil {
@@ -963,7 +964,10 @@ func (z *zipRecord) judge(dest, bucket, id, zp, path string, src os.FileInfo, dr
 			return unreadable(err)
 		}
 		r := claude.Compare(path, p)
-		holds := (r == claude.Same || r == claude.Behind) &&
+		// A branch kept as its fork already, unchanged since, as the rules would find it.
+		fork := archive.StatOrNil(forkPath(dest, bucket, id, machineName()))
+		forked := r == claude.Forked && fork != nil && sameStat(src, fork)
+		holds := (r == claude.Same || r == claude.Behind || forked) &&
 			folderHeld(filepath.Join(filepath.Dir(path), id), filepath.Join(filepath.Dir(p), id)) == nil
 		done()
 		if !holds {

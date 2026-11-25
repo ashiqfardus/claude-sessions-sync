@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 )
 
@@ -140,4 +141,43 @@ func TestPushLeavesAZipBesideLooseFilesOnTheirWayOut(t *testing.T) {
 		t.Error("B's push unzipped A's zip beside loose files on their way out")
 	}
 	holdsConversation(t, bucket, []string{"u1", "m1", "w1", "w2"}, map[string]string{"subagents/agent-a1.jsonl": `"s1"`, "tool-results/r0.txt": "archived only"})
+}
+
+// Continued on both Windows laptops - A's branch archived in the shared bucket, B's kept
+// as its fork - then idle, and zipped by A. B's fork is archived and unchanged, so its
+// pushes leave the zip as it is: written once, not unzipped and zipped again each time.
+func TestAnArchivedForkLeavesItsZipAlone(t *testing.T) {
+	f := newFour(t)
+	p := convID(1, 1)
+	f.winA.say(t, f.api, p, "p1")
+	f.winA.run(t, "push", "--no-html")
+	f.winB.run(t, "import", "--search-root", f.winB.search, "--update", "--no-plugins")
+	f.winA.say(t, f.api, p, "a2")
+	f.winB.say(t, f.api, p, "b2")
+	f.winA.run(t, "push", "--no-html")
+	f.winB.run(t, "push", "--no-html")
+	bucket := filepath.Join(f.archive, "projects", claude.Slug(f.api))
+	fork := filepath.Join(f.archive, "forks", claude.Slug(f.api), p, "WIN-B.jsonl")
+	if !fileExists(fork) {
+		t.Fatal("no fork")
+	}
+	agePaths(t, 33*day, f.winB.transcript(f.api, p), fork) // the fork is B's copy, time and all
+	agePaths(t, 31*day, f.winA.transcript(f.api, p), filepath.Join(bucket, p+".jsonl"), filepath.Join(bucket, p))
+	f.winA.run(t, "push", "--no-html") // A zips the shared copy
+	zp := convzip.Path(bucket, p)
+	prev, err := os.Stat(zp)
+	if err != nil {
+		t.Fatalf("A did not zip: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		out := f.winB.run(t, "push", "--no-html")
+		cur, err := os.Stat(zp)
+		if err != nil || !os.SameFile(prev, cur) {
+			t.Fatalf("B's push %d unzipped the zip, or wrote it again (%v):\n%s", i+1, err, out)
+		}
+	}
+	if got := mustRead(t, fork); !strings.Contains(got, `"b2"`) {
+		t.Errorf("B's branch is not in its fork:\n%s", got)
+	}
+	f.winB.holdsAll(t, f.api, "p1", "b2")
 }
