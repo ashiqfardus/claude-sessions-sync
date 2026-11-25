@@ -90,3 +90,16 @@ func IsRealDir(path string) bool {
 	info, err := os.Lstat(path)
 	return err == nil && info.Mode().Type() == fs.ModeDir
 }
+
+// ThroughRealDirs reports whether every folder below root on the way to path that
+// exists is a real one. CopyFile's MkdirAll and Rename follow links, so a write into
+// the shared archive checks this first: a planted link would take it outside.
+func ThroughRealDirs(root, path string) bool {
+	root = filepath.Clean(root)
+	for d := filepath.Dir(path); d != root && d != filepath.Dir(d); d = filepath.Dir(d) {
+		if _, err := os.Lstat(d); err == nil && !IsRealDir(d) {
+			return false
+		}
+	}
+	return true
+}

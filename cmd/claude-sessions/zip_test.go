@@ -351,3 +351,29 @@ func TestPushUnzipsForAFolderFileTheZipLacks(t *testing.T) {
 }
 
 func fileExists(p string) bool { _, err := os.Lstat(p); return err == nil }
+
+// A link planted in the shared archive at <bucket>/<id> must not take the session's
+// folder files outside it: none is copied, the WARN says why, and the transcript is
+// archived as ever.
+func TestPushWritesNoFolderFileThroughAPlantedLink(t *testing.T) {
+	archive := t.TempDir()
+	mac := newMachine(t, "MAC", archive)
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "u1", "m1"))
+	mustWrite(t, filepath.Join(filepath.Dir(mac.session(repo)), forkSession, "subagents", "agent-a1.jsonl"), sessionLines(repo, "s1"))
+	bucket := filepath.Join(archive, "projects", claude.Slug(repo))
+	mustMkdir(t, bucket)
+	outside := t.TempDir()
+	symlink(t, outside, filepath.Join(bucket, forkSession))
+
+	out := mac.run(t, "push", "--no-html")
+	if ents, _ := os.ReadDir(outside); len(ents) != 0 {
+		t.Fatalf("push wrote %d item(s) through the link", len(ents))
+	}
+	if !strings.Contains(out, "WARN: "+forkSession) {
+		t.Errorf("push did not say why the folder was not archived:\n%s", out)
+	}
+	if got := archived(t, archive, repo); !strings.Contains(got, `"m1"`) {
+		t.Errorf("the transcript is not archived:\n%s", got)
+	}
+}

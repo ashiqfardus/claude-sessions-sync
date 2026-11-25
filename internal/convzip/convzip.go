@@ -264,19 +264,6 @@ func lowerASCII(s string) string {
 	return string(b)
 }
 
-// throughRealDirs reports whether every folder from bucketDir down to path that exists is
-// a real one: CopyFile's MkdirAll and Rename follow links, and a link planted in the
-// shared archive would take the write outside it.
-func throughRealDirs(bucketDir, path string) bool {
-	root := filepath.Clean(bucketDir)
-	for d := filepath.Dir(path); d != root && d != filepath.Dir(d); d = filepath.Dir(d) {
-		if exists(d) && !archive.IsRealDir(d) {
-			return false
-		}
-	}
-	return true
-}
-
 // Materialize returns a transcript path with its <id>/ folder beside it. With only
 // loose files that is the archive's own path. With a zip, it is the zip extracted under
 // tmpDir, loose files laid over their entries: a conversation continued on another
@@ -346,7 +333,7 @@ func Unzip(bucketDir, id string) error {
 	var write []work.PackFile
 	for _, f := range files {
 		dst := filepath.Join(bucketDir, filepath.FromSlash(f.Rel))
-		if !throughRealDirs(bucketDir, dst) {
+		if !archive.ThroughRealDirs(bucketDir, dst) {
 			return fmt.Errorf("%s: a folder on its way is a link; zip kept", f.Rel)
 		}
 		st, err := os.Lstat(dst)

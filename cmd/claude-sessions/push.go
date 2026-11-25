@@ -1127,6 +1127,15 @@ func othersHolding(holders map[string][]string, bucket, id string) []string {
 // archiveExtras copies a session's own folder - subagent transcripts and saved tool
 // output - where it changed, reporting how many files it copied and left alone.
 func archiveExtras(bucketDir, destBucket, id string, extras []string, dryRun bool, logf func(string, ...any)) (copied, unchanged int) {
+	// From the bucket folder down, a link planted in the shared archive would take the
+	// copies outside it: none is made, nor any folder created.
+	for _, rel := range extras {
+		if !archive.ThroughRealDirs(filepath.Dir(destBucket), filepath.Join(destBucket, id, rel)) {
+			logf("WARN: %s: a link or a file stands where a folder should be on the way to %s/%s in the archive; its folder is not archived",
+				id, filepath.Base(destBucket), id)
+			return 0, 0
+		}
+	}
 	for _, rel := range extras {
 		srcPath := filepath.Join(bucketDir, id, rel)
 		srcInfo, err := os.Stat(srcPath)
