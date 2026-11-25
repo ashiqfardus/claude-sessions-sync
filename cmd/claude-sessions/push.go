@@ -786,7 +786,7 @@ func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushe
 	}
 	// A loose copy is never written beside a zipped one it was not compared with.
 	if zp := zippedCopy(dest, bucket, id); zp != "" {
-		if out, done := zips.judge(bucket, id, zp, path, srcInfo, dryRun, logf); done {
+		if out, done := zips.judge(dest, bucket, id, zp, path, srcInfo, dryRun, logf); done {
 			return out
 		}
 	}
@@ -923,8 +923,9 @@ func (z *zipRecord) save(root string) error {
 // nothing is archived: done, keptZipped. Otherwise the zip is unzipped, and the rules
 // judge the loose copy. Two zips stay beside the loose copy, which readers prefer and a
 // later unzip compares with them, so no branch is lost: one diverged from it, and one
-// that cannot be read or unzipped - said once for the zip as it is.
-func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun bool, logf func(string, ...any)) (archiveOutcome, bool) {
+// that cannot be read or unzipped - said once for the zip as it is. Nor is a zip with
+// loose files beside it unzipped: see below.
+func (z *zipRecord) judge(dest, bucket, id, zp, path string, src os.FileInfo, dryRun bool, logf func(string, ...any)) (archiveOutcome, bool) {
 	zst, err := os.Lstat(zp)
 	if err != nil {
 		return 0, false
@@ -939,6 +940,14 @@ func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun b
 	if sameZip && prev.Size == now.Size && archive.SameMTime(prev.MTime, now.MTime) {
 		return keptZipped, !prev.Diverged // a diverged pair: the rules judge the loose copy
 	}
+	// A loose transcript beside the zip: on a shared bucket, often another machine's own
+	// zip whose deletions of the loose files have not arrived. Unzipping would remove that
+	// zip on the strength of files on their way out. It stays, the rules judge the loose
+	// copy, and the sweep settles the pair.
+	if archivedCopy(dest, bucket, id) != "" {
+		return 0, false
+	}
+	dir := filepath.Dir(zp)
 	unreadable := func(err error) (archiveOutcome, bool) {
 		logf("WARN: %s: %v; this copy is archived loose beside the zip", id, err)
 		now.Unreadable = true
@@ -946,7 +955,7 @@ func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun b
 		return 0, false
 	}
 	if !zipHolds(zp, id, path, src) {
-		p, done, err := materialize(filepath.Dir(zp), id, z.tmp)
+		p, done, err := materialize(dir, id, z.tmp)
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, false
 		}
@@ -958,10 +967,11 @@ func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun b
 			folderHeld(filepath.Join(filepath.Dir(path), id), filepath.Join(filepath.Dir(p), id)) == nil
 		done()
 		if !holds {
-			if dryRun {
+			// Nor beside folder files: they may be on their way out too.
+			if dryRun || len(claude.SessionFiles(filepath.Join(dir, id))) > 0 {
 				return 0, false
 			}
-			switch err := convzip.Unzip(filepath.Dir(zp), id); {
+			switch err := convzip.Unzip(dir, id); {
 			case errors.Is(err, convzip.ErrDiverged):
 				if !had || !prev.Diverged { // said once, not on every run until it is resolved
 					logf("WARN: %s: %v; the zip is kept beside the loose copy", id, err)
@@ -1005,8 +1015,10 @@ func zipSkippedPath(root string) string {
 
 // zipIdleCopies zips each conversation archived in buckets whose loose files, and this
 // machine's transcript of it, are all unchanged since now-zipIdle, until budget (0 for
-// none) runs out: the rest wait for the next run. Loose files left beside a zip by a run
-// killed half way are unzipped into it first, then zipped again. A dry run lists them.
+// none) runs out: the rest wait for the next run. Loose files beside a zip - another
+// machine's zip whose deletions have not arrived, or a run killed half way - are removed
+// when the zip holds every one, and the zip left as it is; only loose files holding
+// something it lacks are unzipped into it, then zipped again. A dry run lists them.
 func zipIdleCopies(root, dest string, buckets []string, now time.Time, budget time.Duration, dryRun bool, logf func(string, ...any)) (zipped int, raw, packed int64) {
 	skipped := map[string]int64{}
 	if data, err := os.ReadFile(zipSkippedPath(root)); err == nil {
@@ -1058,7 +1070,18 @@ each:
 				continue
 			}
 			if zp != "" {
-				switch err := convzip.Unzip(dir, id); {
+				err := convzip.DropHeld(dir, id) // the zip stays
+				if err == nil {
+					if _, ok := skipped[key]; ok {
+						delete(skipped, key)
+						dirty = true
+					}
+					continue
+				}
+				if errors.Is(err, convzip.ErrNotHeld) {
+					err = convzip.Unzip(dir, id)
+				}
+				switch {
 				case errors.Is(err, convzip.ErrDiverged):
 					logf("WARN: %s: %v; the zip and the loose copy beside it are both kept", id, err)
 					remember()

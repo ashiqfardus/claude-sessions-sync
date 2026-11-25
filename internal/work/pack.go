@@ -52,6 +52,12 @@ func WritePack(dst string, files []PackFile) error {
 	return commitPack(tmp, dst)
 }
 
+// WritePackTemp writes files to a temp pack beside dst, as WritePack does, and returns
+// its name without moving it into place: the caller checks it first, then renames it.
+func WritePackTemp(dst string, files []PackFile) (string, error) {
+	return buildPack(dst, nil, files)
+}
+
 // CompactPack writes to dst the entries of the pack at old, copied as they are, except
 // those add replaces, plus add. old may be dst.
 func CompactPack(old, dst string, add []PackFile) error {

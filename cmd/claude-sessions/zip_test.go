@@ -176,7 +176,8 @@ func appendTurns(t *testing.T, path, repo string, turns ...string) {
 
 // Another machine that had not seen the zip yet pushed its own continuation loose
 // beside it, and this one went on too: the zip, that loose copy and this machine's
-// turns are all kept, and the log says why once.
+// turns, as its fork, are all kept, and the log says why once. The zip beside the loose
+// copy is not unzipped: the sweep settles the pair once it is idle.
 func TestPushKeepsADivergedZip(t *testing.T) {
 	archive, mac, repo := pushedSession(t)
 	appendTurns(t, mac.session(repo), repo, "m2")
@@ -187,10 +188,10 @@ func TestPushKeepsADivergedZip(t *testing.T) {
 	later(t, loose)
 	appendTurns(t, mac.session(repo), repo, "m3")
 
-	// Remembered: the WARN is said once, not on every run.
+	// Said once, not on every run.
 	out := mac.run(t, "push", "--no-html") + mac.run(t, "push", "--no-html")
-	if n := strings.Count(out, "WARN: "+forkSession); n != 1 {
-		t.Errorf("%d WARN line(s) for the session across two pushes, want 1:\n%s", n, out)
+	if n := strings.Count(out, ": "+forkSession); n != 1 || !strings.Contains(out, "FORK: "+forkSession) {
+		t.Errorf("%d line(s) for the session across two pushes, want 1 FORK:\n%s", n, out)
 	}
 	if _, err := os.Lstat(convzip.Path(bucket, forkSession)); err != nil {
 		t.Fatalf("the zip, the only copy of m2 in the archive but the fork, is gone: %v", err)

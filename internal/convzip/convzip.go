@@ -28,6 +28,10 @@ var ErrTooLarge = errors.New("conversation too large to zip")
 // ErrZipExists is Zip's refusal to write over a zip that is already there.
 var ErrZipExists = errors.New("a zip already exists; unzip it first")
 
+// ErrNotHeld is DropHeld's answer when a loose file holds what the zip beside it lacks.
+// It changes nothing.
+var ErrNotHeld = errors.New("a loose file holds what the zip lacks")
+
 // ErrDiverged is Unzip's refusal when the loose and zipped copies of a transcript each
 // hold turns the other lacks. It changes nothing.
 var ErrDiverged = errors.New("loose and zipped transcripts have each turns the other lacks")
@@ -106,8 +110,8 @@ func loose(bucketDir, id string) ([]work.PackFile, error) {
 
 // Zip packs id's transcript and folder into its zip, reads the zip back, and only then
 // deletes the loose files it packed, the transcript first. Any failed check leaves them
-// and removes the zip. A conversation over the cap is left alone with ErrTooLarge, and
-// one with no transcript with os.ErrNotExist.
+// and removes only the temp it wrote. A conversation over the cap is left alone with
+// ErrTooLarge, and one with no transcript with os.ErrNotExist.
 func Zip(bucketDir, id string) (Result, error) {
 	dst := Path(bucketDir, id)
 	if exists(dst) {
@@ -134,7 +138,23 @@ func Zip(bucketDir, id string) (Result, error) {
 		return Result{}, ErrTooLarge
 	}
 	res.Files = len(files)
-	if err := work.WritePack(dst, files); err != nil {
+	// Checked under its temp name, and only then moved into place: on a shared bucket
+	// another machine's zip may have synced in at dst meanwhile, and a failed check
+	// removes only what this run wrote.
+	tmp, err := work.WritePackTemp(dst, files)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := verify(tmp, files); err != nil {
+		os.Remove(tmp)
+		return Result{}, fmt.Errorf("zip not trusted, files kept: %w", err)
+	}
+	if exists(dst) { // zipped elsewhere since: that zip is not written over
+		os.Remove(tmp)
+		return Result{}, ErrZipExists
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		os.Remove(tmp)
 		return Result{}, err
 	}
 	// The zip's own time is the conversation's last activity, not the day it was zipped:
@@ -147,26 +167,27 @@ func Zip(bucketDir, id string) (Result, error) {
 		}
 	}
 	_ = os.Chtimes(dst, newest, newest)
-	if err := verify(dst, files); err != nil {
-		os.Remove(dst)
-		return Result{}, fmt.Errorf("zip not trusted, files kept: %w", err)
-	}
 	if st, err := os.Stat(dst); err == nil {
 		res.Packed = st.Size()
 	}
-	// Transcript first: if the run dies between the two, the folder still holds the rest.
-	// Each file is checked again just before its removal: one a sync client replaced
-	// since the listing is not in the zip, and stays.
+	return res, removeLoose(bucketDir, id, files)
+}
+
+// removeLoose deletes the loose files a zip was proved to hold, then id's emptied
+// folders. Transcript first: if the run dies between the two, the folder still holds
+// the rest. Each file is checked again just before its removal: one a sync client
+// replaced since the listing is not in the zip, and stays.
+func removeLoose(bucketDir, id string, files []work.PackFile) error {
 	for _, f := range files {
 		if !unchanged(f) {
-			return res, fmt.Errorf("%s changed while zipping; kept", f.Rel)
+			return fmt.Errorf("%s changed meanwhile; kept", f.Rel)
 		}
 		if err := os.Remove(f.Path); err != nil {
-			return res, err
+			return err
 		}
 	}
 	removeEmptyDirs(filepath.Join(bucketDir, id))
-	return res, nil
+	return nil
 }
 
 // unchanged reports whether f is still as it was listed.
@@ -375,6 +396,50 @@ func Unzip(bucketDir, id string) error {
 		}
 	}
 	return os.Remove(zp)
+}
+
+// DropHeld removes id's loose files in bucketDir when the zip beside them holds every
+// one: a transcript by its turns, any other file at its size and time, the zip read
+// back in full first. Loose files beside a zip are most often another machine's: it
+// zipped them in this shared bucket, and its deletions have not arrived yet. Unzipping
+// would remove that zip on the strength of files on their way out, so the zip is never
+// removed or rewritten here. A loose file the zip does not hold changes nothing:
+// ErrNotHeld.
+func DropHeld(bucketDir, id string) error {
+	zp := Path(bucketDir, id)
+	if !isRegular(zp) {
+		return os.ErrNotExist
+	}
+	files, err := loose(bucketDir, id)
+	if err != nil || len(files) == 0 {
+		return err
+	}
+	dir, out, err := extract(zp, "", id)
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	zipped := map[string]work.PackFile{}
+	for _, e := range out {
+		zipped[e.Rel] = e
+	}
+	for _, f := range files {
+		e, ok := zipped[f.Rel]
+		switch {
+		case !ok:
+			return ErrNotHeld
+		case strings.HasSuffix(f.Rel, ".jsonl"):
+			if !claude.HoldsAll(e.Path, f.Path) {
+				return ErrNotHeld
+			}
+		case e.Size != f.Size || !archive.SameMTime(e.ModTime, f.ModTime):
+			return ErrNotHeld
+		}
+	}
+	if !isRegular(zp) { // removed meanwhile: the loose files may be all there is
+		return os.ErrNotExist
+	}
+	return removeLoose(bucketDir, id, files)
 }
 
 func exists(p string) bool { _, err := os.Lstat(p); return err == nil }
