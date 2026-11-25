@@ -106,7 +106,8 @@ func loose(bucketDir, id string) ([]work.PackFile, error) {
 
 // Zip packs id's transcript and folder into its zip, reads the zip back, and only then
 // deletes the loose files it packed, the transcript first. Any failed check leaves them
-// and removes the zip. A conversation over the cap is left alone with ErrTooLarge.
+// and removes the zip. A conversation over the cap is left alone with ErrTooLarge, and
+// one with no transcript with os.ErrNotExist.
 func Zip(bucketDir, id string) (Result, error) {
 	dst := Path(bucketDir, id)
 	if exists(dst) {
@@ -120,7 +121,9 @@ func Zip(bucketDir, id string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if len(files) == 0 {
+	// loose lists the transcript first. A folder without one has nothing to show or
+	// resume, and readers find a conversation by its transcript: it stays loose.
+	if len(files) == 0 || files[0].Rel != id+".jsonl" {
 		return Result{}, os.ErrNotExist
 	}
 	var res Result

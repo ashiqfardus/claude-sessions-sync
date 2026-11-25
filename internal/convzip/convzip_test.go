@@ -264,6 +264,19 @@ func TestZipRefusesSingleFileOverCap(t *testing.T) {
 	}
 }
 
+// A conversation whose transcript is gone has nothing to show or resume: it is not
+// zipped, and its folder is left as it is.
+func TestZipRefusesWithoutTranscript(t *testing.T) {
+	dir, _ := bucket(t)
+	os.Remove(filepath.Join(dir, testID+".jsonl"))
+	if _, err := Zip(dir, testID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v", err)
+	}
+	if exists(Path(dir, testID)) || !exists(filepath.Join(dir, testID, "tool-results", "x.txt")) || !exists(filepath.Join(dir, testID, "subagents", "agent-a.jsonl")) {
+		t.Fatal("touched")
+	}
+}
+
 func TestZipRefusesWhenZipExists(t *testing.T) {
 	dir, _ := bucket(t)
 	os.WriteFile(Path(dir, testID), []byte("x"), 0o644)

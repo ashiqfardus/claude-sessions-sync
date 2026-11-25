@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
 const zipID = "11111111-2222-3333-4444-555555555555"
@@ -47,6 +48,40 @@ func countUnpacks(t *testing.T) *int {
 	return n
 }
 
+// countIndexReads counts the zip indexes render reads.
+func countIndexReads(t *testing.T) *int {
+	t.Helper()
+	n := new(int)
+	real := zipEntries
+	t.Cleanup(func() { zipEntries = real })
+	zipEntries = func(p string) (map[string]work.PackEntry, error) {
+		*n++
+		return real(p)
+	}
+	return n
+}
+
+// garble overwrites a file with junk of the same size and time.
+func garble(t *testing.T, p string) {
+	t.Helper()
+	st := mustStat(t, p)
+	if err := os.WriteFile(p, bytes.Repeat([]byte("x"), int(st.Size())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	os.Chtimes(p, st.ModTime(), st.ModTime())
+}
+
+// listed fails unless both indexes link the zipped conversation's page.
+func listed(t *testing.T, dest string) {
+	t.Helper()
+	if idx := string(mustRead(t, filepath.Join(dest, "html", "e--work-api", "index.html"))); !strings.Contains(idx, `href="./`+zipID+`.html"`) {
+		t.Errorf("the project index does not link the zipped conversation:\n%s", idx)
+	}
+	if idx := string(mustRead(t, filepath.Join(dest, "html", "index.html"))); !strings.Contains(idx, pageHref("e--work-api", zipID)) || !strings.Contains(idx, "a zipped question") {
+		t.Errorf("the main index does not list the zipped conversation:\n%s", idx)
+	}
+}
+
 func mustRead(t *testing.T, p string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(p)
@@ -76,11 +111,64 @@ func TestRenderKeepsAndListsZippedPages(t *testing.T) {
 	if after, err := os.ReadFile(pagePath); err != nil || !bytes.Equal(after, before) {
 		t.Errorf("the page was removed or rewritten: %v", err)
 	}
-	if idx := string(mustRead(t, filepath.Join(dest, "html", "e--work-api", "index.html"))); !strings.Contains(idx, `href="./`+zipID+`.html"`) {
-		t.Errorf("the project index no longer links the zipped conversation:\n%s", idx)
+	listed(t, dest)
+
+	// Its zip unchanged since, the next quiet run reads no zip at all, not even an index:
+	// on a drive that streams files, each read is a download.
+	reads := countIndexReads(t)
+	res, err = Archive(dest, Options{Budget: time.Minute})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if idx := string(mustRead(t, filepath.Join(dest, "html", "index.html"))); !strings.Contains(idx, pageHref("e--work-api", zipID)) || !strings.Contains(idx, "a zipped question") {
-		t.Errorf("the main index no longer lists the zipped conversation:\n%s", idx)
+	if *reads != 0 || *unpacks != 0 || res.UpToDate != 1 {
+		t.Errorf("a quiet run over a current zipped page read %d index(es) and unpacked %d: %+v", *reads, *unpacks, res)
+	}
+	listed(t, dest)
+}
+
+// A loose copy beside a zip is a continuation the zip lacks: it is rendered, and the
+// zip is not read.
+func TestRenderPrefersLooseBesideZip(t *testing.T) {
+	dest, bucket, pagePath := zippedArchive(t)
+	loose := filepath.Join(bucket, zipID+".jsonl")
+	body := `{"type":"user","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"a zipped question"}}` + "\n" +
+		`{"type":"assistant","timestamp":"2026-08-30T09:05:00.000Z","message":{"role":"assistant","content":"continued elsewhere"}}` + "\n"
+	if err := os.WriteFile(loose, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reads, unpacks := countIndexReads(t), countUnpacks(t)
+
+	res, err := Archive(dest, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Rendered != 1 || *reads != 0 || *unpacks != 0 {
+		t.Errorf("the loose copy was not the one rendered: %+v, %d index read(s), %d unpack(s)", res, *reads, *unpacks)
+	}
+	if got := string(mustRead(t, pagePath)); !strings.Contains(got, "continued elsewhere") {
+		t.Errorf("the page lacks the loose copy's turn:\n%s", got)
+	}
+}
+
+// A zip that cannot be read - garbled, or a placeholder not downloaded yet - keeps its
+// page, which stays listed from what the last pass knew, and is counted as failed.
+func TestRenderKeepsPageOfUnreadableZip(t *testing.T) {
+	dest, bucket, pagePath := zippedArchive(t)
+	before := mustRead(t, pagePath)
+	garble(t, convzip.Path(bucket, zipID))
+
+	for i := 0; i < 2; i++ { // and the next pass too: its state is kept
+		res, err := Archive(dest, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Failed != 1 || res.UpToDate != 0 || res.Rendered != 0 {
+			t.Errorf("pass %d: an unreadable zip is not counted as failed: %+v", i+1, res)
+		}
+		if after, err := os.ReadFile(pagePath); err != nil || !bytes.Equal(after, before) {
+			t.Errorf("pass %d: the page was removed or rewritten: %v", i+1, err)
+		}
+		listed(t, dest)
 	}
 }
 
@@ -90,6 +178,10 @@ func TestRenderRerendersZippedOnTemplateBump(t *testing.T) {
 	dest, bucket, pagePath := zippedArchive(t)
 	zp := convzip.Path(bucket, zipID)
 	zipBefore, zst := mustRead(t, zp), mustStat(t, zp)
+	// A pass after zipping records the zip: a remembered zip still takes the bump.
+	if _, err := Archive(dest, Options{}); err != nil {
+		t.Fatal(err)
+	}
 
 	// The last pass was an older template, and so is the page, at its transcript's time.
 	htmlDir := filepath.Join(dest, "html")

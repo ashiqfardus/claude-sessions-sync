@@ -42,6 +42,18 @@ func TestDoctorCountsZippedAsArchived(t *testing.T) {
 	}
 }
 
+// Claude Code deleted the session here long after it was zipped: INDEX.md still lists it.
+func TestIndexListsAZippedSessionNoLongerLocal(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	zipArchived(t, archive, repo)
+	os.Remove(mac.session(repo))
+	os.RemoveAll(filepath.Join(filepath.Dir(mac.session(repo)), forkSession))
+	mac.run(t, "push", "--no-html")
+	if idx := mustRead(t, filepath.Join(archive, "INDEX.md")); !strings.Contains(idx, "`"+forkSession+"`") {
+		t.Errorf("INDEX.md lost the zipped session:\n%s", idx)
+	}
+}
+
 // Once push has left the pair zipped, doctor reads nothing of the zip: one garbled at
 // the same size and time goes unnoticed.
 func TestDoctorReadsNoZipPushLeftZipped(t *testing.T) {

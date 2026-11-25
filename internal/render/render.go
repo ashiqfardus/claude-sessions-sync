@@ -79,8 +79,12 @@ const stateSaveEvery = 10 * time.Second
 // now is the clock the render budget is measured with; a test replaces it.
 var now = time.Now
 
-// materialize unpacks a zipped conversation for its page; a test counts the calls.
-var materialize = convzip.Materialize
+// materialize unpacks a zipped conversation for its page, and zipEntries reads a zip's
+// index; a test counts the calls.
+var (
+	materialize = convzip.Materialize
+	zipEntries  = convzip.Entries
+)
 
 // Archive renders every transcript in the archive.
 func Archive(dest string, opts Options) (Result, error) {
@@ -160,8 +164,8 @@ func Archive(dest string, opts Options) (Result, error) {
 		}
 
 		// one renders or lists the transcript name, of size and mtime; open gives its path,
-		// and is called only when its page is due.
-		one := func(name string, size int64, mtime time.Time, open func() (string, func(), error)) {
+		// and is called only when its page is due. z is its zip, for a zipped one.
+		one := func(name string, size int64, mtime time.Time, z *zipState, open func() (string, func(), error)) {
 			id := strings.TrimSuffix(name, filepath.Ext(name))
 			out := filepath.Join(res.OutputDir, bucket, id+".html")
 
@@ -186,7 +190,7 @@ func Archive(dest string, opts Options) (Result, error) {
 			mayRender := opts.Budget <= 0 || now().Sub(start) < opts.Budget
 			page, err := renderOne(open, project, id, known, out, mtime, mayRender)
 			if err == nil && !page.deferred {
-				next.Pages[key] = pageState{Size: size, Prompt: page.prompt}
+				next.Pages[key] = pageState{Size: size, Prompt: page.prompt, Zip: z}
 			}
 			switch {
 			case err != nil:
@@ -232,28 +236,40 @@ func Archive(dest string, opts Options) (Result, error) {
 			}
 			src := filepath.Join(bucketDir, f.Name())
 			loose[strings.ToLower(strings.TrimSuffix(f.Name(), filepath.Ext(f.Name())))] = true
-			one(f.Name(), info.Size(), info.ModTime(), func() (string, func(), error) { return src, func() {}, nil })
+			one(f.Name(), info.Size(), info.ModTime(), nil, func() (string, func(), error) { return src, func() {}, nil })
 		}
 
 		// A zipped conversation keeps its page. It is dated by its transcript's entry in
-		// the zip's index, and unpacked only when the page is due: a template change,
-		// or a page withdrawn by an exclusion since lifted. A loose copy beside a zip is
-		// a continuation the zip lacks, so it is the one rendered above.
+		// the zip, and unpacked only when the page is due: a template change, or a page
+		// withdrawn by an exclusion since lifted. A loose copy beside a zip is a
+		// continuation the zip lacks, so it is the one rendered above.
 		for lid, zp := range convzip.Find(bucketDir) {
 			if loose[lid] {
 				continue
 			}
 			id := strings.TrimSuffix(filepath.Base(zp), convzip.Suffix)
-			ents, err := convzip.Entries(zp)
-			if err != nil {
-				res.Failed++
+			key := bucket + "/" + id
+			ps, had := prev.Pages[key]
+			z, size, err := zipTranscript(zp, id, ps)
+			if err == nil {
+				one(id+".jsonl", size, z.Entry, z, func() (string, func(), error) { return materialize(bucketDir, id, "") })
 				continue
 			}
-			e, ok := ents[id+".jsonl"]
-			if !ok {
-				continue // a folder with no transcript: nothing to show
+			// Unreadable: garbled, or a placeholder not downloaded yet. The page stays,
+			// listed as the last pass knew it, and so does that pass's record of it.
+			res.Failed++
+			pst, err := os.Stat(filepath.Join(res.OutputDir, bucket, id+".html"))
+			if !had || err != nil {
+				continue
 			}
-			one(id+".jsonl", e.Size, e.ModTime, func() (string, func(), error) { return materialize(bucketDir, id, "") })
+			if prev.Version == templateVersion { // an older template's page is not current
+				next.Pages[key] = ps
+			}
+			entries = append(entries, indexEntry{
+				Project: project, Bucket: bucket, ID: id,
+				Href:    pageHref(bucket, id),
+				Updated: pst.ModTime(), Size: ps.Size, Prompt: ps.Prompt,
+			})
 		}
 	}
 
@@ -369,8 +385,42 @@ func progress(prev, next renderState) renderState {
 }
 
 type pageState struct {
-	Size   int64  `json:"size"`
-	Prompt string `json:"prompt"`
+	Size   int64     `json:"size"`
+	Prompt string    `json:"prompt"`
+	Zip    *zipState `json:"zip,omitempty"` // for a zipped transcript
+}
+
+// zipState is a zipped transcript's zip file as its page was made from it, and the
+// transcript entry's time: a run reads no zip whose file is unchanged since.
+type zipState struct {
+	Size  int64     `json:"size"`
+	MTime time.Time `json:"mtime"`
+	Entry time.Time `json:"entry"`
+}
+
+// zipTranscript is the zip at zp as a page's state records it, and the size of its
+// transcript id. It reads the zip's index only when the zip is not as last recorded:
+// on a drive that streams files on demand, every read is a download.
+func zipTranscript(zp, id string, last pageState) (*zipState, int64, error) {
+	st, err := os.Lstat(zp)
+	if err != nil {
+		return nil, 0, err
+	}
+	z := &zipState{Size: st.Size(), MTime: st.ModTime()}
+	if c := last.Zip; c != nil && c.Size == z.Size && archive.SameMTime(c.MTime, z.MTime) {
+		z.Entry = c.Entry
+		return z, last.Size, nil
+	}
+	ents, err := zipEntries(zp)
+	if err != nil {
+		return nil, 0, err
+	}
+	e, ok := ents[id+".jsonl"]
+	if !ok {
+		return nil, 0, os.ErrNotExist // not one Zip wrote: it always holds the transcript
+	}
+	z.Entry = e.ModTime
+	return z, e.Size, nil
 }
 
 // renderState is html/.render-state.json: what each page was rendered from. It also
