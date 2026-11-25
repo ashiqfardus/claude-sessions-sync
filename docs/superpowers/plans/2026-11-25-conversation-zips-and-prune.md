@@ -549,6 +549,51 @@ Added 2026-11-25 with the owner's approval. See the spec addendum "several compu
 
 ---
 
+### Task 11: a sync folder that streams files on demand (found on the third computer)
+
+Found 2026-11-26 on a fresh Windows computer whose Google Drive (H:) streams files.
+`claude-sessions doctor` printed nothing and sat idle for over 2 minutes at 0 CPU,
+blocked on file reads, until it was killed. The owner's Mac import was slow the same
+way until the folder was made available offline. A first-time user takes this for a
+crash.
+
+**Files:**
+- Modify: `cmd/claude-sessions/doctor.go`;
+- Modify, if they share the slow path: `cmd/claude-sessions/import.go` and `push.go` (progress lines only);
+- Modify: `docs/setup-with-claude.md`, `README.md` (troubleshooting) and `CHANGELOG.md`.
+- Test: `cmd/claude-sessions/doctor_test.go`.
+
+**Interfaces:**
+- Produces:
+  - **Printing as it goes:** `doctor` prints each check as it finishes, not all at the end. Its header line prints before any archive file is read.
+  - `func timed(name string, limit time.Duration, check func() check) check`: runs a check with a time limit. Over the limit, the result is `level warn`, with the message `"<name>: not finished after <n>s - the archive folder may be downloading files on demand"`. The check's goroutine is abandoned, never waited on.
+    - Archive-reading checks get 20 s each, overridable through a test hook.
+    - `doctor` as a whole finishes in at most 20 s per slow check, plus the fast checks.
+  - **No content reads:** `doctor` reads no file contents it does not need. In particular it must not open every pack or zip: counts come from names and stat only.
+  - `func streamingHint(dest string) (slow bool)`:
+    - times reading the first 64 KB of one archived transcript, with a 3 s limit;
+    - when slow, `doctor` adds a warning: "Your archive folder downloads files only when they're opened, which makes backups and imports slow. In Google Drive, right-click the claude-sessions folder and choose Offline access, then Available offline. OneDrive calls it Always keep on this device.";
+    - `import` and `push` print the same hint once when their first archive read takes over 3 s.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `TestDoctorPrintsHeaderBeforeReadingTheArchive`: with a test hook that blocks archive reads, the header and the local checks appear on the output before the block is released.
+  - `TestDoctorTimesOutASlowCheck`: with a blocked archive read and a 1 s test limit, doctor returns within 3 s and reports the "not finished" warning.
+  - `TestDoctorDoesNotOpenPacks`: with a hook counting `work.ReadPackIndex` / `convzip.Entries` calls, the count is 0.
+  - `TestStreamingHint`: with the read delayed past the limit through the hook, the hint appears once.
+
+- [ ] **Step 2: Run and see them fail.** `go test ./cmd/claude-sessions/ -run 'Doctor|StreamingHint' -v`. Expected: FAIL.
+
+- [ ] **Step 3: Implement** as in Produces. Then:
+  - in `docs/setup-with-claude.md` step 3, after choosing the folder, tell Claude to make it available offline, explaining that the user must click it;
+  - add a README troubleshooting entry;
+  - add a CHANGELOG `### Fixed` entry.
+
+- [ ] **Step 4: Run the tests.** `go test ./... && GOTOOLCHAIN=go1.21.13 go test ./...`. Expected: PASS.
+
+- [ ] **Step 5: Commit.** `git commit -am "doctor: never hang silently on a sync folder that streams files; say how to fix it"`
+
+---
+
 ## Calls this plan makes (beyond the spec)
 
 - **Zip naming:** `<id>.conv.zip`.
