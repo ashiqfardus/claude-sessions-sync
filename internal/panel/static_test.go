@@ -78,14 +78,17 @@ func TestFontsAreEmbedded(t *testing.T) {
 
 const readmeURL = "https://github.com/ashiqfardus/claude-sessions-sync#readme"
 
+// readmeLine is the one place the README URL may appear: app.js's constant.
+const readmeLine = `export const README = '` + readmeURL + `'`
+
 // svgNS is the SVG namespace name, which is never fetched (Ruling P28). Only its quoted
 // form is allowed, so a longer URL that starts with it is still caught.
 var svgNS = regexp.MustCompile("http://www\\.w3\\.org/2000/svg([\"'`])")
 
 // remoteLoads lists what in a file the browser loads could fetch from another computer.
 func remoteLoads(name, s string) []string {
-	if name == "static/js/app.js" { // app.js exports it as README, the panel's one external link
-		s = strings.ReplaceAll(s, readmeURL, "")
+	if name == "static/js/app.js" { // only its README constant, the panel's one external link
+		s = strings.Replace(s, readmeLine, "", 1)
 	}
 	s = svgNS.ReplaceAllString(s, "$1")
 	var found []string
@@ -123,8 +126,10 @@ func TestRemoteScanAllowsOnlyTheSVGNamespace(t *testing.T) {
 		{"static/index.html", `<svg xmlns="https://www.w3.org/2000/svg">`, false},
 		{"static/panel.css", `.a{background:url("http://example.com/a.png")}`, false},
 		{"static/panel.css", `@import "fonts.css";`, false},
-		{"static/js/app.js", `export const README = '` + readmeURL + `'`, true},
+		{"static/js/app.js", readmeLine, true},
+		{"static/js/app.js", readmeLine + "\na.href = '" + readmeURL + "'", false},
 		{"static/js/settings.js", `a.href = "` + readmeURL + `"`, false},
+		{"static/js/settings.js", readmeLine, false},
 	} {
 		if found := remoteLoads(c.name, c.text); (len(found) == 0) != c.ok {
 			t.Errorf("%s %s: found %q, want allowed=%v", c.name, c.text, found, c.ok)
@@ -341,26 +346,81 @@ func TestPageScriptsKeepTheRules(t *testing.T) {
 }
 
 // The README is the panel's only external link: app.js holds it as README, and
-// allowExternal is only ever called with that constant (it also throws on any other
-// URL), never with a variable and never through an alias.
+// allowExternal is only ever called as allowExternal(README) (it also throws on any
+// other URL): never with a variable, never renamed, never taken from a dynamic import.
+// No caller is needed: Settings (Task 23) adds the one call.
 func TestOnlyTheReadmeIsExternal(t *testing.T) {
 	files := staticFiles(t)
-	if want := `export const README = '` + readmeURL + `'`; !strings.Contains(files["static/js/app.js"], want) {
-		t.Errorf("app.js lacks %s", want)
+	if !strings.Contains(files["static/js/app.js"], readmeLine) {
+		t.Errorf("app.js lacks %s", readmeLine)
 	}
-	allowed := regexp.MustCompile(`allowExternal\(README\)`)
 	for p, s := range files {
-		if path.Ext(p) != ".js" {
-			continue
-		}
-		for _, m := range jsNamedImport.FindAllString(s, -1) {
-			s = strings.Replace(s, m, strings.ReplaceAll(m, "allowExternal", ""), 1)
-		}
-		if p == "static/js/app.js" { // its one definition
-			s = strings.Replace(s, "export function allowExternal(url)", "", 1)
-		}
-		if left := allowed.ReplaceAllString(s, ""); strings.Contains(left, "allowExternal") {
+		if path.Ext(p) == ".js" && externalMisuse(p, s) {
 			t.Errorf("%s uses allowExternal other than as allowExternal(README)", p)
+		}
+	}
+}
+
+var readmeCall = regexp.MustCompile(`\ballowExternal\(README\)`)
+
+// externalMisuse reports any allowExternal left once its allowed forms are removed:
+// app.js's definition, a plain entry in a static import list, and allowExternal(README).
+func externalMisuse(name, s string) bool {
+	if name == "static/js/app.js" {
+		s = strings.Replace(s, "export function allowExternal(url)", "", 1)
+	}
+	for _, m := range jsNamedImport.FindAllStringSubmatch(s, -1) {
+		var kept []string
+		for _, e := range strings.Split(m[1], ",") {
+			if f := strings.Fields(e); len(f) != 1 || f[0] != "allowExternal" { // `allowExternal as x` stays, and fails
+				kept = append(kept, e)
+			}
+		}
+		s = strings.Replace(s, m[0], strings.Replace(m[0], m[1], strings.Join(kept, ","), 1), 1)
+	}
+	return strings.Contains(readmeCall.ReplaceAllString(s, ""), "allowExternal")
+}
+
+func TestExternalMisuseCases(t *testing.T) {
+	for _, c := range []struct {
+		name, src string
+		bad       bool
+	}{
+		{"static/js/settings.js", "import { h, allowExternal, README } from './app.js'\nallowExternal(README)", false},
+		{"static/js/settings.js", "import { h } from './app.js'", false},
+		{"static/js/app.js", "export function allowExternal(url) {}", false},
+		{"static/js/settings.js", "export function allowExternal(url) {}", true},
+		{"static/js/settings.js", "import { allowExternal, README } from './app.js'\nallowExternal(url)", true},
+		{"static/js/settings.js", "import { allowExternal } from './app.js'\nconst f = allowExternal", true},
+		{"static/js/settings.js", "import { allowExternal as x } from './app.js'\nx(url)", true},
+		{"static/js/settings.js", "import { h, allowExternal as allow } from './app.js'", true},
+		{"static/js/pager.js", "export { allowExternal as x } from './app.js'", true},
+		{"static/js/settings.js", "const { allowExternal } = await import('./app.js')\nallowExternal(README)", true},
+		{"static/js/settings.js", "const { allowExternal: x } = await import('./app.js')", true},
+		{"static/js/settings.js", "import('./app.js').then(({ allowExternal }) => allowExternal(README))", true},
+		{"static/js/settings.js", "import * as app from './app.js'\napp.allowExternal(url)", true},
+	} {
+		if got := externalMisuse(c.name, c.src); got != c.bad {
+			t.Errorf("%s: %q gave misuse=%v, want %v", c.name, c.src, got, c.bad)
+		}
+	}
+}
+
+// h() refuses every attribute that can load or link to another computer.
+func TestHRefusesRemoteAttributes(t *testing.T) {
+	app := staticFiles(t)["static/js/app.js"]
+	m := regexp.MustCompile(`const REFUSED = \[([^\]]*)\]`).FindStringSubmatch(app)
+	if m == nil {
+		t.Fatal("app.js has no REFUSED list")
+	}
+	for _, name := range []string{"style", "srcdoc", "ping", "data", "poster", "background", "manifest", "codebase", "archive", "formaction", "action", "srcset", "xlink:href"} {
+		if !strings.Contains(m[1], "'"+name+"'") {
+			t.Errorf("h() does not refuse %s", name)
+		}
+	}
+	for _, want := range []string{"new URL(", "location.origin", "location.protocol", "endsWith('src')", "toLowerCase()"} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js's URL gate lacks %s", want)
 		}
 	}
 }

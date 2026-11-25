@@ -24,10 +24,25 @@ const dialogs = document.getElementById('dialogs')
 // README is the panel's one external link (the About link in Settings).
 export const README = 'https://github.com/ashiqfardus/claude-sessions-sync#readme'
 let readmeLinked = false
-const LOCAL = /^(#|\/(?![/\\]))/ // "#..." or "/...", never "//host" or "/\host"
-const REFUSED = ['style', 'action', 'formaction', 'srcset', 'xlink:href']
 
-// Settings calls allowExternal(README) once, so h() may then link to the README. It
+// Attributes that load or link elsewhere, refused outright (any name ending in src but
+// src itself is refused too). href and src must resolve to this panel.
+const REFUSED = ['style', 'srcdoc', 'ping', 'data', 'poster', 'background', 'manifest', 'codebase', 'archive', 'formaction', 'action', 'srcset', 'xlink:href']
+const CONTROL = /[\u0000-\u001F\u007F]/ // the URL parser drops tabs and newlines: "/\t/host" would become "//host"
+
+// local says whether a URL resolves to this panel's own origin and scheme.
+function local(value) {
+  const s = String(value)
+  if (CONTROL.test(s)) return false
+  try {
+    const u = new URL(s, location.href)
+    return u.origin === location.origin && u.protocol === location.protocol
+  } catch {
+    return false
+  }
+}
+
+// Settings calls allowExternal(README) once, so h() may then use it as an href. It
 // throws for any other URL: no other site can ever be linked.
 export function allowExternal(url) {
   if (!/^https:\/\//.test(url) || url !== README) throw new Error('h: only the README may be linked')
@@ -37,19 +52,19 @@ export function allowExternal(url) {
 // h(tag, attrs, ...children). A function attribute named on<event> becomes a listener;
 // true sets an empty attribute; false, null and undefined set nothing. Strings and
 // numbers become text nodes; null and false children are skipped. Attribute names are
-// matched in any case. It refuses `style` (the CSP drops it), form and srcset targets,
-// a string on<event>, and an href or src that leaves the panel, so archive text can
-// never become a link elsewhere.
+// matched in any case. It refuses `style` (the CSP drops it), every attribute that
+// loads or links elsewhere, a string on<event>, and an href or src that resolves
+// outside the panel, so archive text can never become a link or load elsewhere.
 export function h(tag, attrs, ...kids) {
   const el = document.createElement(tag)
   for (const [k, v] of Object.entries(attrs || {})) {
     const n = k.toLowerCase()
     if (v == null || v === false) continue
-    if (REFUSED.includes(n)) throw new Error('h: refused ' + n)
+    if (REFUSED.includes(n) || (n.endsWith('src') && n !== 'src')) throw new Error('h: refused ' + n)
     if (n.startsWith('on')) {
       if (typeof v !== 'function') throw new Error('h: refused ' + n)
       el.addEventListener(n.slice(2), v)
-    } else if ((n === 'href' || n === 'src') && !LOCAL.test(String(v)) && !(readmeLinked && v === README)) {
+    } else if ((n === 'href' || n === 'src') && !local(v) && !(n === 'href' && readmeLinked && v === README)) {
       throw new Error('h: refused ' + n)
     } else el.setAttribute(n, v === true ? '' : v)
   }
