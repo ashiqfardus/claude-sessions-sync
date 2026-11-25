@@ -16,7 +16,8 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   page, and records it in `deleted/<computer>.json` so no computer uploads it again. A
   conversation continued since comes back, and `prune --undo <id>` takes one off the
   list. `config keep` puts a conversation, or a project on every computer, out of its
-  reach. `config keep-days <N>` (90 or more, off by default) deletes conversations older
+  reach; a project kept by its git remote is kept by its folder names too, so it stays
+  kept once its folder is gone or its remote changes. `config keep-days <N>` (90 or more, off by default) deletes conversations older
   than N days by itself, at most once a day on each computer, in the sweep or a `push`
   from a terminal, never in the hooks. Nothing on any computer is touched. Deleting
   waits until every computer runs this version and has pushed once.

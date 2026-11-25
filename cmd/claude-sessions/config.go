@@ -472,6 +472,8 @@ func keepLabel(e archive.KeepEntry) string {
 		return "conversation " + e.Session
 	case e.Remote != "":
 		return "project with remote " + e.Remote
+	case e.ForRemote != "":
+		return "project folder " + e.Leaf + ", kept with remote " + e.ForRemote
 	}
 	return "project folder " + e.Leaf
 }
@@ -484,8 +486,10 @@ func sameEntry(a, b archive.KeepEntry) bool {
 }
 
 // keepEntriesFor is what arg names: a conversation, or a project with its buckets. A
-// project found by its remote whose match includes buckets with none is stored by its
-// folder name too, so those stay kept once the machines with the remote are forgotten.
+// project found by its remote is stored by each bucket's folder name too, so it stays
+// kept once no bucket reads the remote: its folder deleted, moved or on a drive not
+// plugged in, the remote changed, or the machines with it forgotten. That also keeps
+// another repository of the same folder name: more, never less.
 func keepEntriesFor(dest, arg string) ([]archive.KeepEntry, []string, map[string]archive.Project, error) {
 	if claude.IsSessionID(arg) {
 		return []archive.KeepEntry{{Session: strings.ToLower(arg)}}, nil, nil, nil
@@ -507,8 +511,8 @@ func keepEntriesFor(dest, arg string) ([]archive.KeepEntry, []string, map[string
 	}
 	entries := []archive.KeepEntry{e}
 	for _, b := range buckets {
-		if p := projects[b]; e.Remote != "" && strings.TrimSpace(p.Remote) == "" && p.Leaf != "" {
-			if leaf := (archive.KeepEntry{Leaf: strings.ToLower(p.Leaf)}); !slices.Contains(entries, leaf) {
+		if p := projects[b]; e.Remote != "" && p.Leaf != "" {
+			if leaf := (archive.KeepEntry{Leaf: strings.ToLower(p.Leaf), ForRemote: e.Remote}); !slices.Contains(entries, leaf) {
 				entries = append(entries, leaf)
 			}
 		}
@@ -527,7 +531,11 @@ func keepOne(dest, arg string) error {
 	}
 	added := false
 	for _, e := range entries {
-		if slices.ContainsFunc(r.Keep, func(k archive.KeepEntry) bool { return sameEntry(k, e) }) {
+		// A folder name kept for a remote is an entry of its own, so unkeeping that
+		// remote leaves the folder name kept by itself, or for another remote.
+		if slices.ContainsFunc(r.Keep, func(k archive.KeepEntry) bool {
+			return sameEntry(k, e) && (k.ForRemote == e.ForRemote || identity.SameRemote(k.ForRemote, e.ForRemote))
+		}) {
 			fmt.Printf("Already kept: %s\n", keepLabel(e))
 			continue
 		}
@@ -552,7 +560,7 @@ func keepOne(dest, arg string) error {
 
 // unkeepOne removes every entry arg names: what keep would store for it, and an entry
 // as listed (a remote or a folder name), so one for a project no longer in the archive
-// can still go.
+// can still go. A remote goes with the folder names kept for it, either way round.
 func unkeepOne(dest, arg string) error {
 	r, err := archive.LoadRetention(dest)
 	if err != nil {
@@ -560,9 +568,20 @@ func unkeepOne(dest, arg string) error {
 	}
 	entries, _, _, matchErr := keepEntriesFor(dest, arg)
 	entries = append(entries, archive.KeepEntry{Session: arg, Remote: arg, Leaf: arg})
+	named := func(k archive.KeepEntry) bool {
+		return slices.ContainsFunc(entries, func(e archive.KeepEntry) bool { return sameEntry(k, e) })
+	}
+	var remotes []string
+	for _, k := range r.Keep {
+		if named(k) {
+			remotes = append(remotes, k.Remote, k.ForRemote)
+		}
+	}
 	n := len(r.Keep)
 	r.Keep = slices.DeleteFunc(r.Keep, func(k archive.KeepEntry) bool {
-		return slices.ContainsFunc(entries, func(e archive.KeepEntry) bool { return sameEntry(k, e) })
+		return named(k) || slices.ContainsFunc(remotes, func(rm string) bool {
+			return identity.SameRemote(rm, k.Remote) || identity.SameRemote(rm, k.ForRemote)
+		})
 	})
 	if len(r.Keep) == n {
 		if matchErr != nil {

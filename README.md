@@ -618,7 +618,11 @@ claude-sessions prune <conversation id> --yes
 - **Keep list:** `claude-sessions config keep <conversation id, project name or path>`
   puts a conversation, or a project on every computer, out of reach of `prune` and the
   age rule. `config keep` lists it, and `config unkeep <same>` takes one off. A
-  conversation with a copy in a kept project is kept.
+  conversation with a copy in a kept project is kept. A project known by its git remote
+  is kept by its folder names too, listed as "kept with remote": it stays kept when its
+  folder is deleted, moved or on a drive not plugged in, or its remote changes. That
+  also keeps another project with the same folder name. `config unkeep` takes the
+  remote and its folder names off together.
 - **Age rule:** `claude-sessions config keep-days 365` deletes, by itself, what
   `prune --older-than 365d --yes` would. It is off until you set it, refuses fewer than
   90 days, and `config keep-days off` stops it. The setting is in the archive

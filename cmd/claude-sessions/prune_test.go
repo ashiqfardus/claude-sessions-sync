@@ -168,7 +168,7 @@ func TestKeepSurvivesForgettingTheMachineWithTheRemote(t *testing.T) {
 	config := func(args ...string) error {
 		return cmdConfig(append([]string{"--claude-dir", claudeDir}, args...))
 	}
-	both := []archive.KeepEntry{{Remote: remote}, {Leaf: "web-app"}}
+	both := []archive.KeepEntry{{Remote: remote}, {Leaf: "web-app", ForRemote: remote}}
 
 	if err := config("keep", "web-app"); err != nil {
 		t.Fatal(err)
@@ -202,6 +202,84 @@ func TestKeepSurvivesForgettingTheMachineWithTheRemote(t *testing.T) {
 	}
 	if !kept(r, otherID, []string{"-Users-you-dev-web-app"}, after) {
 		t.Error("the forgotten Mac's bucket is not kept")
+	}
+}
+
+const remoteOnlyID = "bbbbbbbb-1111-4111-8111-0000000000b1"
+
+// ranYesterday records an age-rule run 25 hours ago, so the next push's is due.
+func ranYesterday(t *testing.T, claudeDir string) {
+	t.Helper()
+	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour)})
+}
+
+// C1: a project kept by its remote, on the one computer that has it, stays kept once no
+// bucket reads that remote any more - its checkout deleted, moved or unplugged - as keep
+// stored its folder name too. The age rule must not then delete it.
+func TestKeptByRemoteStaysKeptOnceItsFolderIsGone(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	repo := filepath.Join(t.TempDir(), "web-app2")
+	writeFile(t, filepath.Join(repo, ".git", "config"), "[remote \"origin\"]\n\turl = git@github.com:example/web-app2.git\n")
+	localConv(t, claudeDir, repo, remoteOnlyID, time.Now().AddDate(0, 0, -200), "q1", "q2")
+	pushHere(t, claudeDir, pushOpts{})
+	for _, args := range [][]string{{"keep", repo}, {"keep-days", "90"}} {
+		if out, err := captured(t, func() error { return cmdConfig(append([]string{"--claude-dir", claudeDir}, args...)) }); err != nil {
+			t.Fatalf("config %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	ranYesterday(t, claudeDir)
+	pushHere(t, claudeDir, pushOpts{})
+	bucket := claude.Slug(repo)
+	if shards, _, _ := archive.ReadShards(dest); shards["you-mac"].Projects[bucket].Remote != "" {
+		t.Fatal("the bucket still reads the remote: nothing is tested")
+	}
+	if archivedCopy(dest, "-Users-you-dev-api", oldAPI) != "" {
+		t.Fatal("the age rule did not run: nothing is tested")
+	}
+	if archivedCopy(dest, bucket, remoteOnlyID) == "" {
+		t.Errorf("the kept project was deleted once its folder was gone: %q", pruneLines(t, claudeDir))
+	}
+}
+
+// C1: keep by remote stores the folder name with it, listed as the remote's; unkeep by
+// the folder name, the path or the remote takes both off, also once no bucket reads the
+// remote any more.
+func TestKeepByRemoteStoresItsFolderName(t *testing.T) {
+	const remote = "git@github.com:example/web-app2.git"
+	withRemote := func(r string) map[string]archive.Project {
+		return map[string]archive.Project{"-Users-you-dev-web-app2": {Path: "/Users/you/dev/web-app2", Leaf: "web-app2", Remote: r, Machine: "you-mac"}}
+	}
+	claudeDir, dest := keepFixture(t, withRemote(remote))
+	config := func(args ...string) string {
+		t.Helper()
+		out, err := captured(t, func() error { return cmdConfig(append([]string{"--claude-dir", claudeDir}, args...)) })
+		if err != nil {
+			t.Fatalf("config %v: %v\n%s", args, err, out)
+		}
+		return out
+	}
+	both := []archive.KeepEntry{{Remote: remote}, {Leaf: "web-app2", ForRemote: remote}}
+	for _, unkeep := range []string{"web-app2", "/Users/you/dev/web-app2", remote} {
+		writeJSON(t, filepath.Join(archive.ManifestDir(dest), "you-mac.json"),
+			archive.Shard{SchemaVersion: archive.SchemaVersion, Machine: "you-mac", Projects: withRemote(remote)})
+		config("keep", "web-app2")
+		if r, _ := archive.LoadRetention(dest); !reflect.DeepEqual(r.Keep, both) {
+			t.Fatalf("keep list %+v, want %+v", r.Keep, both)
+		}
+		if out := config("keep"); !strings.Contains(out, "project with remote "+remote+"\n") ||
+			!strings.Contains(out, "project folder web-app2, kept with remote "+remote+"\n") {
+			t.Errorf("config keep does not list both clearly:\n%s", out)
+		}
+		// The folder is gone: no bucket reads the remote any more.
+		writeJSON(t, filepath.Join(archive.ManifestDir(dest), "you-mac.json"),
+			archive.Shard{SchemaVersion: archive.SchemaVersion, Machine: "you-mac", Projects: withRemote("")})
+		config("unkeep", unkeep)
+		if r, _ := archive.LoadRetention(dest); len(r.Keep) != 0 {
+			t.Errorf("unkeep %s left %+v", unkeep, r.Keep)
+		}
 	}
 }
 

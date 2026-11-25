@@ -22,6 +22,9 @@ type KeepEntry struct {
 	Session string `json:"session,omitempty"`
 	Remote  string `json:"remote,omitempty"`
 	Leaf    string `json:"leaf,omitempty"`
+	// ForRemote, on a Leaf entry, is the remote of the project kept with it: the folder
+	// name keeps that project once no bucket reads the remote any more. A label only.
+	ForRemote string `json:"forRemote,omitempty"`
 }
 
 // Retention is the archive's shared retention settings, retention.json at its root.
