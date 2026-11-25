@@ -11,7 +11,7 @@
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <div class="app">
-  <nav aria-label="Panel" class="rail">
+  <nav id="rail" aria-label="Panel" class="rail">
     <div class="brand">
       <span class="mark" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18v4H3z"></path><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"></path><path d="M10 12h4"></path></svg></span>
       <span class="brand-text"><span class="brand-name">claude-sessions</span><span class="brand-sub" data-slot="machine"></span></span>
@@ -24,7 +24,7 @@
     </div>
     <div class="rail-foot"><span class="dot" aria-hidden="true" data-slot="dot"></span><span class="label" data-slot="foot"></span></div>
   </nav>
-  <div role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuemin="64" aria-valuemax="320" aria-valuenow="200" tabindex="0" title="Drag to resize. Double-click to fold to icons." class="grip"><span></span></div>
+  <div role="separator" aria-orientation="vertical" aria-controls="rail" aria-label="Resize sidebar" aria-valuemin="64" aria-valuemax="320" aria-valuenow="200" tabindex="0" title="Drag to resize. Double-click to fold to icons." class="grip"><span></span></div>
   <main id="main" class="main" tabindex="-1"></main>
 </div>
 <div id="toasts" role="status"></div>
@@ -66,7 +66,7 @@
         <h2 id="storage-h">Storage</h2>
         <div class="panel pad stack">
           <p data-slot="usage"></p>
-          <div class="bar" role="img" data-slot="bar"><span class="part-conversations"></span><span class="part-work"></span><span class="part-other"></span></div>
+          <div class="bar" role="img" aria-label="Archive space by kind" data-slot="bar"><span class="part-conversations"></span><span class="part-work"></span><span class="part-other"></span></div>
           <p class="legend num"><span><i class="part-conversations"></i><span>Conversations <span data-slot="conversations-size"></span></span></span><span><i class="part-work"></i><span>Work folders <span data-slot="work-size"></span></span></span><span><i class="part-other"></i><span>Other <span data-slot="other-size"></span></span></span></p>
           <p><span data-slot="saving"></span> <a href="#/storage" class="medium">Manage storage</a></p>
         </div>
@@ -151,7 +151,7 @@
   <header class="stack">
     <h1 tabindex="-1">Storage</h1>
     <p class="usage" data-slot="usage"></p>
-    <div class="bar usage-bar" role="img" data-slot="bar"><span class="part-conversations"></span><span class="part-work"></span><span class="part-other"></span></div>
+    <div class="bar usage-bar" role="img" aria-label="Archive space by kind" data-slot="bar"><span class="part-conversations"></span><span class="part-work"></span><span class="part-other"></span></div>
     <p class="legend num"><span><i class="part-conversations"></i><span>Conversations <span data-slot="conversations-size"></span></span></span><span><i class="part-work"></i><span>Work folders <span data-slot="work-size"></span></span></span><span><i class="part-other"></i><span>Pages and other files <span data-slot="other-size"></span></span></span></p>
   </header>
 
@@ -164,7 +164,7 @@
             <h3 id="zip-h">Compress old conversations</h3>
             <p class="muted">Conversations nobody has used for 30 days are zipped. Nothing is lost, and they still open as usual.</p>
             <p class="medium" data-slot="zip-line"></p>
-            <p class="status warn small slide" data-slot="zip-wait" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span data-slot="zip-wait-text"></span> <a href="#/settings">See computers</a></p>
+            <p class="status warn small slide" data-slot="zip-wait" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span><span data-slot="zip-wait-text"></span> <a href="#/settings">See computers</a></span></p>
           </div>
           <label class="row switch-label medium"><input type="checkbox" role="switch" class="switch" aria-labelledby="zip-h zip-state" data-slot="zip"><span id="zip-state" data-slot="zip-state"></span></label>
         </li>
@@ -214,7 +214,7 @@
   <header class="stack gap-8">
     <a href="#/storage" class="back">Back to Storage</a>
     <h1 tabindex="-1">Delete old conversations</h1>
-    <p class="lead">This removes conversations from the archive in Google Drive. Each computer keeps its own copy, and a conversation you continue is backed up again. Google Drive keeps deleted files in its trash for 30 days.</p>
+    <p class="lead">This removes conversations from the archive in <span data-slot="provider">your sync folder</span>. Each computer keeps its own copy, and a conversation you continue is backed up again.<span data-slot="trash-note" hidden> Google Drive keeps deleted files in its trash for 30 days.</span></p>
   </header>
 
   <div class="cols">
@@ -309,7 +309,7 @@
       <div class="row bring-row">
         <button type="button" class="btn primary" data-slot="bring">Bring in</button>
         <button type="button" class="btn" data-slot="preview">Preview first</button>
-        <span class="progress grow bring-progress" data-slot="progress" hidden><span></span></span>
+        <span class="progress grow bring-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Bringing in work" data-slot="progress" hidden><span></span></span>
         <span class="muted grow num" data-slot="result"></span>
       </div>
     </section>

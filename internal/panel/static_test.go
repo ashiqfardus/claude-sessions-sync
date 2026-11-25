@@ -1,6 +1,8 @@
 package panel
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"path"
@@ -33,6 +35,10 @@ func staticFiles(t *testing.T) map[string]string {
 }
 
 func TestFontsAreEmbedded(t *testing.T) {
+	source, err := Static.ReadFile("static/fonts/SOURCE.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, f := range fontFiles {
 		b, err := Static.ReadFile("static/fonts/" + f)
 		if err != nil {
@@ -41,6 +47,15 @@ func TestFontsAreEmbedded(t *testing.T) {
 		}
 		if !strings.HasPrefix(string(b), "wOF2") || len(b) >= 30*1024 {
 			t.Errorf("%s: %d bytes, starts %q; want a woff2 under 30 KB", f, len(b), b[:min(4, len(b))])
+		}
+		// SOURCE.txt lists each file on its own line with the SHA-256 of IBM's copy.
+		sum := sha256.Sum256(b)
+		recorded := false
+		for _, line := range strings.Split(string(source), "\n") {
+			recorded = recorded || strings.HasPrefix(strings.TrimSpace(line), f+" ") && strings.Contains(line, hex.EncodeToString(sum[:]))
+		}
+		if !recorded {
+			t.Errorf("%s: SHA-256 %x is not the one SOURCE.txt records", f, sum)
 		}
 	}
 	if b, err := Static.ReadFile("static/fonts/OFL.txt"); err != nil || !strings.Contains(string(b), "SIL Open Font License") {
@@ -61,23 +76,58 @@ func TestFontsAreEmbedded(t *testing.T) {
 	}
 }
 
+const readmeURL = "https://github.com/ashiqfardus/claude-sessions-sync#readme"
+
+// svgNS is the SVG namespace name, which is never fetched (Ruling P28). Only its quoted
+// form is allowed, so a longer URL that starts with it is still caught.
+var svgNS = regexp.MustCompile("http://www\\.w3\\.org/2000/svg([\"'`])")
+
+// remoteLoads lists what in a file the browser loads could fetch from another computer.
+func remoteLoads(name, s string) []string {
+	if name == "static/js/settings.js" {
+		s = strings.ReplaceAll(s, readmeURL, "")
+	}
+	s = svgNS.ReplaceAllString(s, "$1")
+	var found []string
+	for _, bad := range []string{"http://", "https://", "@import"} {
+		if strings.Contains(s, bad) {
+			found = append(found, bad)
+		}
+	}
+	return found
+}
+
 // Only what the browser loads is scanned (Ruling P6): OFL.txt and SOURCE.txt hold
 // URLs as text and are never fetched.
 func TestStaticHasNoRemoteLoads(t *testing.T) {
-	const readme = "https://github.com/ashiqfardus/claude-sessions-sync#readme"
 	for p, s := range staticFiles(t) {
 		switch path.Ext(p) {
 		case ".html", ".css", ".js", ".svg":
-		default:
-			continue
-		}
-		if p == "static/js/settings.js" {
-			s = strings.ReplaceAll(s, readme, "")
-		}
-		for _, bad := range []string{"http://", "https://", "@import"} {
-			if strings.Contains(s, bad) {
-				t.Errorf("%s contains %q", p, bad)
+			if found := remoteLoads(p, s); len(found) > 0 {
+				t.Errorf("%s contains %q", p, found)
 			}
+		}
+	}
+}
+
+func TestRemoteScanAllowsOnlyTheSVGNamespace(t *testing.T) {
+	for _, c := range []struct {
+		name, text string
+		ok         bool
+	}{
+		{"static/index.html", `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">`, true},
+		{"static/js/app.js", `document.createElementNS('http://www.w3.org/2000/svg', 'path')`, true},
+		{"static/js/app.js", "document.createElementNS(`http://www.w3.org/2000/svg`, 'path')", true},
+		{"static/js/app.js", `import x from "http://www.w3.org/2000/svg/x.js"`, false},
+		{"static/js/app.js", `fetch("http://www.w3.org/2000/svg.evil.example/")`, false},
+		{"static/index.html", `<svg xmlns="https://www.w3.org/2000/svg">`, false},
+		{"static/panel.css", `.a{background:url("http://example.com/a.png")}`, false},
+		{"static/panel.css", `@import "fonts.css";`, false},
+		{"static/js/settings.js", `a.href = "` + readmeURL + `"`, true},
+		{"static/js/app.js", `a.href = "` + readmeURL + `"`, false},
+	} {
+		if found := remoteLoads(c.name, c.text); (len(found) == 0) != c.ok {
+			t.Errorf("%s %s: found %q, want allowed=%v", c.name, c.text, found, c.ok)
 		}
 	}
 }
@@ -121,7 +171,7 @@ func TestShellCarriesTheToken(t *testing.T) {
 	// The pieces the page scripts and the screen tasks build on.
 	for _, want := range []string{
 		`<link rel="stylesheet" href="/static/panel.css">`, `<script type="module" src="/static/js/app.js">`,
-		`href="#main">Skip to content</a>`, `<nav aria-label="Panel" class="rail">`, `role="separator"`,
+		`href="#main">Skip to content</a>`, `<nav id="rail" aria-label="Panel" class="rail">`, `role="separator" aria-orientation="vertical" aria-controls="rail"`,
 		`<main id="main"`, `id="toasts" role="status"`, `id="dialogs"`,
 		`id="t-overview"`, `id="t-conversations"`, `id="t-storage"`, `id="t-delete"`, `id="t-import"`, `id="t-settings"`, `id="t-commands"`,
 	} {

@@ -172,6 +172,16 @@ details[open]>summary svg{transform:rotate(90deg)}
 .skip:hover,.skip:focus{color:#fff}
 .stopped{position:fixed;inset:0;z-index:90;display:grid;place-content:center;gap:10px;padding:24px;background:var(--ground);text-align:center}
 .stopped>*{max-width:52ch}
+/* On --ink the accent ring is 2.41:1; this green is 9.98:1. Dialogs are white inside the scrim, so they keep the accent. */
+.archive :focus-visible,.selection :focus-visible,.toast :focus-visible{outline-color:#9FD3C0}
+/* Status lines that hold a sentence wrap; only short status labels stay on one line. */
+p.status{white-space:normal}
+/* Control boundaries at 3:1 or more (WCAG 1.4.11), in the --line-strong hue: #7A8E86 is 3.03:1 on --ground and 3.48:1 on white,
+   #63756D (hover) 4.26:1 on --ground, #74887F 3.01:1 on --rail. Native checkboxes and radios keep the browser's border. */
+.input{border-color:#7A8E86}
+.input:hover:not(:focus){border-color:#63756D}
+.switch{background:#7A8E86}
+.grip span{background:#74887F}
 
 .gap-3{gap:3px}.gap-5{gap:5px}.gap-6{gap:6px}.gap-8{gap:8px}.gap-16{gap:16px}.gap-24{gap:24px}.gap-28{gap:28px}
 .block{display:block}
