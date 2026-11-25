@@ -180,3 +180,149 @@ func TestShellCarriesTheToken(t *testing.T) {
 		}
 	}
 }
+
+// pageCore is what Task 18's modules export for every screen.
+var pageCore = map[string][]string{
+	"static/js/app.js":     {"h", "icon", "api", "follow", "toast", "modal", "confirmDialog", "register", "noArchive", "when"},
+	"static/js/rail.js":    {"rail"},
+	"static/js/combo.js":   {"combo"},
+	"static/js/pager.js":   {"pager"},
+	"static/js/folders.js": {"chooseFolder"},
+}
+
+var (
+	jsExport      = regexp.MustCompile(`export\s+(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)`)
+	jsImportPath  = regexp.MustCompile(`(?:\bfrom|\bimport)\s*\(?\s*['"](\.[^'"]+)['"]`)
+	jsNamedImport = regexp.MustCompile(`import\s*\{([^}]*)\}\s*from\s*['"](\.[^'"]+)['"]`)
+)
+
+// A module that fails to link stops every script on the page, with no message to the person.
+func TestPageModulesLink(t *testing.T) {
+	files := staticFiles(t)
+	exports := map[string]map[string]bool{}
+	for p, s := range files {
+		if path.Ext(p) == ".js" {
+			exports[p] = map[string]bool{}
+			for _, m := range jsExport.FindAllStringSubmatch(s, -1) {
+				exports[p][m[1]] = true
+			}
+		}
+	}
+	for p, names := range pageCore {
+		if exports[p] == nil {
+			t.Errorf("%s is missing", p)
+			continue
+		}
+		for _, n := range names {
+			if !exports[p][n] {
+				t.Errorf("%s does not export %s", p, n)
+			}
+		}
+	}
+	for p, s := range files {
+		if path.Ext(p) != ".js" {
+			continue
+		}
+		for _, m := range jsImportPath.FindAllStringSubmatch(s, -1) {
+			if _, ok := files[path.Join(path.Dir(p), m[1])]; !ok {
+				t.Errorf("%s imports %s, which is not embedded", p, m[1])
+			}
+		}
+		for _, m := range jsNamedImport.FindAllStringSubmatch(s, -1) {
+			from := path.Join(path.Dir(p), m[2])
+			for _, n := range strings.Split(m[1], ",") {
+				if f := strings.Fields(n); len(f) > 0 && exports[from] != nil && !exports[from][f[0]] {
+					t.Errorf("%s imports %s from %s, which does not export it", p, f[0], m[2])
+				}
+			}
+		}
+	}
+}
+
+// The router's screens are exactly the shell's templates, and each has the h1 that
+// navigation moves focus to.
+func TestRouterMatchesTheShell(t *testing.T) {
+	files := staticFiles(t)
+	m := regexp.MustCompile(`SCREENS\s*=\s*\[([^\]]*)\]`).FindStringSubmatch(files["static/js/app.js"])
+	if m == nil {
+		t.Fatal("app.js has no SCREENS list")
+	}
+	routed := map[string]bool{}
+	for _, q := range regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(m[1], -1) {
+		routed[q[1]] = true
+	}
+	shell := files["static/index.html"]
+	templates := regexp.MustCompile(`(?s)<template id="t-([a-z]+)">(.*?)</template>`).FindAllStringSubmatch(shell, -1)
+	if len(templates) == 0 {
+		t.Fatal("index.html has no t-<screen> templates")
+	}
+	for _, tm := range templates {
+		if !routed[tm[1]] {
+			t.Errorf("template t-%s has no route", tm[1])
+		}
+		delete(routed, tm[1])
+		if !strings.Contains(tm[2], `<h1 tabindex="-1">`) {
+			t.Errorf("template t-%s has no <h1 tabindex=\"-1\"> to move focus to", tm[1])
+		}
+	}
+	for name := range routed {
+		t.Errorf("route %s has no template t-%s", name, name)
+	}
+}
+
+// The sidebar's values (Ruling P11) agree across rail.js, the separator's ARIA range
+// and the stylesheet's first width.
+func TestRailMatchesTheSeparator(t *testing.T) {
+	files := staticFiles(t)
+	num := func(file, pattern string) string {
+		m := regexp.MustCompile(pattern).FindStringSubmatch(files[file])
+		if m == nil {
+			t.Errorf("%s: no match for %s", file, pattern)
+			return ""
+		}
+		return m[1]
+	}
+	js, shell := "static/js/rail.js", "static/index.html"
+	for _, c := range [][2]string{
+		{num(js, `\bRAIL = (\d+)`), "200"}, {num(js, `\bMIN = (\d+)`), "64"}, {num(js, `\bMAX = (\d+)`), "320"},
+		{num(js, `\bSNAP = (\d+)`), "140"}, {num(js, `\bSTEP = (\d+)`), "16"},
+		{num(shell, `aria-valuemin="(\d+)"`), "64"}, {num(shell, `aria-valuemax="(\d+)"`), "320"},
+		{num(shell, `aria-valuenow="(\d+)"`), "200"}, {num("static/panel.css", `\.rail\{width:(\d+)px\}`), "200"},
+	} {
+		if c[0] != c[1] {
+			t.Errorf("got %s, want %s", c[0], c[1])
+		}
+	}
+	if !strings.Contains(files[js], `'cs.railWidth'`) {
+		t.Error("rail.js does not keep the width in localStorage['cs.railWidth']")
+	}
+}
+
+// Rules the CSP or a ruling makes silent when broken: the browser ignores a style or
+// on* attribute set from script, storage can throw, and an EventSource left open
+// reconnects every few seconds (Ruling P20).
+func TestPageScriptsKeepTheRules(t *testing.T) {
+	files := staticFiles(t)
+	for p, s := range files {
+		if path.Ext(p) != ".js" {
+			continue
+		}
+		if m := regexp.MustCompile(`setAttribute\(\s*['"](style|on)|javascript:`).FindString(s); m != "" {
+			t.Errorf("%s contains %q", p, m)
+		}
+		for i, line := range strings.Split(s, "\n") {
+			if strings.Contains(line, "localStorage") && !strings.Contains(line, "try {") {
+				t.Errorf("%s:%d uses localStorage outside a one-line try/catch", p, i+1)
+			}
+		}
+		if strings.Contains(s, "new EventSource(") && !strings.Contains(s, ".close()") {
+			t.Errorf("%s opens an EventSource and never closes it", p)
+		}
+	}
+	app := files["static/js/app.js"]
+	for _, want := range []string{`'X-CS-Token'`, `meta[name="cs-token"]`, `credentials: 'same-origin'`, `'/api/jobs/events?id='`} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js lacks %s", want)
+		}
+	}
+}
