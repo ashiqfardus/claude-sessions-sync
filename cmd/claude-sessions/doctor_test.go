@@ -181,6 +181,13 @@ func TestDoctorPrintsHeaderBeforeReadingTheArchive(t *testing.T) {
 
 const skipLine = "skipped: the archive folder is not responding (see the hint above)"
 
+const notRespondingText = "If this folder is in Google Drive, OneDrive, Dropbox or iCloud Drive, make it available offline: right-click it and choose Offline access, then Available offline (Google Drive), Always keep on this device (OneDrive), Make available offline (Dropbox) or Keep Downloaded (iCloud Drive). Otherwise the folder is not responding: check that its drive or network share is connected."
+
+// sanity bounds a doctor run with a step blocked: far over the 1 s limit the tests set,
+// as Windows runs schtasks for the sweep check, which a CI runner can make slow. Each
+// test proves the single wait by the steps started, not by the clock.
+const sanity = 10 * time.Second
+
 // blockSteps blocks the named archive steps forever and returns the steps started, in
 // order. Never released: an abandoned step stays blocked here, touching no file while
 // the test's folders are removed.
@@ -205,36 +212,30 @@ func blockSteps(t *testing.T, names ...string) (started func() []string) {
 	}
 }
 
-// unblocked times doctor on the fixture with nothing blocked: the time limits below are
-// on top of it, as the sweep check alone runs schtasks on Windows, which a CI runner can
-// make slow.
-func unblocked(t *testing.T, claudeDir, dest string) time.Duration {
-	start := time.Now()
-	runDoctorHere(t, claudeDir, dest)
-	return time.Since(start)
-}
-
 // A check over its limit is abandoned and named. The archive checks after it are
 // skipped in one line below the hint; the checks of this computer still run.
 func TestDoctorTimesOutASlowCheck(t *testing.T) {
 	claudeDir, dest := doctorFixture(t)
 	hook(t, &archiveLimit, time.Second)
-	baseline := unblocked(t, claudeDir, dest)
-	blockSteps(t, "manifest")
+	started := blockSteps(t, "manifest")
 
 	start := time.Now()
 	out := runDoctorHere(t, claudeDir, dest)
-	if took := time.Since(start); took > baseline+3*time.Second {
-		t.Errorf("doctor took %s with one check blocked and a 1s limit (%s unblocked)", took, baseline)
+	if took := time.Since(start); took > sanity {
+		t.Errorf("doctor took %s with one check blocked and a 1s limit", took)
 	}
 	want := "manifest: not finished after 1s - the archive folder may be downloading files on demand"
 	if !strings.Contains(out, want) || !strings.Contains(out, "  ! manifest ") {
 		t.Errorf("no warning for the slow check, want %q in:\n%s", want, out)
 	}
-	// The one read the hint makes was fast, so the hint is printed for the timeout.
-	if hint, skip := strings.Index(out, streamingText), strings.Index(out, skipLine); hint < 0 || skip < hint ||
-		strings.Count(out, streamingText) != 1 || strings.Count(out, skipLine) != 1 {
-		t.Errorf("want the hint once, then the skip line once:\n%s", out)
+	// The one read streamingHint makes was fast: no sign the folder streams files, so the
+	// hint is the conditional one.
+	if hint, skip := strings.Index(out, notRespondingText), strings.Index(out, skipLine); hint < 0 || skip < hint ||
+		strings.Count(out, notRespondingText) != 1 || strings.Count(out, skipLine) != 1 || strings.Contains(out, streamingText) {
+		t.Errorf("want the conditional hint once, then the skip line once:\n%s", out)
+	}
+	if got := strings.Join(started(), ","); got != "archive,versions,zips,profile,manifest" {
+		t.Errorf("archive steps started: %s; want none after manifest", got)
 	}
 	for _, later := range []string{"session hook", "sweep", "last push", "warning(s),"} {
 		if !strings.Contains(out, later) {
@@ -253,14 +254,12 @@ func TestDoctorTimesOutASlowCheck(t *testing.T) {
 func TestDoctorSkipsTheArchiveOnceAStepTimesOut(t *testing.T) {
 	claudeDir, dest := doctorFixture(t)
 	hook(t, &archiveLimit, time.Second)
-	baseline := unblocked(t, claudeDir, dest)
 	started := blockSteps(t, "versions", "manifest")
 
 	start := time.Now()
 	out := runDoctorHere(t, claudeDir, dest)
-	// Waiting out both would take 2s over the baseline.
-	if took := time.Since(start); took > baseline+1900*time.Millisecond {
-		t.Errorf("doctor took %s with two steps blocked and a 1s limit (%s unblocked)", took, baseline)
+	if took := time.Since(start); took > sanity {
+		t.Errorf("doctor took %s with two steps blocked and a 1s limit", took)
 	}
 	if !strings.Contains(out, "versions: not finished after 1s") || !strings.Contains(out, skipLine) {
 		t.Errorf("want the first warning and the skip line:\n%s", out)
@@ -281,10 +280,13 @@ func TestDoctorRunsLocalChecksWhenTheArchiveDoesNotAnswer(t *testing.T) {
 	started := blockSteps(t, "archive")
 
 	out := runDoctorHere(t, claudeDir, dest)
-	for _, want := range []string{"archive: not finished after 1s", streamingText, skipLine, "session hook", "last push"} {
+	for _, want := range []string{"archive: not finished after 1s", notRespondingText, skipLine, "session hook", "last push"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q missing:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, streamingText) {
+		t.Errorf("the streaming hint, with no slow read seen:\n%s", out)
 	}
 	if got := started(); strings.Join(got, ",") != "archive" {
 		t.Errorf("archive steps started: %v; want only archive", got)
@@ -330,28 +332,144 @@ func TestStreamingHint(t *testing.T) {
 	}
 }
 
-// import and push print the same hint, once, when their first archive read is slow.
-func TestStreamingHintOnASlowFirstRead(t *testing.T) {
+// A slow read seen, then a timeout: the streaming hint, not the conditional one, and
+// once.
+func TestDoctorTimeoutAfterASlowReadShowsTheStreamingHint(t *testing.T) {
+	claudeDir, dest := doctorFixture(t)
+	hook(t, &archiveLimit, time.Second)
 	hook(t, &hintLimit, 50*time.Millisecond)
+	block := make(chan struct{}) // never released, as in blockSteps
+	hook(t, &readHead, func(string) { <-block })
+	blockSteps(t, "manifest")
+
+	out := runDoctorHere(t, claudeDir, dest)
+	if hint, skip := strings.Index(out, streamingText), strings.Index(out, skipLine); hint < 0 || skip < hint ||
+		strings.Count(out, streamingText) != 1 || strings.Contains(out, notRespondingText) {
+		t.Errorf("want the streaming hint once, then the skip line:\n%s", out)
+	}
+}
+
+// captureStderr pipes os.Stderr to lines; done puts it back and returns the lines not
+// read yet.
+func captureStderr(t *testing.T) (lines <-chan string, done func() []string) {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	stderr := os.Stderr
 	os.Stderr = w
-	defer func() { os.Stderr = stderr }()
+	out := make(chan string, 1024)
+	go func() {
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			out <- sc.Text()
+		}
+		close(out)
+	}()
+	restored := false
+	done = func() []string {
+		if !restored {
+			restored = true
+			os.Stderr = stderr
+			w.Close()
+		}
+		var rest []string
+		for l := range out {
+			rest = append(rest, l)
+		}
+		return rest
+	}
+	t.Cleanup(func() { done() })
+	return out, done
+}
 
-	stop := hintIfSlow(true)
-	time.Sleep(200 * time.Millisecond) // a slow read
+// waitFor reads lines until one holds text, giving up after five seconds.
+func waitFor(lines <-chan string, text string) bool {
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case l, ok := <-lines:
+			if !ok {
+				return false
+			}
+			if strings.Contains(l, text) {
+				return true
+			}
+		case <-timeout:
+			return false
+		}
+	}
+}
+
+// hintIfSlow prints the hint once while a read is still going, never for one stopped in
+// time, and never when it is not to show.
+func TestStreamingHintOnASlowFirstRead(t *testing.T) {
+	lines, done := captureStderr(t)
+	hook(t, &hintLimit, 10*time.Millisecond)
+
+	stop := hintIfSlow(true) // a read still going: the hint arrives while it is
+	if !waitFor(lines, streamingText) {
+		t.Fatal("no hint for a slow read")
+	}
 	stop()
-	hintIfSlow(true)() // a fast one
-	hintIfSlow(false)  // a quiet run, never printed
-	time.Sleep(200 * time.Millisecond)
-	w.Close()
-	os.Stderr = stderr
+	hintLimit = time.Hour // a fast read, stopped long before the limit
+	hintIfSlow(true)()
+	hintIfSlow(false)
+	if rest := strings.Join(done(), "\n"); strings.Contains(rest, streamingText) {
+		t.Errorf("the hint printed again:\n%s", rest)
+	}
+}
 
-	raw, _ := bufio.NewReader(r).ReadString(0)
-	if n := strings.Count(raw, streamingText); n != 1 {
-		t.Errorf("want the hint once, got %d:\n%s", n, raw)
+// import and push time their first archive read: delayed until the hint has printed, it
+// prints, once.
+func TestImportAndPushHintOnASlowFirstRead(t *testing.T) {
+	root := t.TempDir()
+	claudeDir, dest := filepath.Join(root, ".claude"), filepath.Join(root, "archive")
+	writeFile(t, filepath.Join(claudeDir, "settings.json"), "{}")
+	for _, d := range []string{filepath.Join(claudeDir, "projects"), filepath.Join(dest, "projects")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	hook(t, &hintLimit, 10*time.Millisecond)
+
+	for _, c := range []struct {
+		name string
+		run  func([]string) error
+		args []string
+	}{
+		{"import", cmdImport, []string{"--dry-run"}},
+		{"push", cmdPush, []string{"--dry-run", "--no-html"}},
+	} {
+		lines, done := captureStderr(t)
+		reached := make(chan bool, 1)
+		hook(t, &beforeArchive, func(step string) {
+			if step == "first read" {
+				reached <- waitFor(lines, streamingText)
+			}
+		})
+		stdout := os.Stdout
+		os.Stdout = devNull
+		_ = c.run(append([]string{"--claude-dir", claudeDir, "--archive", dest}, c.args...))
+		os.Stdout = stdout
+		rest := strings.Join(done(), "\n")
+
+		select {
+		case ok := <-reached:
+			if !ok {
+				t.Errorf("%s: no hint while its first archive read was slow:\n%s", c.name, rest)
+			}
+		default:
+			t.Errorf("%s: its first archive read is not timed:\n%s", c.name, rest)
+		}
+		if strings.Contains(rest, streamingText) {
+			t.Errorf("%s: the hint printed more than once:\n%s", c.name, rest)
+		}
 	}
 }

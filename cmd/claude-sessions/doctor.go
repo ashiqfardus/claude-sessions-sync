@@ -67,17 +67,17 @@ func cmdDoctor(args []string) error {
 		}
 	}
 	hinted, stuck := false, false
-	hint := func() {
+	hint := func(advice string) {
 		if !hinted {
 			hinted = true
-			add(check{"archive files", levelWarn, streamingAdvice, ""})
+			add(check{"archive files", levelWarn, advice, ""})
 		}
 	}
 	// Once one archive step has timed out the folder is not answering: the steps left are
 	// skipped at once, not each waited out. Checks of this computer still run.
 	giveUp := func() {
 		stuck = true
-		hint()
+		hint(notRespondingAdvice) // unless a slow read showed the folder streams files
 		add(check{"archive checks", levelWarn, "skipped: the archive folder is not responding (see the hint above)", ""})
 	}
 	// A step that reads the archive runs under archiveLimit (see timed): a sync folder
@@ -181,7 +181,7 @@ func cmdDoctor(args []string) error {
 	case reach.Level == levelWarn:
 		giveUp()
 	case streamingHint(dest):
-		hint()
+		hint(streamingAdvice)
 	}
 
 	// A read-only mount, an exhausted quota or a permissions problem passes every
@@ -435,7 +435,8 @@ func cmdDoctor(args []string) error {
 }
 
 // Test hooks: the time limits, the one read streamingHint makes, how doctor reads a
-// zip's index, and a call each archive step makes as it starts.
+// zip's index, and a call each archive step makes as it starts, as does the first
+// archive read of import and push.
 var (
 	archiveLimit = 20 * time.Second
 	hintLimit    = 3 * time.Second
@@ -450,6 +451,10 @@ var (
 )
 
 const streamingAdvice = "Your archive folder downloads files only when they're opened, which makes backups and imports slow. In Google Drive, right-click the claude-sessions folder and choose Offline access, then Available offline. OneDrive calls it Always keep on this device."
+
+// notRespondingAdvice is for a check that timed out with no slow read seen: a folder
+// that streams files, or as likely a dead network mount.
+const notRespondingAdvice = "If this folder is in Google Drive, OneDrive, Dropbox or iCloud Drive, make it available offline: right-click it and choose Offline access, then Available offline (Google Drive), Always keep on this device (OneDrive), Make available offline (Dropbox) or Keep Downloaded (iCloud Drive). Otherwise the folder is not responding: check that its drive or network share is connected."
 
 // timed runs a check with a time limit. One over it is abandoned, never waited on, and
 // reported as a warning instead.
@@ -504,7 +509,9 @@ func hintIfSlow(show bool) (stop func() bool) {
 	if !show {
 		return func() bool { return false }
 	}
-	return time.AfterFunc(hintLimit, func() { fmt.Fprintln(os.Stderr, "! "+streamingAdvice) }).Stop
+	t := time.AfterFunc(hintLimit, func() { fmt.Fprintln(os.Stderr, "! "+streamingAdvice) })
+	beforeArchive("first read") // the read it times starts here
+	return t.Stop
 }
 
 // archiveLag is how long a finished session may go unarchived before doctor fails:
