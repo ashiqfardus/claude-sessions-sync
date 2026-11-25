@@ -17,10 +17,12 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   conversation continued since comes back, and `prune --undo <id>` takes one off the
   list. `config keep` puts a conversation, or a project on every computer, out of its
   reach; a project kept by its git remote is kept by its folder names too, so it stays
-  kept once its folder is gone or its remote changes. `config keep-days <N>` (90 or more, off by default) deletes conversations older
-  than N days by itself, at most once a day on each computer, in the sweep or a `push`
-  from a terminal, never in the hooks. Nothing on any computer is touched. Deleting
-  waits until every computer runs this version and has pushed once.
+  kept once its folder is gone or its remote changes. `config keep-days <N>` (90 or
+  more, off by default) deletes conversations older than N days by itself, at most once
+  a day on each computer, in the sweep or a `push` from a terminal, never in the hooks;
+  it counts days by no later than 25 hours after another computer's last push, so a
+  clock running ahead deletes nothing young. Nothing on any computer is touched.
+  Deleting waits until every computer runs this version and has pushed once.
 - **Idle conversations are zipped.** An archived conversation unchanged for 30 days, and
   on this computer too, becomes one file, `projects/<project>/<session-id>.conv.zip`,
   with its subagent and tool-output files: usually about a third of the space, and one

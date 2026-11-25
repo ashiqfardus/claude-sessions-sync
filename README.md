@@ -639,6 +639,11 @@ claude-sessions prune <conversation id> --yes
   45; one large conversation being checked can run past that. What it has not reached waits for
   the next day's run, which starts there. `doctor`'s `prune` line
   shows the setting and when it last ran there.
+- **A clock running ahead deletes nothing sooner.** The age rule counts days by this
+  computer's clock, but never past 25 hours after another computer's last push, and logs
+  a `WARN` naming both times when it holds back. While the other computers are switched
+  off it only deletes less, until they push again. A computer alone on its archive has
+  no other clock to go by.
 - **Every computer must be updated first.** An older version would upload a pruned
   conversation again, so `prune --yes` and the age rule delete nothing until every
   computer that has pushed to the archive runs this version and has pushed once with

@@ -786,7 +786,15 @@ func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget 
 	if err := savePruneLast(root, pruneRun{LastRun: now, Next: last.Next}); err != nil {
 		return 0, err
 	}
-	plan, err := planWith(root, dest, pruneSel{OlderThan: ret.KeepDays}, ret, now, &ageScan{budget: budget, from: last.Next})
+	// Dated by no later than a day after another computer's last push: a clock here
+	// running ahead must not make young conversations look old to every computer.
+	at := now
+	if bound, machine, pushed := othersClock(dest); !bound.IsZero() && now.After(bound) {
+		logf("WARN: keep-days: the clock here says %s, more than 25 hours after %s last pushed (%s); dating by %s instead",
+			now.Local().Format("2006-01-02 15:04"), machine, pushed.Local().Format("2006-01-02 15:04"), bound.Local().Format("2006-01-02 15:04"))
+		at = bound
+	}
+	plan, err := planWith(root, dest, pruneSel{OlderThan: ret.KeepDays}, ret, at, &ageScan{budget: budget, from: last.Next})
 	if err != nil {
 		return 0, err
 	}
@@ -818,6 +826,22 @@ func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget 
 		logf("KEEP-DAYS: stopped after %s; the next run carries on from %s", budget, next)
 	}
 	return deleted, err
+}
+
+// othersClock is 25 hours after the newest last push of any other computer, which
+// computer that is, and its push: the latest the age rule dates by. Zero when no other
+// shard has one, as one from a build older than lastPush has not.
+func othersClock(dest string) (bound time.Time, machine string, pushed time.Time) {
+	shards, _, _ := archive.ReadShards(dest)
+	for name, s := range shards {
+		if !strings.EqualFold(name, machineName()) && s.LastPush.After(pushed) {
+			machine, pushed = name, s.LastPush
+		}
+	}
+	if pushed.IsZero() {
+		return time.Time{}, "", time.Time{}
+	}
+	return pushed.Add(25 * time.Hour), machine, pushed
 }
 
 func undoPrune(dest string, ids []string, now time.Time) error {

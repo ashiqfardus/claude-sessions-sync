@@ -1807,6 +1807,51 @@ func TestPruneDatesAnUntimedTranscriptAfterReadingIt(t *testing.T) {
 	}
 }
 
+// I2: the age rule dates by no later than a day after another computer's last push, so
+// this computer's clock running a year ahead deletes nothing young, and says so; one in
+// step still deletes what is due.
+func TestAgeRuleDatesByTheOthersWhenThisClockIsAhead(t *testing.T) {
+	for _, ahead := range []bool{true, false} {
+		claudeDir, dest := ageFixture(t)
+		shards, _, err := archive.ReadShards(dest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lap := shards["LAP-2"]
+		lap.LastPush = time.Now().UTC().Truncate(time.Hour)
+		writeJSON(t, filepath.Join(archive.ManifestDir(dest), "LAP-2.json"), lap)
+		ranYesterday(t, claudeDir)
+		ret, err := archive.LoadRetention(dest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		if ahead {
+			now = now.AddDate(1, 0, 0)
+		}
+		var warned []string
+		n, err := runAgeRule(claudeDir, dest, ret, now, 0, func(f string, a ...any) {
+			if l := fmt.Sprintf(f, a...); strings.HasPrefix(l, "WARN:") {
+				warned = append(warned, l)
+			}
+		})
+		if n != 1 || err != nil || archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
+			t.Errorf("ahead %v: deleted %d, %v: want the 120-day-old one", ahead, n, err)
+		}
+		if archivedCopy(dest, "e--web-app", newWeb) == "" {
+			t.Errorf("ahead %v: the 10-day-old conversation was deleted", ahead)
+		}
+		wantWarn := 0
+		if ahead {
+			wantWarn = 1
+		}
+		if len(warned) != wantWarn || ahead && (!strings.Contains(warned[0], now.Local().Format("2006-01-02 15:04")) ||
+			!strings.Contains(warned[0], lap.LastPush.Local().Format("2006-01-02 15:04")) || !strings.Contains(warned[0], "LAP-2")) {
+			t.Errorf("ahead %v: warned %q, want one naming this clock's time and LAP-2's last push", ahead, warned)
+		}
+	}
+}
+
 // The age rule never reads, let alone deletes, a kept conversation.
 func TestAgeRuleLeavesAKeptConversation(t *testing.T) {
 	claudeDir, dest := ageFixture(t)
