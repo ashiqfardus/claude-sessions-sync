@@ -296,6 +296,13 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	defer os.RemoveAll(held.tmp)
 	shard.SkipsHeld = true
 	shard.ReadsZips = true
+	// A conversation pruned from the archive, and not continued here since, stays out of
+	// it. A list that cannot be read may name any: every one is archived, as before.
+	shard.HonorsDeleted = true
+	deleted, derr := archive.LoadDeleted(dest)
+	if derr != nil {
+		logf("WARN: the deleted list cannot be read, so conversations pruned from the archive may be archived again: %v", derr)
+	}
 	// Transcripts to look for work folders in: those changed since the last full push
 	// - not only those copied now, as the per-reply hook has usually copied them.
 	var workScan []string
@@ -315,6 +322,9 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 			srcInfo, statErr := os.Stat(t.Path)
 			if statErr != nil {
 				res.Skipped = append(res.Skipped, t.ID)
+				continue
+			}
+			if prunedHere(deleted, t.ID, t.Path) {
 				continue
 			}
 			wasHeld := held.known(b.Name, t.ID, srcInfo)
@@ -457,6 +467,16 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		if err := writeManifest(dest, shard); err != nil {
 			logf("ERROR: manifest: %v", err)
 			return err
+		}
+		// Once the shard says this computer honours the deleted list, so it waits for no
+		// one but the others; before the index, which then lists none it deleted.
+		// Unattended, only the sweep runs it, as only the sweep zips.
+		if !quiet || opts.Sweep {
+			if ret, err := archive.LoadRetention(dest); err != nil {
+				logf("WARN: keep-days: %v", err)
+			} else if _, err := runAgeRule(root, dest, ret, time.Now(), logf); err != nil {
+				logf("WARN: keep-days: %s", strings.ReplaceAll(err.Error(), "\n", " "))
+			}
 		}
 		if err := archive.WriteSessionIndex(dest, shard.Machine, withoutPruned(dest, sessions)); err != nil {
 			logf("ERROR: index cache: %v", err)
@@ -896,7 +916,7 @@ func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun b
 		return 0, false
 	}
 	if !zipHolds(zp, id, path, src) {
-		p, done, err := convzip.Materialize(filepath.Dir(zp), id, z.tmp)
+		p, done, err := materialize(filepath.Dir(zp), id, z.tmp)
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, false
 		}
@@ -1184,7 +1204,7 @@ func (h *heldRecord) covers(dest, bucket, id, path string, src os.FileInfo, othe
 			continue
 		}
 		// A zipped copy is compared unpacked, its folder beside it; a loose one in place.
-		p, done, err := convzip.Materialize(filepath.Join(archive.ProjectsDir(dest), other), id, h.tmp)
+		p, done, err := materialize(filepath.Join(archive.ProjectsDir(dest), other), id, h.tmp)
 		if err != nil {
 			continue
 		}
@@ -1381,6 +1401,13 @@ func pushOne(root, dest, transcript string, dryRun bool, logf func(string, ...an
 	repointed := loadRepointed(root)
 	was := len(repointed)
 	zips := loadZipCompared(root)
+	// Only one with no copy here can be pruned from the archive, and not continued here
+	// since: the list is read for no other, as this runs after every reply.
+	if archive.StatOrNil(filepath.Join(destBucket, id+".jsonl")) == nil && zippedCopy(dest, bucket, id) == "" {
+		if d, err := archive.LoadDeleted(dest); err == nil && prunedHere(d, id, abs) {
+			return nil
+		}
+	}
 	// Not compared with other buckets' copies: a session still replying here holds
 	// turns no other copy has. The next full push judges one that does not.
 	switch archiveTranscript(dest, bucket, id, abs, srcInfo, pushedBefore(dest, machineName()), repointed, nil, nil, zips, dryRun, logf) {

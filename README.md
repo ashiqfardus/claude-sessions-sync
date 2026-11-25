@@ -58,8 +58,9 @@ Three things go wrong with that:
   [Work folders](#work-folders).
 - Runs by itself once installed: when a session ends, **after every reply**, and on a
   sweep every 30 minutes.
-- Copies only what changed. It never deletes a transcript from the archive, and never
-  copies credentials.
+- Copies only what changed, and never copies credentials. It deletes a conversation
+  from the archive only when you ask, with `prune` or the `keep-days` rule; see
+  [Deleting old conversations](#deleting-old-conversations).
 
 **Brings history to another computer**
 - `import` finds each project on the new computer even where paths differ: by a folder
@@ -553,6 +554,60 @@ queued that never ran is a turn, so a copy ending in one is kept as a fork.
 
 ---
 
+## Deleting old conversations
+
+The archive keeps every conversation until you say otherwise. `prune` deletes chosen
+ones from it. Nothing on any computer is touched: a computer that still has a
+conversation keeps it.
+
+```sh
+claude-sessions prune --older-than 365d          # lists what it would delete
+claude-sessions prune --older-than 365d --yes    # deletes them
+claude-sessions prune --project web-app --older-than 180d
+claude-sessions prune <conversation id> --yes
+```
+
+- **Choose what to delete** with `--older-than <N>d` (days since the last message, in
+  the newest copy on any computer), `--project <name or path>`, or conversation IDs.
+  Different kinds combine: `--project web-app --older-than 180d` is web-app's
+  conversations older than 180 days. With none it refuses; it never means "everything".
+- **Without `--yes` it only lists** each conversation's project, last message, first
+  prompt and size, the total, and how many it skipped because they are kept. With
+  `--yes` it deletes every copy: in each computer's folder for the project, loose or
+  zipped, with its subagent and tool-output files, its forks and its page. Memory,
+  rules, skills and work folders stay.
+- **A project is the same project on every computer**: the same git remote, otherwise
+  the same folder name. `--project web-app` covers `~/dev/web-app` on a Mac and
+  `E:\web-app` on Windows, and lists the folders it matched. A name that two different
+  repositories share is refused: give the path.
+- **Pruned stays pruned.** Each deletion is recorded in the archive's
+  `deleted/<computer>.json`, and no computer uploads that conversation again. Continue
+  it on a computer that still has it, and the new turns bring it back.
+- **Undo:** `claude-sessions prune --undo <conversation id>` takes it off that list, and
+  any computer that still has it uploads it on its next push. With `keep-days` on, also
+  `config keep` it, or the age rule deletes it again.
+- **Keep list:** `claude-sessions config keep <conversation id, project name or path>`
+  puts a conversation, or a project on every computer, out of reach of `prune` and the
+  age rule. `config keep` lists it, and `config unkeep <same>` takes one off. A
+  conversation with a copy in a kept project is kept.
+- **Age rule:** `claude-sessions config keep-days 365` deletes, by itself, what
+  `prune --older-than 365d --yes` would. It is off until you set it, refuses fewer than
+  90 days, and `config keep-days off` stops it. The setting is in the archive
+  (`retention.json`), so every computer follows the same one. Each computer runs it at
+  most once a day, in the sweep or a `push` from a terminal, never in the hooks, and
+  logs `PRUNE: <id> (<project>, last message <date>, <size>)` for each conversation it
+  deletes. `doctor`'s `prune` line shows the setting and when it last ran there.
+- **Every computer must be updated first.** An older version would upload a pruned
+  conversation again, so `prune --yes` and the age rule delete nothing until every
+  computer that has pushed to the archive runs this version and has pushed once with
+  it. They name the computers they wait for: update them, or retire one no longer in
+  use with `claude-sessions machines --forget <name>`.
+- **The space comes back after the trash.** Google Drive keeps deleted files in its
+  trash for 30 days, and they count toward your storage until then: empty the trash to
+  get the space back now. Until it is emptied, the trash is another way back.
+
+---
+
 ## Moving to a new computer without a synced folder
 
 ```sh
@@ -882,7 +937,7 @@ remotes are read by parsing `.git/config`; git itself is never run (see
 | Command | What it does |
 |---|---|
 | `doctor` | Check everything; exits non-zero on a real problem |
-| `config` | `show` (default), `set-destination <folder>`, `map [<project> <folder>]`, `unmap <project>`, `set-machine <name>`, `work on\|off`, `work-placement home\|machine`, `map-folder <path> <folder>`, `unmap-folder <path>`, `exclude-folder <folder>`, `unexclude-folder <folder>`, `zip-sessions on\|off` |
+| `config` | `show` (default), `set-destination <folder>`, `map [<project> <folder>]`, `unmap <project>`, `set-machine <name>`, `work on\|off`, `work-placement home\|machine`, `map-folder <path> <folder>`, `unmap-folder <path>`, `exclude-folder <folder>`, `unexclude-folder <folder>`, `zip-sessions on\|off`, `keep [<id\|project>]`, `unkeep <id\|project>`, `keep-days <N\|off>` |
 | `push` | Copy new and changed sessions, memory, rules, skills and the plugin list to the archive, then write the pages |
 | `install` / `uninstall` | Turn automatic archiving on or off |
 | `import` | Bring an archive onto this computer, matching projects by identity |
@@ -893,13 +948,14 @@ remotes are read by parsing `.git/config`; git itself is never run (see
 | `ls`, `search`, `stats` | List, search and count sessions |
 | `machines` | List the computers that pushed here; `--forget` one |
 | `clean` | List archived copies of a session that another copy holds in whole; `--yes` deletes them |
+| `prune` | List archived conversations by age, project or ID; `--yes` deletes every copy, `--undo` takes one back |
 | `completion` | Print a shell completion script: `bash`, `zsh`, `fish` or `powershell` |
 | `version` | Print the version |
 
 Every command except `completion` and `version` takes `--claude-dir <path>`, for a
 profile other than `~/.claude` (the tool already follows `CLAUDE_CONFIG_DIR`).
 `--archive <path>` reads or writes another archive than the saved one on `push`,
-`pull`, `import`, `render`, `doctor`, `machines`, `clean`, `install`, `ls`, `search` and
+`pull`, `import`, `render`, `doctor`, `machines`, `clean`, `prune`, `install`, `ls`, `search` and
 `stats` (on the last three it implies `--archived`). `--json` gives machine-readable
 output on `push`, `import`, `render`, `doctor`, `machines`, `ls`, `search` and
 `stats`. Flags can go before or after other arguments; `--help` on any command lists
@@ -935,6 +991,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `--all`, `--role`, `--regexp`, `--case-sensitive`, `--project`, `--limit` | `search` | Narrow the search |
 | `--force`, `--exclude <text>`, `--quiet` | `render` | Rebuild current pages; withhold projects (saved, on every computer); print nothing on success |
 | `--forget <name>` | `machines` | Retire a computer |
+| `--older-than <N>d`, `--project <name or path>`, `--yes`, `--undo` | `prune` | Choose by age or project; delete; take conversations off the deleted list |
 | `--out <folder>` | `backup` | Where to write the zip |
 | `--no-write-probe`, `--exclude <text>` | `doctor` | Skip the write test; count extra exclusions |
 
@@ -958,6 +1015,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `profile` | Rule and skill files that differ between computers, or are not archived |
 | `work folders` | Off, or how many folders and files are archived; warns over 500 MB, or when a folder is too large to back up |
 | `zips` | Whether idle conversations are zipped: off, or waiting for the computers it names to update |
+| `prune` | The `keep-days` setting, when the age rule last ran here, and the computers `prune --yes` and the age rule wait for |
 | `secrets` | `.credentials.json` or `.claude.json` anywhere in the archive outside the pages |
 
 Each check prints as it finishes. A check that reads the archive and has not finished
@@ -1000,6 +1058,8 @@ claude-sessions completion powershell | Out-String | Add-Content $PROFILE
   manifest/<computer>.json                  each computer's projects: path, git remote, home, version
   index/<computer>.json                     each computer's list of sessions
   projects.json                             a merged view, for the older PowerShell scripts
+  deleted/<computer>.json                   the conversations each computer pruned, so none uploads them again
+  retention.json                            the keep list and keep-days, shared by every computer
   INDEX.md, html/                           the readable index and pages
   render-exclude.txt                        projects never published as pages
 ```
@@ -1050,8 +1110,10 @@ Each of these is deliberate:
 - **It never changes your local transcripts on push.** `import`, `pull` and `restore`
   add new ones, and with `--update` replace one only by a copy that holds everything it
   does and more.
-- **It never deletes a transcript from the archive.** A session that ages out locally
-  survives there.
+- **It never deletes a conversation from the archive unless you ask.** A session that
+  ages out locally survives there. Only `prune`, or the `keep-days` rule once you set
+  it, deletes conversations; `clean` deletes only copies another copy holds in whole,
+  and zipping deletes loose files only once the zip is read back and holds every turn.
 - **A copy that holds less never replaces one that holds more**, in either direction.
 - **It never creates your cloud folder's parent.** An unmounted drive is an error.
 - **It never copies credentials.**

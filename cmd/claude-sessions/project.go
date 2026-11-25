@@ -117,6 +117,10 @@ func withZipped(buckets []claude.Bucket) []claude.Bucket {
 
 func isZip(path string) bool { return strings.HasSuffix(path, convzip.Suffix) }
 
+// materialize unpacks a zipped conversation; every command reads one through it, and
+// tests count the calls.
+var materialize = convzip.Materialize
+
 // openTranscript returns a readable transcript path: a loose one as it is, a zipped
 // one extracted under a temp dir that cleanup removes, even on error. A zip that cannot
 // be read costs one note on stderr.
@@ -129,7 +133,7 @@ func openTranscript(path string) (string, func(), error) {
 		return "", nil, err
 	}
 	id := strings.TrimSuffix(filepath.Base(path), convzip.Suffix)
-	p, cleanup, err := convzip.Materialize(filepath.Dir(path), id, tmp)
+	p, cleanup, err := materialize(filepath.Dir(path), id, tmp)
 	if err != nil {
 		os.RemoveAll(tmp)
 		fmt.Fprintf(os.Stderr, "skipped %s: %v\n", path, err)

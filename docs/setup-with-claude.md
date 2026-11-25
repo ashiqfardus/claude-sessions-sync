@@ -17,6 +17,7 @@ plain, and say what you did after each step.
   `config exclude-folder` unless the user asked for that specific thing after you
   explained it.
 - Never delete or move the user's files, conversations or archive folder.
+- Never run `prune --yes` or set `keep-days` unless the user asked for it.
 - Never paste secrets (tokens, passwords) into commands or messages. If a step needs one,
   ask the user to enter it themselves.
 - The archive holds full conversations and work files. Only ever suggest a folder that

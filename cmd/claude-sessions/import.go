@@ -533,7 +533,7 @@ func newestCwd(dir string) string {
 		}
 	}
 	if zipped != "" {
-		if p, done, err := convzip.Materialize(dir, zipped, ""); err == nil {
+		if p, done, err := materialize(dir, zipped, ""); err == nil {
 			defer done()
 			newest = p // else the newest loose one
 		}

@@ -5,7 +5,21 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+Upgrading: update every computer and let each push once. Zipping, `prune --yes` and the
+age rule wait until all of them have, and `doctor` names any they wait for.
+
 ### Added
+- **`claude-sessions prune` deletes chosen conversations from the archive.** Choose them
+  with `--older-than <N>d`, `--project` or conversation IDs; without `--yes` it only
+  lists them, with their size. It deletes every copy, loose or zipped, in each
+  computer's folder for the project, with its subagent and tool-output files, forks and
+  page, and records it in `deleted/<computer>.json` so no computer uploads it again. A
+  conversation continued since comes back, and `prune --undo <id>` takes one off the
+  list. `config keep` puts a conversation, or a project on every computer, out of its
+  reach. `config keep-days <N>` (90 or more, off by default) deletes conversations older
+  than N days by itself, at most once a day on each computer, in the sweep or a `push`
+  from a terminal, never in the hooks. Nothing on any computer is touched. Deleting
+  waits until every computer runs this version and has pushed once.
 - **Idle conversations are zipped.** An archived conversation unchanged for 30 days, and
   on this computer too, becomes one file, `projects/<project>/<session-id>.conv.zip`,
   with its subagent and tool-output files: usually about a third of the space, and one

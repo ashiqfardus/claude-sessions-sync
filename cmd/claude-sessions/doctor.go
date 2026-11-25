@@ -211,6 +211,7 @@ func cmdDoctor(args []string) error {
 	})
 
 	slow("zips", func(add func(check)) { add(zipCheck(root, dest)) })
+	slow("prune", func(add func(check)) { add(pruneCheck(root, dest)) })
 
 	slow("profile", func(add func(check)) {
 		if diffs := profileDiffs(dest); len(diffs) > 0 {
@@ -530,13 +531,14 @@ func archivedCheck(root, dest string, buckets []claude.Bucket) check {
 	var pending []string
 	cutoff := time.Now().Add(-archiveLag)
 	held, zips := loadHeld(root), loadZipCompared(root)
+	deleted, _ := archive.LoadDeleted(dest)
 	for _, b := range buckets {
 		for _, t := range b.Transcripts {
 			if t.ModTime.After(cutoff) {
 				continue // may still be live, or the sweep has not come round yet
 			}
 			src, err := os.Stat(t.Path)
-			if err != nil {
+			if err != nil || prunedHere(deleted, t.ID, t.Path) { // push leaves a pruned one out
 				continue
 			}
 			dst := archive.StatOrNil(filepath.Join(archive.ProjectsDir(dest), b.Name, filepath.Base(t.Path)))
@@ -655,6 +657,34 @@ func zipCheck(root, dest string) check {
 			"Update claude-sessions on each and let it push once, or `claude-sessions machines --forget <name>` for a machine no longer in use."}
 	}
 	return check{"zips", levelOK, "conversations idle for 30 days are zipped", ""}
+}
+
+// pruneCheck says whether the age rule is on, when it last ran here, and for whom it
+// and `prune --yes` wait.
+func pruneCheck(root, dest string) check {
+	ret, err := archive.LoadRetention(dest)
+	if err != nil {
+		return check{"prune", levelWarn, "nothing is deleted for its age: " + err.Error(),
+			"Let retention.json finish syncing, or delete a sync conflict copy of it; `claude-sessions config keep` then shows what it keeps."}
+	}
+	if ret.KeepDays == 0 {
+		return check{"prune", levelInfo, "keep-days off: no conversation is deleted for its age", ""}
+	}
+	detail := fmt.Sprintf("keep-days %d", ret.KeepDays)
+	if last, ok := pruneLast(root); ok {
+		detail += ", last run here " + last.Local().Format("2006-01-02 15:04")
+	} else {
+		detail += ", not run here yet"
+	}
+	waits, err := archive.Holdouts(dest, func(s archive.Shard) bool { return s.HonorsDeleted })
+	switch {
+	case err != nil:
+		return check{"prune", levelWarn, detail + "; nothing is deleted: " + err.Error(), "Deleting waits until every machine's manifest can be read; see the manifest check."}
+	case len(waits) > 0:
+		return check{"prune", levelWarn, detail + "; nothing is deleted until these machines honour the deleted list: " + strings.Join(waits, ", "),
+			"Update claude-sessions on each and let it push once, or `claude-sessions machines --forget <name>` for a machine no longer in use."}
+	}
+	return check{"prune", levelOK, detail + ": conversations whose last message is older are deleted from the archive, except those kept", ""}
 }
 
 // deniedSincePush returns the newest "operation not permitted" line logged after the

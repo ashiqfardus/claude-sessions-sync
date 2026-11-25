@@ -53,9 +53,9 @@ func Compare(a, b string) Relation {
 			return Behind
 		}
 		return Same
-	case hasUUID(a, ub):
+	case HasUUID(a, ub):
 		return Extends
-	case hasUUID(b, ua):
+	case HasUUID(b, ua):
 		return Behind
 	}
 	return Forked
@@ -178,9 +178,9 @@ func queuedPrompt(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &a) == nil && a.Type == "queued_command"
 }
 
-// hasUUID reports whether the transcript has an entry with this uuid, reading it in
+// HasUUID reports whether the transcript has an entry with this uuid, reading it in
 // chunks so a transcript of hundreds of megabytes is never held in memory at once.
-func hasUUID(path, uuid string) bool {
+func HasUUID(path, uuid string) bool {
 	needle := []byte(`"uuid":"` + uuid + `"`)
 	f, err := os.Open(path)
 	if err != nil {

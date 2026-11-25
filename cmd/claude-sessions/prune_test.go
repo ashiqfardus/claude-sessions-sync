@@ -771,27 +771,38 @@ func TestPruneUndoBeatsAClockAhead(t *testing.T) {
 	}
 }
 
-// A conversation continued after it was pruned is archived again, and listed again.
+// A conversation continued after it was pruned is listed again: a row is left out by
+// the rule push skips a local copy by, applied to its archived copy, never by when it
+// was deleted - a clock ahead there, or behind here, would hide one push archived again.
 func TestIndexListsAConversationContinuedAfterPruning(t *testing.T) {
 	_, dest := pruneFixture(t)
-	pruned := time.Now().Add(-time.Hour)
-	if err := archive.RecordDeleted(dest, "you-mac", []archive.DeletedEntry{{ID: oldWeb, DeletedAt: pruned}, {ID: oldAPI, DeletedAt: pruned}, {ID: newWeb, DeletedAt: pruned}}); err != nil {
+	old := time.Now().AddDate(0, 0, -200)
+	ahead := time.Now().Add(48 * time.Hour) // the computer that pruned them runs ahead
+	// oldAPI continued since by a computer whose clock is behind: its new turn is dated
+	// before the last one recorded, but comes after it.
+	conv(t, dest, "-Users-you-dev-api", oldAPI, old, "p0", "p1")
+	if err := archive.RecordDeleted(dest, "you-mac", []archive.DeletedEntry{
+		{ID: oldWeb, LastUUID: "w2", LastAt: old.Add(time.Minute), DeletedAt: ahead},
+		{ID: strings.ToUpper(oldAPI), LastUUID: "p0", LastAt: old.Add(time.Hour), DeletedAt: ahead},
+		{ID: newWeb, LastUUID: "n1", LastAt: time.Now(), DeletedAt: time.Now()},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := archive.RecordDeleted(dest, "LAP-2", []archive.DeletedEntry{{ID: newWeb, DeletedAt: pruned.Add(time.Minute), Undone: true}}); err != nil {
+	if err := archive.RecordDeleted(dest, "LAP-2", []archive.DeletedEntry{{ID: newWeb, DeletedAt: time.Now().Add(time.Minute), Undone: true}}); err != nil {
 		t.Fatal(err)
 	}
 	rows := withoutPruned(dest, []archive.Session{
-		{ID: oldWeb, Updated: pruned.Add(-time.Minute)},                 // as pruned
-		{ID: strings.ToUpper(oldAPI), Updated: pruned.Add(time.Minute)}, // continued since
-		{ID: newWeb, Updated: pruned.Add(-time.Hour)},                   // undone
-		{ID: keptID, Updated: pruned},                                   // never pruned
+		{Bucket: "-Users-you-dev-web-app", ID: oldWeb}, // its copy as pruned, back
+		{Bucket: "e--web-app", ID: oldWeb},             // pruned, no copy left there
+		{Bucket: "-Users-you-dev-api", ID: oldAPI},     // continued since
+		{Bucket: "e--web-app", ID: newWeb},             // undone
+		{Bucket: "-Users-you-dev-api", ID: keptID},     // never pruned
 	})
 	var got []string
 	for _, r := range rows {
-		got = append(got, strings.ToLower(r.ID))
+		got = append(got, r.Bucket+"/"+r.ID)
 	}
-	if want := []string{oldAPI, newWeb, keptID}; !reflect.DeepEqual(got, want) {
+	if want := []string{"-Users-you-dev-api/" + oldAPI, "e--web-app/" + newWeb, "-Users-you-dev-api/" + keptID}; !reflect.DeepEqual(got, want) {
 		t.Errorf("rows %v, want %v", got, want)
 	}
 }
@@ -861,13 +872,14 @@ func TestPruneUnreadableDeletedList(t *testing.T) {
 func TestPruneRecordsBeforeDeleting(t *testing.T) {
 	claudeDir, dest := pruneFixture(t)
 	calls, recorded := 0, false
-	removePath = func(string) error {
+	real := removePath
+	removePath = func(string, bool) error {
 		calls++
 		d, _ := archive.LoadDeleted(dest)
 		recorded = d[oldAPI].ID == oldAPI && !d[oldAPI].Undone
 		return errors.New("refused by the test")
 	}
-	defer func() { removePath = os.RemoveAll }()
+	defer func() { removePath = real }()
 	out, err := prune(t, claudeDir, oldAPI, "--yes")
 	if err == nil || calls != 1 || !recorded || !strings.Contains(out, "refused by the test") || strings.Contains(out, "Deleted") {
 		t.Errorf("calls %d, recorded first %v, %v\n%s", calls, recorded, err, out)
@@ -972,5 +984,438 @@ func TestPruneRefusalMessages(t *testing.T) {
 	}
 	if !reflect.DeepEqual(tree(t, dest), before) {
 		t.Error("a refused prune changed the archive")
+	}
+}
+
+// --- push honours the deleted list; the age rule ---
+
+const prunedX = "aaaaaaaa-1111-4111-8111-0000000000e1"
+
+// localConv writes this computer's transcript of id in a project at repo, its turns a
+// minute apart from at, its modification time its last turn's.
+func localConv(t *testing.T, claudeDir, repo, id string, at time.Time, uuids ...string) string {
+	t.Helper()
+	p := filepath.Join(claudeDir, "projects", claude.Slug(repo), id+".jsonl")
+	writeFile(t, p, "")
+	appendTurn(t, p, repo, at, uuids...)
+	return p
+}
+
+// appendTurn adds turns to the transcript at p, a minute apart from at, and stamps it
+// with the last one's time.
+func appendTurn(t *testing.T, p, repo string, at time.Time, uuids ...string) {
+	t.Helper()
+	writeFile(t, p, mustReadFile(t, p)+strings.ReplaceAll(turns(at, uuids...), "/Users/you/dev/web-app", filepath.ToSlash(repo)))
+	last := at.Add(time.Duration(len(uuids)-1) * time.Minute)
+	if err := os.Chtimes(p, last, last); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func pushHere(t *testing.T, claudeDir string, opts pushOpts) {
+	t.Helper()
+	opts.NoHTML = true
+	if err := os.MkdirAll(filepath.Join(claudeDir, "projects"), 0o755); err != nil { // as Claude Code makes it
+		t.Fatal(err)
+	}
+	if out, err := captured(t, func() error { return runPush(claudeDir, "", opts) }); err != nil {
+		t.Fatalf("push %+v: %v\n%s", opts, err, out)
+	}
+}
+
+// copiesOf is every file of id's in the archive's projects/ and forks/.
+func copiesOf(t *testing.T, dest, id string) []string {
+	t.Helper()
+	var out []string
+	for rel := range tree(t, dest) {
+		if strings.Contains(rel, id) && (strings.HasPrefix(rel, "projects/") || strings.HasPrefix(rel, "forks/")) {
+			out = append(out, rel)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// prunedLocally is pruneFixture with prunedX on this computer, 200 days old, pushed,
+// then pruned.
+func prunedLocally(t *testing.T) (claudeDir, dest, repo, local string) {
+	t.Helper()
+	claudeDir, dest = pruneFixture(t)
+	repo = filepath.Join(t.TempDir(), "web-app")
+	local = localConv(t, claudeDir, repo, prunedX, time.Now().AddDate(0, 0, -200), "x1", "x2")
+	pushHere(t, claudeDir, pushOpts{})
+	if len(copiesOf(t, dest, prunedX)) == 0 {
+		t.Fatal("push did not archive it to begin with")
+	}
+	if out, err := prune(t, claudeDir, prunedX, "--yes"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if c := copiesOf(t, dest, prunedX); len(c) > 0 {
+		t.Fatalf("prune left %v", c)
+	}
+	return claudeDir, dest, repo, local
+}
+
+// doctorLine runs doctor and returns its line for the check name.
+func doctorLine(t *testing.T, claudeDir, name string) string {
+	t.Helper()
+	out, _ := captured(t, func() error { return cmdDoctor([]string{"--claude-dir", claudeDir, "--no-write-probe"}) })
+	for _, l := range strings.Split(out, "\n") {
+		// "  + name  detail", the mark a space for information
+		if f := strings.Fields(l); strings.HasPrefix(l, "  ") && len(f) > 1 && (f[0] == name || f[1] == name) {
+			return strings.TrimSpace(l)
+		}
+	}
+	t.Fatalf("doctor has no %s line:\n%s", name, out)
+	return ""
+}
+
+func TestPushSkipsPruned(t *testing.T) {
+	claudeDir, dest, _, local := prunedLocally(t)
+	for _, opts := range []pushOpts{{}, {Quiet: true}, {Quiet: true, Sweep: true}, {Quiet: true, FromHook: true, Session: local}} {
+		pushHere(t, claudeDir, opts)
+		if c := copiesOf(t, dest, prunedX); len(c) > 0 {
+			t.Fatalf("push %+v archived the pruned conversation again: %v", opts, c)
+		}
+	}
+	for _, f := range []string{"INDEX.md", filepath.Join("index", "you-mac.json")} {
+		if s := mustReadFile(t, filepath.Join(dest, f)); strings.Contains(s, prunedX) {
+			t.Errorf("%s lists it:\n%s", f, s)
+		}
+	}
+	if l := doctorLine(t, claudeDir, "archived"); !strings.HasPrefix(l, "+") {
+		t.Errorf("doctor reports the pruned conversation unarchived: %s", l)
+	}
+}
+
+func TestPushArchivesAPrunedConversationContinued(t *testing.T) {
+	claudeDir, dest, repo, local := prunedLocally(t)
+	appendTurn(t, local, repo, time.Now().Add(-time.Hour), "x3")
+	pushHere(t, claudeDir, pushOpts{Quiet: true, FromHook: true, Session: local})
+	if p := archivedCopy(dest, claude.Slug(repo), prunedX); p == "" || !strings.Contains(mustReadFile(t, p), `"x3"`) {
+		t.Fatalf("the hook did not archive the continued conversation: %v", copiesOf(t, dest, prunedX))
+	}
+	pushHere(t, claudeDir, pushOpts{})
+	if s := mustReadFile(t, filepath.Join(dest, "INDEX.md")); !strings.Contains(s, prunedX) {
+		t.Errorf("INDEX.md does not list it again:\n%s", s)
+	}
+}
+
+// Continued on a computer whose clock is behind the one that pruned it: its new turn is
+// dated before the last turn recorded, but comes after it, so it is archived and listed.
+func TestPushArchivesAContinuationFromAClockBehind(t *testing.T) {
+	claudeDir, dest, repo, local := prunedLocally(t)
+	d, err := archive.LoadDeleted(dest)
+	if err != nil || d[prunedX].LastUUID != "x2" {
+		t.Fatalf("%+v %v", d[prunedX], err)
+	}
+	appendTurn(t, local, repo, d[prunedX].LastAt.Add(-time.Hour), "x3")
+	pushHere(t, claudeDir, pushOpts{})
+	if p := archivedCopy(dest, claude.Slug(repo), prunedX); p == "" || !strings.Contains(mustReadFile(t, p), `"x3"`) {
+		t.Fatalf("not archived: %v", copiesOf(t, dest, prunedX))
+	}
+	for _, f := range []string{"INDEX.md", filepath.Join("index", "you-mac.json")} {
+		if s := mustReadFile(t, filepath.Join(dest, f)); !strings.Contains(s, prunedX) {
+			t.Errorf("%s does not list what push archived again:\n%s", f, s)
+		}
+	}
+}
+
+func TestPushAfterUndoArchivesAgain(t *testing.T) {
+	claudeDir, dest, _, _ := prunedLocally(t)
+	pushHere(t, claudeDir, pushOpts{})
+	if c := copiesOf(t, dest, prunedX); len(c) > 0 {
+		t.Fatalf("archived before the undo: %v", c)
+	}
+	if out, err := prune(t, claudeDir, "--undo", prunedX); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	pushHere(t, claudeDir, pushOpts{})
+	if len(copiesOf(t, dest, prunedX)) == 0 {
+		t.Error("not archived again after --undo")
+	}
+}
+
+func TestPrunedHere(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Now().AddDate(0, 0, -100)
+	write := func(name, body string, mtime time.Time) string {
+		p := filepath.Join(dir, name+".jsonl")
+		writeFile(t, p, body)
+		if err := os.Chtimes(p, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	noTime := `{"type":"user","uuid":"q1","message":{"role":"user","content":"no time"}}` + "\n"
+	e := archive.DeletedEntry{ID: prunedX, LastUUID: "x2", LastAt: at.Add(time.Minute)}
+	for _, c := range []struct {
+		name string
+		e    archive.DeletedEntry
+		path string
+		want bool
+	}{
+		{"as pruned", e, write("same", turns(at, "x1", "x2"), at), true},
+		{"behind it", e, write("behind", turns(at, "x1"), at), true},
+		{"continued", e, write("more", turns(at, "x1", "x2", "x3"), at), false},
+		{"continued by a clock behind", e, write("skewed", turns(at, "x1", "x2")+turns(at.AddDate(0, 0, -5), "x3"), at), false},
+		{"another branch, newer", e, write("branch", turns(at, "x1")+turns(at.Add(time.Hour), "y2"), at), false},
+		{"no uuid recorded, older", archive.DeletedEntry{ID: prunedX, LastAt: at.Add(time.Minute)}, write("older", turns(at, "x1"), at), true},
+		{"no uuid recorded, newer", archive.DeletedEntry{ID: prunedX, LastAt: at}, write("newer", turns(at, "x1", "x2"), at), false},
+		{"no turn time, older file", e, write("untimed-old", noTime, at), true},
+		{"no turn time, newer file", e, write("untimed-new", noTime, time.Now()), false},
+		{"no turn time, file from a clock ahead", e, write("untimed-ahead", noTime, time.Now().Add(48*time.Hour)), false},
+		{"undone", archive.DeletedEntry{ID: prunedX, LastUUID: "x2", LastAt: at.Add(time.Minute), Undone: true}, write("undone", turns(at, "x1", "x2"), at), false},
+	} {
+		if got := prunedHere(map[string]archive.DeletedEntry{prunedX: c.e}, strings.ToUpper(prunedX), c.path); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+	if prunedHere(map[string]archive.DeletedEntry{}, prunedX, write("unlisted", turns(at, "x1"), at)) {
+		t.Error("a conversation not on the list was skipped")
+	}
+}
+
+// A path that appears between the check and the deletion - here a continuation that
+// another computer's push brought in beside a zip - is never deleted unseen.
+func TestPruneDeletesOnlyWhatItChecked(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	dir := filepath.Join(archive.ProjectsDir(dest), "-Users-you-dev-api")
+	if _, err := convzip.Zip(dir, oldAPI); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planPrune(claudeDir, dest, pruneSel{IDs: []string{oldWeb, oldAPI}}, archive.Retention{}, time.Now())
+	if err != nil || len(plan.Remove) != 2 || plan.Remove[0].ID != oldWeb {
+		t.Fatalf("%+v %v", plan.Remove, err)
+	}
+	loose := filepath.Join(dir, oldAPI+".jsonl")
+	real, arrived := removePath, false
+	removePath = func(p string, isDir bool) error {
+		if !arrived {
+			arrived = true
+			writeFile(t, loose, turns(time.Now().AddDate(0, 0, -200), "p1")+turns(time.Now(), "p2"))
+		}
+		return real(p, isDir)
+	}
+	defer func() { removePath = real }()
+	if n, _, err := applyPrune(dest, plan, time.Now(), func(it pruneItem, err error) { t.Errorf("%s: %v", it.ID, err) }); n != 2 || err != nil {
+		t.Errorf("deleted %d, %v", n, err)
+	}
+	if !arrived || zippedCopy(dest, "-Users-you-dev-api", oldAPI) != "" {
+		t.Fatal("the zip checked was not deleted")
+	}
+	if s, err := os.ReadFile(loose); err != nil || !strings.Contains(string(s), `"p2"`) {
+		t.Errorf("the transcript that arrived after the check was deleted: %v", err)
+	}
+}
+
+// A file's path made a folder since the check is refused, not emptied.
+func TestPruneNeverEmptiesAFolderInAFilesPlace(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	dir := filepath.Join(archive.ProjectsDir(dest), "-Users-you-dev-api")
+	writeFile(t, filepath.Join(dir, oldAPI, "tool-results", "r1.txt"), "output\n")
+	plan, err := planPrune(claudeDir, dest, pruneSel{IDs: []string{oldAPI}}, archive.Retention{}, time.Now())
+	if err != nil || len(plan.Remove) != 1 {
+		t.Fatalf("%+v %v", plan.Remove, err)
+	}
+	transcript, inside := filepath.Join(dir, oldAPI+".jsonl"), filepath.Join(dir, oldAPI+".jsonl", "keep.txt")
+	real := removePath
+	removePath = func(p string, isDir bool) error {
+		if p == filepath.Join(dir, oldAPI) { // its folder goes first; the transcript then turns into one
+			if err := os.Remove(transcript); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, inside, "not the transcript\n")
+		}
+		return real(p, isDir)
+	}
+	defer func() { removePath = real }()
+	var failed []string
+	if n, _, _ := applyPrune(dest, plan, time.Now(), func(it pruneItem, err error) { failed = append(failed, err.Error()) }); n != 0 || len(failed) != 1 {
+		t.Errorf("deleted %d, failed %v", n, failed)
+	}
+	if _, err := os.Stat(inside); err != nil {
+		t.Errorf("the folder in the transcript's place was emptied: %v", err)
+	}
+}
+
+// Named by id and undated when listed, a conversation given a turn since is skipped: its
+// date cannot show it.
+func TestPruneSkipsAnUndatedConversationGivenATurn(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	const u = "aaaaaaaa-1111-4111-8111-00000000000b"
+	p := filepath.Join(archive.ProjectsDir(dest), "-Users-you-dev-api", u+".jsonl")
+	future := time.Now().Add(48 * time.Hour)
+	stamp := func(body string) {
+		writeFile(t, p, body)
+		if err := os.Chtimes(p, future, future); err != nil {
+			t.Fatal(err)
+		}
+	}
+	untimed := func(uuid string) string {
+		return `{"type":"user","uuid":"` + uuid + `","message":{"role":"user","content":"no time"}}` + "\n"
+	}
+	stamp(untimed("q1"))
+	plan, err := planPrune(claudeDir, dest, pruneSel{IDs: []string{u}}, archive.Retention{}, time.Now())
+	if err != nil || len(plan.Remove) != 1 || plan.Remove[0].dated {
+		t.Fatalf("%+v %v", plan.Remove, err)
+	}
+	stamp(untimed("q1") + untimed("q2"))
+	var failed []string
+	if n, _, _ := applyPrune(dest, plan, time.Now(), func(it pruneItem, err error) { failed = append(failed, err.Error()) }); n != 0 ||
+		len(failed) != 1 || !strings.Contains(failed[0], "it changed since it was listed") {
+		t.Errorf("deleted %d, failed %v", n, failed)
+	}
+	if archivedCopy(dest, "-Users-you-dev-api", u) == "" {
+		t.Error("the conversation given a turn was deleted")
+	}
+}
+
+// ageFixture is pruneFixture with keep-days 90: oldWeb 120 days old, newWeb 10, and no
+// oldAPI.
+func ageFixture(t *testing.T) (claudeDir, dest string) {
+	t.Helper()
+	claudeDir, dest = pruneFixture(t)
+	if err := os.Remove(archivedCopy(dest, "-Users-you-dev-api", oldAPI)); err != nil {
+		t.Fatal(err)
+	}
+	conv(t, dest, "-Users-you-dev-web-app", oldWeb, time.Now().AddDate(0, 0, -120), "w1", "w2")
+	if out, err := captured(t, func() error { return cmdConfig([]string{"--claude-dir", claudeDir, "keep-days", "90"}) }); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	return claudeDir, dest
+}
+
+func pruneLines(t *testing.T, claudeDir string) []string {
+	t.Helper()
+	raw, _ := os.ReadFile(filepath.Join(claudeDir, "session-sync.log"))
+	var out []string
+	for _, l := range strings.Split(string(raw), "\n") {
+		if strings.Contains(l, "PRUNE: ") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func TestAgeRuleDeletesOldOnce(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	// The first push of this build: it writes its shard before it runs the rule, so it
+	// does not wait for itself.
+	honour(t, dest, "you-mac", false)
+	pushHere(t, claudeDir, pushOpts{})
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
+		t.Error("the 120-day-old conversation was not deleted")
+	}
+	if archivedCopy(dest, "e--web-app", newWeb) == "" {
+		t.Error("the 10-day-old conversation was deleted")
+	}
+	want := "PRUNE: " + oldWeb + " (/Users/you/dev/web-app, last message " + time.Now().AddDate(0, 0, -120).Format("2006-01-02") + ", "
+	if lines := pruneLines(t, claudeDir); len(lines) != 1 || !strings.Contains(lines[0], want) {
+		t.Errorf("want one line with %q, got %q", want, lines)
+	}
+	if d, _ := archive.LoadDeleted(dest); d[oldWeb].LastUUID != "w2" {
+		t.Errorf("not recorded: %+v", d[oldWeb])
+	}
+	last := mustReadFile(t, pruneLastPath(claudeDir))
+
+	// Within 24 hours it does not run again.
+	conv(t, dest, "-Users-you-dev-api", oldAPI, time.Now().AddDate(0, 0, -200), "p1")
+	pushHere(t, claudeDir, pushOpts{})
+	if archivedCopy(dest, "-Users-you-dev-api", oldAPI) == "" || len(pruneLines(t, claudeDir)) != 1 {
+		t.Error("the age rule ran twice within 24 hours")
+	}
+	if now := mustReadFile(t, pruneLastPath(claudeDir)); now != last {
+		t.Errorf("prune-last.json changed without a run: %s -> %s", last, now)
+	}
+
+	// A day later it does; so it does when the last run is dated ahead, by a wrong clock.
+	for _, at := range []time.Time{time.Now().Add(-25 * time.Hour), time.Now().AddDate(1, 0, 0)} {
+		conv(t, dest, "-Users-you-dev-api", oldAPI, time.Now().AddDate(0, 0, -200), "p1")
+		writeJSON(t, pruneLastPath(claudeDir), map[string]time.Time{"lastRun": at})
+		pushHere(t, claudeDir, pushOpts{})
+		if archivedCopy(dest, "-Users-you-dev-api", oldAPI) != "" {
+			t.Errorf("last run %v: the age rule did not run again", at)
+		}
+	}
+}
+
+func TestAgeRuleOffByDefault(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	before := tree(t, archive.ProjectsDir(dest))
+	pushHere(t, claudeDir, pushOpts{})
+	pushHere(t, claudeDir, pushOpts{Quiet: true, Sweep: true})
+	if !reflect.DeepEqual(tree(t, archive.ProjectsDir(dest)), before) || len(pruneLines(t, claudeDir)) > 0 {
+		t.Error("push deleted with no keep-days set")
+	}
+	if _, err := os.Stat(pruneLastPath(claudeDir)); err == nil {
+		t.Error("the age rule ran with no keep-days set")
+	}
+	if l := doctorLine(t, claudeDir, "prune"); !strings.Contains(l, "keep-days off") {
+		t.Errorf("doctor: %s", l)
+	}
+}
+
+func TestAgeRuleWaitsForOlderShard(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	honour(t, dest, "LAP-2", false)
+	pushHere(t, claudeDir, pushOpts{})
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" || len(pruneLines(t, claudeDir)) > 0 {
+		t.Error("the age rule deleted while LAP-2 lacks honorsDeleted")
+	}
+	if log := mustReadFile(t, filepath.Join(claudeDir, "session-sync.log")); !strings.Contains(log, "LAP-2 runs a claude-sessions too old") {
+		t.Errorf("the log does not say whom it waits for:\n%s", log)
+	}
+	if l := doctorLine(t, claudeDir, "prune"); !strings.HasPrefix(l, "!") || !strings.Contains(l, "keep-days 90") ||
+		!strings.Contains(l, "LAP-2") || strings.Contains(l, "you-mac") || !strings.Contains(l, "last run here") {
+		t.Errorf("doctor does not name LAP-2 alone: %s", l)
+	}
+}
+
+// Zipped conversations are dated by their index alone: the age rule unpacks none.
+func TestAgeRuleReadsNoZipContent(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	for _, c := range []struct{ bucket, id string }{{"-Users-you-dev-web-app", oldWeb}, {"e--web-app", newWeb}} {
+		dir := filepath.Join(archive.ProjectsDir(dest), c.bucket)
+		writeFile(t, filepath.Join(dir, c.id, "tool-results", "r1.txt"), "output\n")
+		if _, err := convzip.Zip(dir, c.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls, real := 0, materialize
+	materialize = func(bucketDir, id, tmp string) (string, func(), error) {
+		calls++
+		return real(bucketDir, id, tmp)
+	}
+	defer func() { materialize = real }()
+	ret, err := archive.LoadRetention(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := runAgeRule(claudeDir, dest, ret, time.Now(), func(string, ...any) {})
+	if n != 1 || err != nil || calls != 0 {
+		t.Errorf("deleted %d, %v, %d zip(s) unpacked", n, err, calls)
+	}
+	if zippedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" || zippedCopy(dest, "e--web-app", newWeb) == "" {
+		t.Error("the age rule did not date the zipped copies by their index")
+	}
+}
+
+// The hooks and a dry run never run the age rule; the sweep does.
+func TestHookPushRunsNoAgeRule(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	local := localConv(t, claudeDir, filepath.Join(t.TempDir(), "web-app"), prunedX, time.Now().Add(-time.Hour), "x1")
+	for _, opts := range []pushOpts{{Quiet: true, FromHook: true, Session: local}, {Quiet: true}, {DryRun: true}} {
+		pushHere(t, claudeDir, opts)
+		if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
+			t.Fatalf("push %+v ran the age rule", opts)
+		}
+	}
+	if _, err := os.Stat(pruneLastPath(claudeDir)); err == nil {
+		t.Error("a hook or a dry run recorded an age-rule run")
+	}
+	pushHere(t, claudeDir, pushOpts{Quiet: true, Sweep: true})
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
+		t.Error("the sweep did not run the age rule")
 	}
 }

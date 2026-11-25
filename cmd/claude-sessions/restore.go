@@ -519,7 +519,7 @@ func (c *archivedConv) open(res *restoreResult) (string, error) {
 	case c.path != "" || c.err != nil:
 		return c.path, c.err
 	}
-	p, done, err := convzip.Materialize(c.source, c.id(), "")
+	p, done, err := materialize(c.source, c.id(), "")
 	if err == nil {
 		c.done = done
 		if st, serr := os.Lstat(p); serr != nil || !st.Mode().IsRegular() || !isTranscriptName(filepath.Base(p)) {

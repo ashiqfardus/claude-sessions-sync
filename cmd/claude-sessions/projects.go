@@ -135,20 +135,36 @@ func matchProject(projects map[string]archive.Project, arg string) (archive.Keep
 // bucket no manifest lists - its machine forgotten, say - counts as kept: its identity
 // is unknown, so it cannot be shown not to be that project.
 func kept(r archive.Retention, id string, buckets []string, projects map[string]archive.Project) bool {
+	return keptBy(r, projects)(id, buckets)
+}
+
+// keptBy is kept for a pass over many conversations: the buckets kept projects cover are
+// worked out once, as SameRemote is a regex per call.
+func keptBy(r archive.Retention, projects map[string]archive.Project) func(id string, buckets []string) bool {
+	sessions, inKept, byProject := map[string]bool{}, map[string]bool{}, false
 	for _, e := range r.Keep {
 		if e.Session != "" {
-			if strings.EqualFold(e.Session, id) {
-				return true
-			}
+			sessions[strings.ToLower(e.Session)] = true
 			continue
 		}
-		for _, b := range buckets {
-			if p, ok := projects[b]; !ok || keeps(e, p, projects) {
-				return true
+		byProject = true
+		for b, p := range projects {
+			if !inKept[b] && keeps(e, p, projects) {
+				inKept[b] = true
 			}
 		}
 	}
-	return false
+	return func(id string, buckets []string) bool {
+		if sessions[strings.ToLower(id)] {
+			return true
+		}
+		for _, b := range buckets {
+			if _, listed := projects[b]; byProject && !listed || inKept[b] {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // keeps reports whether a project entry covers bucket p. A bucket with no remote of its

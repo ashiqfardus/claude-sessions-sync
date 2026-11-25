@@ -96,15 +96,15 @@ func TestCompareIsUnknownWithoutUUIDs(t *testing.T) {
 	}
 }
 
-// hasUUID reads in 1 MB chunks; an entry straddling two reads must still be found.
+// HasUUID reads in 1 MB chunks; an entry straddling two reads must still be found.
 func TestHasUUIDAcrossAChunkBoundary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "big.jsonl")
 	pad := `{"type":"x","text":"` + strings.Repeat("a", 1<<20-30) + `"}` + "\n"
 	os.WriteFile(path, []byte(pad+entryLine("needle-uuid", "/w")+"\n"), 0o644)
-	if !hasUUID(path, "needle-uuid") {
+	if !HasUUID(path, "needle-uuid") {
 		t.Fatal("an entry split across two reads was missed")
 	}
-	if hasUUID(path, "absent-uuid") {
+	if HasUUID(path, "absent-uuid") {
 		t.Fatal("found a uuid that is not there")
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,7 +35,8 @@ type pruneItem struct {
 	LastUUID    string    // that turn's uuid; "" when that copy is zipped, as zips are never unpacked to date them
 	Prompt      string
 	Size        int64
-	dated       bool // every copy had a time when listed
+	dated       bool    // every copy had a time when listed
+	sizes       []int64 // every copy's size when dated, in the order read: a turn added grows one
 }
 
 type prunePlan struct {
@@ -210,6 +212,7 @@ func planPrune(root, dest string, sel pruneSel, ret archive.Retention, now time.
 			}
 		}
 	}
+	isKept := keptBy(ret, projects)      // once: SameRemote is a regex per call
 	rows := map[string]archive.Session{} // the newest index row of each, for its project and prompt
 	all, _ := archive.AllSessions(dest)
 	for _, r := range all {
@@ -245,7 +248,7 @@ func planPrune(root, dest string, sel pruneSel, ret archive.Retention, now time.
 				continue
 			}
 		}
-		if kept(ret, id, buckets, projects) {
+		if isKept(id, buckets) {
 			plan.Kept++
 			continue
 		}
@@ -284,9 +287,17 @@ func datePrune(dest string, it *pruneItem, local []string, now time.Time) bool {
 			it.LastAt, newest = at, p
 		}
 	}
+	size := func(p string) (os.FileInfo, error) {
+		st, err := os.Lstat(p)
+		if err == nil {
+			it.sizes = append(it.sizes, st.Size())
+		}
+		return st, err
+	}
 	loose := func(p string) {
+		st, err := size(p)
 		at, ok := claude.LastTurnTime(p)
-		if st, err := os.Lstat(p); !ok && err == nil {
+		if !ok && err == nil {
 			at = st.ModTime()
 		}
 		use(at, p)
@@ -300,6 +311,7 @@ func datePrune(dest string, it *pruneItem, local []string, now time.Time) bool {
 			loose(p)
 		}
 		if zp != "" {
+			size(zp)
 			use(zippedTurnTime(zp, it.ID), "")
 		}
 		for _, p := range forkCopies(dest, b, it.ID) {
@@ -368,9 +380,9 @@ func conversationSize(dest string, it pruneItem) int64 {
 //
 // Each conversation's paths are checked, and it is found and dated again as the plan
 // did, before any is recorded: one refused, no longer there, or changed since it was
-// listed - a copy added or gone, a newer turn, one no longer datable - is reported to
-// fail and neither recorded nor deleted. The rest are recorded on the deleted list, then
-// deleted.
+// listed - a copy added, gone or grown, a newer turn, one no longer datable - is
+// reported to fail and neither recorded nor deleted. The rest are recorded on the
+// deleted list, then deleted: only the paths checked here.
 func applyPrune(dest string, plan prunePlan, now time.Time, fail func(pruneItem, error)) (deleted int, freed int64, err error) {
 	if plan.Unread != "" {
 		return 0, 0, fmt.Errorf("nothing deleted: %s. The computer it belongs to may upload them again", plan.Unread)
@@ -384,6 +396,7 @@ func applyPrune(dest string, plan prunePlan, now time.Time, fail func(pruneItem,
 	}
 	holders := sessionHolders(dest)
 	var ready []pruneItem
+	var checked [][]prunePath
 	var entries []archive.DeletedEntry
 	for _, it := range plan.Remove {
 		paths, err := prunePaths(dest, it)
@@ -396,12 +409,14 @@ func applyPrune(dest string, plan prunePlan, now time.Time, fail func(pruneItem,
 		}
 		again := pruneItem{ID: it.ID, Buckets: it.Buckets}
 		dated := datePrune(dest, &again, plan.local[it.ID], now)
+		// A copy grown since is a turn added, whatever its time says - none, one ahead, or
+		// one from a clock behind.
 		if !slices.Equal(holders[it.ID], it.Buckets) || again.LastAt.After(it.LastAt) || it.dated && !dated ||
-			!plan.cutoff.IsZero() && !again.LastAt.Before(plan.cutoff) {
+			!slices.Equal(again.sizes, it.sizes) || !plan.cutoff.IsZero() && !again.LastAt.Before(plan.cutoff) {
 			fail(it, fmt.Errorf("it changed since it was listed (last message %s); not deleted", again.LastAt.Local().Format("2006-01-02 15:04")))
 			continue
 		}
-		ready = append(ready, it)
+		ready, checked = append(ready, it), append(checked, paths)
 		entries = append(entries, archive.DeletedEntry{ID: it.ID, Buckets: it.Buckets, LastUUID: it.LastUUID, LastAt: it.LastAt,
 			DeletedAt: after(now, listed, it.ID)})
 	}
@@ -410,8 +425,8 @@ func applyPrune(dest string, plan prunePlan, now time.Time, fail func(pruneItem,
 			return 0, 0, fmt.Errorf("nothing deleted: the deleted list could not be written: %w", err)
 		}
 	}
-	for _, it := range ready {
-		if err := deleteConversation(dest, it); err != nil {
+	for i, it := range ready {
+		if err := deleteConversation(dest, it, checked[i]); err != nil {
 			fail(it, err)
 			continue
 		}
@@ -439,35 +454,56 @@ func holdoutRefusal(machines []string) string {
 		verb = "runs"
 	}
 	return strings.Join(machines, ", ") + " " + verb + " a claude-sessions too old to honour the deleted list, and would upload the conversations again.\n" +
-		"Update claude-sessions on each and let it push once, or run `claude-sessions machines forget <name>` for one that is gone."
+		"Update claude-sessions on each and let it push once, or run `claude-sessions machines --forget <name>` for one that is gone."
 }
 
 var errNotFound = errors.New("no copy of it is in the archive any more")
 
-// removePath deletes one checked path; tests make it fail.
-var removePath = os.RemoveAll
+// removePath deletes one checked path: a folder with all in it, a file alone, so a file
+// made a folder since it was checked is refused, not emptied. Tests make it fail.
+var removePath = func(p string, dir bool) error {
+	if dir {
+		return os.RemoveAll(p) // never follows a link inside it, or in its place
+	}
+	return os.Remove(p)
+}
+
+// prunePath is one path of a conversation prune deletes.
+type prunePath struct {
+	path string
+	dir  bool // its folder or forks; otherwise a file
+}
 
 // deleteConversation removes the conversation from every bucket in it.Buckets: its
 // folder, its forks, its page, then its transcript and zip, so a run stopped part way
-// leaves it listed for the next run to delete again. Every path is checked first, and
-// nothing is deleted when a link or a stray file stands on the way to one.
-func deleteConversation(dest string, it pruneItem) error {
+// leaves it listed for the next run to delete again. Only the paths in checked are
+// deleted: one that appeared since, a continuation pushed by another computer perhaps,
+// was never looked at. The paths are checked again first, and nothing is deleted when a
+// link or a stray file now stands on the way to one.
+func deleteConversation(dest string, it pruneItem, checked []prunePath) error {
 	paths, err := prunePaths(dest, it)
-	if err == nil && len(paths) == 0 {
-		err = errNotFound
+	if err != nil {
+		return err
 	}
+	n := 0
 	for _, p := range paths {
-		if err != nil {
-			break
+		if !slices.Contains(checked, p) {
+			continue
 		}
-		err = removePath(p) // a checked folder or file; never follows a link inside one
+		if err := removePath(p.path, p.dir); err != nil {
+			return err
+		}
+		n++
 	}
-	return err
+	if n == 0 {
+		return errNotFound
+	}
+	return nil
 }
 
 // prunePaths are the paths of it that exist, in the order they are deleted, or an error
 // when a link or a stray file stands on the way to any of them.
-func prunePaths(dest string, it pruneItem) ([]string, error) {
+func prunePaths(dest string, it pruneItem) ([]prunePath, error) {
 	if !claude.IsSessionID(it.ID) {
 		return nil, fmt.Errorf("%q is not a conversation id", it.ID)
 	}
@@ -496,18 +532,19 @@ func prunePaths(dest string, it pruneItem) ([]string, error) {
 		}
 		dirs, files = append(dirs, bd...), append(files, bf...)
 	}
-	var out []string
-	for _, p := range append(dirs, files...) {
+	var out []prunePath
+	for i, p := range append(dirs, files...) {
 		if _, err := os.Lstat(p); err == nil {
-			out = append(out, p)
+			out = append(out, prunePath{p, i < len(dirs)})
 		}
 	}
 	return out, nil
 }
 
-// withoutPruned leaves out index rows of conversations on the deleted list, unless the
-// row is newer than the deletion: a conversation continued since is archived again. A
-// list that cannot be read leaves out nothing: the rows only list what is there.
+// withoutPruned leaves out index rows of conversations on the deleted list by the rule
+// push skips a local copy by, applied to the row's archived copy: one push archived
+// again, continued since it was pruned, stays listed. A row whose copy is gone is left
+// out. A list that cannot be read leaves out nothing: the rows only list what is there.
 func withoutPruned(dest string, rows []archive.Session) []archive.Session {
 	d, err := archive.LoadDeleted(dest)
 	if err != nil || len(d) == 0 {
@@ -515,8 +552,104 @@ func withoutPruned(dest string, rows []archive.Session) []archive.Session {
 	}
 	return slices.DeleteFunc(rows, func(r archive.Session) bool {
 		e, ok := d[strings.ToLower(r.ID)]
-		return ok && !e.Undone && !r.Updated.After(e.DeletedAt)
+		if !ok || e.Undone {
+			return false
+		}
+		if p := archivedCopy(dest, r.Bucket, r.ID); p != "" {
+			return notNewer(e, p)
+		}
+		if zp := zippedCopy(dest, r.Bucket, r.ID); zp != "" {
+			return !zippedTurnTime(zp, r.ID).After(e.LastAt) // dated by its index, as prune dates it
+		}
+		return true
 	})
+}
+
+// prunedHere reports whether push leaves this computer's transcript of id at path out
+// of the archive: id is on the deleted list, not undone, and the transcript holds no
+// turn newer than the deletion recorded. One continued since is archived again.
+func prunedHere(d map[string]archive.DeletedEntry, id, path string) bool {
+	e, ok := d[strings.ToLower(id)]
+	return ok && !e.Undone && notNewer(e, path)
+}
+
+// notNewer reports whether the transcript at path holds no turn after e's last. By the
+// turn's uuid when e has one: the transcript's last turn is it, and turns after it are
+// newer whatever their time. Otherwise by time - its last turn's, else its modification
+// time - no later than e's; one still to come is later, so the transcript is kept.
+func notNewer(e archive.DeletedEntry, path string) bool {
+	if e.LastUUID != "" {
+		if claude.LastUUID(path) == e.LastUUID {
+			return true
+		}
+		if claude.HasUUID(path, e.LastUUID) {
+			return false
+		}
+	}
+	at, ok := claude.LastTurnTime(path)
+	if !ok {
+		st, err := os.Stat(path)
+		if err != nil {
+			return false
+		}
+		at = st.ModTime()
+	}
+	return !at.After(e.LastAt)
+}
+
+// ageRuleEvery is how often the age rule runs on one computer: it dates every
+// archived conversation.
+const ageRuleEvery = 24 * time.Hour
+
+// pruneLastPath records when the age rule last ran on this computer.
+func pruneLastPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "prune-last.json")
+}
+
+// pruneLast is when the age rule last ran here; false for never, or a file it cannot read.
+func pruneLast(root string) (time.Time, bool) {
+	var v struct {
+		LastRun time.Time `json:"lastRun"`
+	}
+	raw, err := os.ReadFile(pruneLastPath(root))
+	if err != nil || json.Unmarshal(raw, &v) != nil || v.LastRun.IsZero() {
+		return time.Time{}, false
+	}
+	return v.LastRun, true
+}
+
+// runAgeRule deletes what `prune --older-than <keep-days>d --yes` would, gate and all,
+// at most once per ageRuleEvery here: with keep-days off it does nothing. Push runs it
+// holding the lock, once its own shard says it honours the deleted list; never from a
+// hook or a dry run. Each conversation deleted is logged.
+func runAgeRule(root, dest string, ret archive.Retention, now time.Time, logf func(string, ...any)) (deleted int, err error) {
+	if ret.KeepDays < archive.MinKeepDays {
+		return 0, nil
+	}
+	// A last run still to come is a clock that was ahead: it runs now, not a year on.
+	if last, ok := pruneLast(root); ok && !last.After(now) && now.Sub(last) < ageRuleEvery {
+		return 0, nil
+	}
+	// Recorded first, so a run refused or killed part way also waits a day.
+	data, _ := json.Marshal(map[string]time.Time{"lastRun": now})
+	if err := archive.WriteFileAtomic(pruneLastPath(root), append(data, '\n'), 0o644); err != nil {
+		return 0, err
+	}
+	plan, err := planPrune(root, dest, pruneSel{OlderThan: ret.KeepDays}, ret, now)
+	if err != nil || len(plan.Remove) == 0 {
+		return 0, err
+	}
+	failed := map[string]bool{}
+	deleted, _, err = applyPrune(dest, plan, now, func(it pruneItem, err error) {
+		failed[it.ID] = true
+		logf("WARN: %s: not pruned: %v", it.ID, err)
+	})
+	for _, it := range plan.Remove {
+		if deleted > 0 && !failed[it.ID] {
+			logf("PRUNE: %s (%s, last message %s, %s)", it.ID, printable(it.Project), it.LastAt.Local().Format("2006-01-02"), mb(it.Size))
+		}
+	}
+	return deleted, err
 }
 
 func undoPrune(dest string, ids []string, now time.Time) error {
