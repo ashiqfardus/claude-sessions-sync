@@ -624,16 +624,17 @@ claude-sessions prune <conversation id> --yes
   age rule. `config keep` lists it, and `config unkeep <same>` takes one off. A
   conversation with a copy in a kept project is kept. A project known by its git remote
   is kept by its folder names too, listed as "kept with remote": it stays kept when its
-  folder is deleted, moved or on a drive not plugged in, or its remote changes. That
-  also keeps another project with the same folder name. `config unkeep` takes the
-  remote and its folder names off together.
+  remote changes. A folder deleted, moved or on a drive not plugged in keeps the remote
+  it last had. The folder names also keep another project with the same folder name.
+  `config unkeep` takes the remote and its folder names off together; given a path, it
+  leaves another repository with the same folder name kept.
 - **Age rule:** `claude-sessions config keep-days 365` deletes, by itself, what
   `prune --older-than 365d --yes` would. It is off until you set it, refuses fewer than
   90 days, and `config keep-days off` stops it. Setting it shows the keep list it saved:
   run `claude-sessions prune --older-than 365d` to see what it deletes. A computer's
-  first run of it only notes the time and deletes nothing, so it starts a day later:
-  time to undo a wrong setting, and for a new computer's sync app to finish downloading
-  the archive. The setting is in the archive (`retention.json`), so every computer
+  first run of it, and its first run after the setting is lowered, only notes the time
+  and deletes nothing, so it starts a day later: time to undo a wrong setting, and for
+  a new computer's sync app to finish downloading the archive. The setting is in the archive (`retention.json`), so every computer
   follows the same one. While a sync app's conflict copy of it, such as
   `retention (1).json`, sits beside it, the age rule deletes nothing and logs a `WARN`:
   keep what the copy keeps with `config keep`, then delete it. Each computer runs it at

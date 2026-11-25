@@ -425,6 +425,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 				}
 			}
 			entry.Related = relatedRepos(entry.Path, prevShard.Projects[b.Name].Related, scan)
+			entry.Remote = carriedRemote(entry, prevShard.Projects[b.Name])
 			shard.Projects[b.Name] = entry
 			res.Projects++
 		}
@@ -629,6 +630,20 @@ func projectIdentity(b claude.Bucket, cwdFromNewest string, statePaths []string)
 
 	// Record it even when unroutable, so it is at least visible rather than absent.
 	return entry, entry.Path != "" || len(b.Transcripts) > 0
+}
+
+// carriedRemote is entry's remote as read, or prev's when entry's folder cannot be looked
+// at now - deleted, moved, on a drive not plugged in: a project kept by its remote stays
+// that project. A folder that is there is taken as it reads, another remote or none.
+func carriedRemote(entry, prev archive.Project) string {
+	// Never a path that is not local: looking at it would connect to its host.
+	if entry.Remote != "" || prev.Remote == "" || !identity.Local(entry.Path) || !samePath(entry.Path, prev.Path) {
+		return entry.Remote
+	}
+	if _, err := os.Stat(entry.Path); err == nil {
+		return entry.Remote
+	}
+	return prev.Remote
 }
 
 // readShard loads this machine's previous shard from the archive, or an empty one.

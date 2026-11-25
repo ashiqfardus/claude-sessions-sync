@@ -430,7 +430,7 @@ flags:
 		for _, e := range r.Keep {
 			fmt.Println("  " + keepLabel(e))
 		}
-		fmt.Printf("Each computer starts a day after its first run of it; run `claude-sessions prune --older-than %dd` to see what it deletes.\n", days)
+		fmt.Printf("Each computer starts a day after its first run with a new or lower setting; run `claude-sessions prune --older-than %dd` to see what it deletes.\n", days)
 		return nil
 
 	case "zip-sessions":
@@ -494,6 +494,12 @@ func sameEntry(a, b archive.KeepEntry) bool {
 		identity.SameRemote(a.Remote, b.Remote)
 }
 
+// sameKeep is sameEntry for a project's own entries, whose folder names name the remote
+// they were kept for: the same folder name kept for another remote is another entry.
+func sameKeep(a, b archive.KeepEntry) bool {
+	return sameEntry(a, b) && (a.ForRemote == b.ForRemote || identity.SameRemote(a.ForRemote, b.ForRemote))
+}
+
 // keepEntriesFor is what arg names: a conversation, or a project with its buckets. A
 // project found by its remote is stored by each bucket's folder name too, so it stays
 // kept once no bucket reads the remote: its folder deleted, moved or on a drive not
@@ -542,9 +548,7 @@ func keepOne(dest, arg string) error {
 	for _, e := range entries {
 		// A folder name kept for a remote is an entry of its own, so unkeeping that
 		// remote leaves the folder name kept by itself, or for another remote.
-		if slices.ContainsFunc(r.Keep, func(k archive.KeepEntry) bool {
-			return sameEntry(k, e) && (k.ForRemote == e.ForRemote || identity.SameRemote(k.ForRemote, e.ForRemote))
-		}) {
+		if slices.ContainsFunc(r.Keep, func(k archive.KeepEntry) bool { return sameKeep(k, e) }) {
 			fmt.Printf("Already kept: %s\n", keepLabel(e))
 			continue
 		}
@@ -569,16 +573,18 @@ func keepOne(dest, arg string) error {
 
 // unkeepOne removes every entry arg names: what keep would store for it, and an entry
 // as listed (a remote or a folder name), so one for a project no longer in the archive
-// can still go. A remote goes with the folder names kept for it, either way round.
+// can still go. Only that last matches a folder name kept for any remote: a path names
+// one repository, not another of the same folder name. A remote goes with the folder
+// names kept for it, either way round.
 func unkeepOne(dest, arg string) error {
 	r, err := archive.LoadRetention(dest)
 	if err != nil {
 		return err
 	}
 	entries, _, _, matchErr := keepEntriesFor(dest, arg)
-	entries = append(entries, archive.KeepEntry{Session: arg, Remote: arg, Leaf: arg})
+	listed := archive.KeepEntry{Session: arg, Remote: arg, Leaf: arg}
 	named := func(k archive.KeepEntry) bool {
-		return slices.ContainsFunc(entries, func(e archive.KeepEntry) bool { return sameEntry(k, e) })
+		return sameEntry(k, listed) || slices.ContainsFunc(entries, func(e archive.KeepEntry) bool { return sameKeep(k, e) })
 	}
 	var remotes []string
 	for _, k := range r.Keep {
@@ -586,13 +592,17 @@ func unkeepOne(dest, arg string) error {
 			remotes = append(remotes, k.Remote, k.ForRemote)
 		}
 	}
-	n := len(r.Keep)
+	var gone []archive.KeepEntry
 	r.Keep = slices.DeleteFunc(r.Keep, func(k archive.KeepEntry) bool {
-		return named(k) || slices.ContainsFunc(remotes, func(rm string) bool {
+		del := named(k) || slices.ContainsFunc(remotes, func(rm string) bool {
 			return identity.SameRemote(rm, k.Remote) || identity.SameRemote(rm, k.ForRemote)
 		})
+		if del {
+			gone = append(gone, k)
+		}
+		return del
 	})
-	if len(r.Keep) == n {
+	if len(gone) == 0 {
 		if matchErr != nil {
 			return matchErr
 		}
@@ -601,7 +611,9 @@ func unkeepOne(dest, arg string) error {
 	if err := archive.SaveRetention(dest, r); err != nil {
 		return err
 	}
-	fmt.Printf("No longer kept: %s\n", arg)
+	for _, k := range gone {
+		fmt.Printf("No longer kept: %s\n", keepLabel(k))
+	}
 	return nil
 }
 

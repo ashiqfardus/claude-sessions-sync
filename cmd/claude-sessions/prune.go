@@ -754,6 +754,8 @@ func pruneLastPath(root string) string {
 type pruneRun struct {
 	LastRun time.Time `json:"lastRun"`
 	Next    string    `json:"next,omitempty"` // where a run its budget cut short stopped; the next starts there
+	// KeepDays is the setting the run went by: one lower since is a first run again.
+	KeepDays int `json:"keepDays,omitempty"`
 }
 
 // pruneLast is the age rule's last run here; false for never, or a file it cannot read.
@@ -790,13 +792,18 @@ func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget 
 		return 0, nil
 	}
 	// Recorded first, so a run refused or killed part way also waits a day.
-	if err := savePruneLast(root, pruneRun{LastRun: now, Next: last.Next}); err != nil {
+	if err := savePruneLast(root, pruneRun{LastRun: now, Next: last.Next, KeepDays: ret.KeepDays}); err != nil {
 		return 0, err
 	}
-	// The first run here only records its time: a day to undo a wrong keep-days, and
-	// for the sync app to finish filling a new computer's view of the archive.
-	if !ok {
+	// The first run here, or the first since keep-days was lowered, only records its
+	// time: a day to undo a wrong keep-days, and for the sync app to finish filling a
+	// new computer's view of the archive. One recorded without its setting is a first.
+	switch {
+	case !ok || last.KeepDays == 0:
 		logf("KEEP-DAYS: the first run here deletes nothing; deleting starts with the next, a day on")
+		return 0, nil
+	case ret.KeepDays < last.KeepDays:
+		logf("KEEP-DAYS: keep-days went down from %d to %d, so this run deletes nothing; deleting starts with the next, a day on", last.KeepDays, ret.KeepDays)
 		return 0, nil
 	}
 	// A conflict copy may hold a keep entry the file read lost.
@@ -846,7 +853,7 @@ func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget 
 		}
 	}
 	if next != last.Next {
-		if err := savePruneLast(root, pruneRun{LastRun: now, Next: next}); err != nil {
+		if err := savePruneLast(root, pruneRun{LastRun: now, Next: next, KeepDays: ret.KeepDays}); err != nil {
 			logf("WARN: %s: %v", pruneLastPath(root), err)
 		}
 	}
@@ -862,7 +869,7 @@ func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget 
 func othersClock(dest string) (bound time.Time, machine string, pushed time.Time) {
 	shards, _, _ := archive.ReadShards(dest)
 	for name, s := range shards {
-		if !strings.EqualFold(name, machineName()) && s.LastPush.After(pushed) {
+		if !isMe(name) && s.LastPush.After(pushed) { // a former name's shard has this clock's time
 			machine, pushed = name, s.LastPush
 		}
 	}

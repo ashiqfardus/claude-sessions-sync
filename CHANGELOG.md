@@ -23,11 +23,12 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   it counts days by no later than 25 hours after the newest other computer's last push,
   so a clock running ahead deletes nothing young, and a computer off for a long time
   pauses deletion of conversations newly due (`machines --forget` one no longer used).
-  A computer's first run of it only notes the time, so it starts a day later, and
-  setting it shows the keep list and the `prune --older-than <N>d` that previews it. It
-  deletes nothing while a sync app's conflict copy of `retention.json` sits beside it.
-  Nothing on any computer is touched.
-  Deleting waits until every computer runs this version and has pushed once; the older
+  A computer's first run of it, or after it is lowered, only notes the time, so it
+  starts a day later, and setting it shows the keep list and the `prune --older-than
+  <N>d` that previews it. It deletes nothing while a sync app's conflict copy of
+  `retention.json` sits beside it. Nothing on any computer is touched. A project
+  folder that is gone keeps the git remote it last had in the manifest. Deleting
+  waits until every computer runs this version and has pushed once; the older
   PowerShell scripts are not supported alongside pruning and do not hold it back, so a
   computer still running them uploads its own copies of pruned conversations again.
 - **Idle conversations are zipped.** An archived conversation unchanged for 30 days, and

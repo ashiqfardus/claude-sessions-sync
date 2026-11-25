@@ -207,40 +207,105 @@ func TestKeepSurvivesForgettingTheMachineWithTheRemote(t *testing.T) {
 
 const remoteOnlyID = "bbbbbbbb-1111-4111-8111-0000000000b1"
 
-// ranYesterday records an age-rule run 25 hours ago, so the next push's is due.
+// ranYesterday records an age-rule run with keep-days 90 25 hours ago, so the next
+// push's is due.
 func ranYesterday(t *testing.T, claudeDir string) {
 	t.Helper()
-	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour)})
+	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour), KeepDays: 90})
 }
 
-// C1: a project kept by its remote, on the one computer that has it, stays kept once no
-// bucket reads that remote any more - its checkout deleted, moved or unplugged - as keep
-// stored its folder name too. The age rule must not then delete it.
-func TestKeptByRemoteStaysKeptOnceItsFolderIsGone(t *testing.T) {
-	claudeDir, dest := pruneFixture(t)
-	repo := filepath.Join(t.TempDir(), "web-app2")
-	writeFile(t, filepath.Join(repo, ".git", "config"), "[remote \"origin\"]\n\turl = git@github.com:example/web-app2.git\n")
+const (
+	remoteA = "git@github.com:example/web-app2.git"
+	remoteB = "git@github.com:example/web-app2-renamed.git"
+)
+
+// webApp2 is pruneFixture with remoteOnlyID, 200 days old, in a checkout web-app2 with
+// remoteA, on this computer only, and pushed.
+func webApp2(t *testing.T) (claudeDir, dest, repo, bucket string) {
+	t.Helper()
+	claudeDir, dest = pruneFixture(t)
+	repo = filepath.Join(t.TempDir(), "web-app2")
+	writeFile(t, filepath.Join(repo, ".git", "config"), "[remote \"origin\"]\n\turl = "+remoteA+"\n")
 	localConv(t, claudeDir, repo, remoteOnlyID, time.Now().AddDate(0, 0, -200), "q1", "q2")
 	pushHere(t, claudeDir, pushOpts{})
-	for _, args := range [][]string{{"keep", repo}, {"keep-days", "90"}} {
-		if out, err := captured(t, func() error { return cmdConfig(append([]string{"--claude-dir", claudeDir}, args...)) }); err != nil {
-			t.Fatalf("config %v: %v\n%s", args, err, out)
+	return claudeDir, dest, repo, claude.Slug(repo)
+}
+
+func shardRemote(t *testing.T, dest, bucket string) string {
+	t.Helper()
+	shards, _, err := archive.ReadShards(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return shards["you-mac"].Projects[bucket].Remote
+}
+
+// C1: a project kept by its remote, on the one computer that has it, stays kept once its
+// checkout is deleted, moved or unplugged, or its remote changes. The age rule must not
+// then delete it. A deleted checkout keeps the remote its bucket last read; a changed
+// remote is read as it is, and the folder name keep stored keeps the project.
+func TestKeptByRemoteStaysKeptOnceItsFolderIsGone(t *testing.T) {
+	for _, c := range []struct {
+		name, remote string // the bucket's remote after the change
+		change       func(repo string)
+	}{
+		{"checkout deleted", remoteA, func(repo string) {
+			if err := os.RemoveAll(repo); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"remote changed", remoteB, func(repo string) {
+			writeFile(t, filepath.Join(repo, ".git", "config"), "[remote \"origin\"]\n\turl = "+remoteB+"\n")
+		}},
+	} {
+		claudeDir, dest, repo, bucket := webApp2(t)
+		for _, args := range [][]string{{"keep", repo}, {"keep-days", "90"}} {
+			if out, err := captured(t, func() error { return cmdConfig(append([]string{"--claude-dir", claudeDir}, args...)) }); err != nil {
+				t.Fatalf("config %v: %v\n%s", args, err, out)
+			}
+		}
+		c.change(repo)
+		ranYesterday(t, claudeDir)
+		pushHere(t, claudeDir, pushOpts{})
+		if got := shardRemote(t, dest, bucket); got != c.remote {
+			t.Errorf("%s: the bucket's remote is %q, want %q", c.name, got, c.remote)
+		}
+		if archivedCopy(dest, "-Users-you-dev-api", oldAPI) != "" {
+			t.Fatalf("%s: the age rule did not run: nothing is tested", c.name)
+		}
+		if archivedCopy(dest, bucket, remoteOnlyID) == "" {
+			t.Errorf("%s: the kept project was deleted: %q", c.name, pruneLines(t, claudeDir))
 		}
 	}
+}
+
+// A checkout that cannot be looked at now - deleted, moved, on a drive not plugged in -
+// keeps the remote its bucket last recorded; one that is there is taken as it reads: no
+// git, or another remote.
+func TestPushCarriesTheRemoteOfACheckoutGone(t *testing.T) {
+	claudeDir, dest, repo, bucket := webApp2(t)
+	if err := os.RemoveAll(filepath.Join(repo, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	pushHere(t, claudeDir, pushOpts{})
+	if got := shardRemote(t, dest, bucket); got != "" {
+		t.Errorf("a checkout with no git now: remote %q, want none", got)
+	}
+
+	claudeDir, dest, repo, bucket = webApp2(t)
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	ranYesterday(t, claudeDir)
+	for i := 0; i < 2; i++ { // and again from the carried one
+		pushHere(t, claudeDir, pushOpts{})
+		if got := shardRemote(t, dest, bucket); got != remoteA {
+			t.Errorf("push %d with the checkout gone: remote %q, want %q", i+1, got, remoteA)
+		}
+	}
+	writeFile(t, filepath.Join(repo, ".git", "config"), "[remote \"origin\"]\n\turl = "+remoteB+"\n")
 	pushHere(t, claudeDir, pushOpts{})
-	bucket := claude.Slug(repo)
-	if shards, _, _ := archive.ReadShards(dest); shards["you-mac"].Projects[bucket].Remote != "" {
-		t.Fatal("the bucket still reads the remote: nothing is tested")
-	}
-	if archivedCopy(dest, "-Users-you-dev-api", oldAPI) != "" {
-		t.Fatal("the age rule did not run: nothing is tested")
-	}
-	if archivedCopy(dest, bucket, remoteOnlyID) == "" {
-		t.Errorf("the kept project was deleted once its folder was gone: %q", pruneLines(t, claudeDir))
+	if got := shardRemote(t, dest, bucket); got != remoteB {
+		t.Errorf("the checkout back with another remote: remote %q, want %q", got, remoteB)
 	}
 }
 
@@ -262,7 +327,10 @@ func TestKeepByRemoteStoresItsFolderName(t *testing.T) {
 		return out
 	}
 	both := []archive.KeepEntry{{Remote: remote}, {Leaf: "web-app2", ForRemote: remote}}
-	for _, unkeep := range []string{"web-app2", "/Users/you/dev/web-app2", remote} {
+	for _, c := range []struct {
+		unkeep     string
+		remoteGone bool // no bucket reads the remote any more
+	}{{"web-app2", true}, {remote, true}, {"/Users/you/dev/web-app2", false}} {
 		writeJSON(t, filepath.Join(archive.ManifestDir(dest), "you-mac.json"),
 			archive.Shard{SchemaVersion: archive.SchemaVersion, Machine: "you-mac", Projects: withRemote(remote)})
 		config("keep", "web-app2")
@@ -273,13 +341,51 @@ func TestKeepByRemoteStoresItsFolderName(t *testing.T) {
 			!strings.Contains(out, "project folder web-app2, kept with remote "+remote+"\n") {
 			t.Errorf("config keep does not list both clearly:\n%s", out)
 		}
-		// The folder is gone: no bucket reads the remote any more.
-		writeJSON(t, filepath.Join(archive.ManifestDir(dest), "you-mac.json"),
-			archive.Shard{SchemaVersion: archive.SchemaVersion, Machine: "you-mac", Projects: withRemote("")})
-		config("unkeep", unkeep)
-		if r, _ := archive.LoadRetention(dest); len(r.Keep) != 0 {
-			t.Errorf("unkeep %s left %+v", unkeep, r.Keep)
+		if c.remoteGone {
+			writeJSON(t, filepath.Join(archive.ManifestDir(dest), "you-mac.json"),
+				archive.Shard{SchemaVersion: archive.SchemaVersion, Machine: "you-mac", Projects: withRemote("")})
 		}
+		out := config("unkeep", c.unkeep)
+		if r, _ := archive.LoadRetention(dest); len(r.Keep) != 0 {
+			t.Errorf("unkeep %s left %+v", c.unkeep, r.Keep)
+		}
+		for _, e := range both {
+			if !strings.Contains(out, "No longer kept: "+keepLabel(e)+"\n") {
+				t.Errorf("unkeep %s does not name %s:\n%s", c.unkeep, keepLabel(e), out)
+			}
+		}
+	}
+}
+
+// Two different repositories share the folder name web-app, each kept by its path:
+// unkeeping one by its path leaves the other kept, its folder name too. Only a name as
+// listed, which names both, takes both off.
+func TestUnkeepByPathKeepsTheOtherRemote(t *testing.T) {
+	const rA, rC = "git@github.com:example/web-app.git", "git@github.com:other/web-app.git"
+	claudeDir, dest := keepFixture(t, map[string]archive.Project{
+		"-Users-you-dev-web-app": {Path: "/Users/you/dev/web-app", Leaf: "web-app", Remote: rA, Machine: "you-mac"},
+		"e--web-app":             {Path: `E:\web-app`, Leaf: "web-app", Remote: rC, Machine: "LAP-2"},
+	})
+	config := func(args ...string) {
+		t.Helper()
+		if out, err := captured(t, func() error { return cmdConfig(append([]string{"--claude-dir", claudeDir}, args...)) }); err != nil {
+			t.Fatalf("config %v: %v\n%s", args, err, out)
+		}
+	}
+	config("keep", "/Users/you/dev/web-app")
+	config("keep", `E:\web-app`)
+	config("unkeep", "/Users/you/dev/web-app")
+	r, _ := archive.LoadRetention(dest)
+	if want := []archive.KeepEntry{{Remote: rC}, {Leaf: "web-app", ForRemote: rC}}; !reflect.DeepEqual(r.Keep, want) {
+		t.Errorf("unkeep of one by its path left %+v, want %+v", r.Keep, want)
+	}
+	projects, _ := projectsOf(dest)
+	if !kept(r, otherID, []string{"e--web-app"}, projects) {
+		t.Error("the other repository is not kept")
+	}
+	config("unkeep", "web-app")
+	if r, _ := archive.LoadRetention(dest); len(r.Keep) != 0 {
+		t.Errorf("unkeep web-app left %+v", r.Keep)
 	}
 }
 
@@ -1498,7 +1604,7 @@ func TestAgeRuleDeletesOldOnce(t *testing.T) {
 	// A day later it does; so it does when the last run is dated ahead, by a wrong clock.
 	for _, at := range []time.Time{time.Now().Add(-25 * time.Hour), time.Now().AddDate(1, 0, 0)} {
 		conv(t, dest, "-Users-you-dev-api", oldAPI, time.Now().AddDate(0, 0, -200), "p1")
-		writeJSON(t, pruneLastPath(claudeDir), map[string]time.Time{"lastRun": at})
+		writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: at, KeepDays: 90})
 		pushHere(t, claudeDir, pushOpts{})
 		if archivedCopy(dest, "-Users-you-dev-api", oldAPI) != "" {
 			t.Errorf("last run %v: the age rule did not run again", at)
@@ -1724,7 +1830,7 @@ func TestSweepPushStopsTheAgeRuleAtItsBudget(t *testing.T) {
 		archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
 		t.Errorf("the sweep's age rule did not stop at its budget:\n%s", log)
 	}
-	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour), Next: oldWeb})
+	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour), Next: oldWeb, KeepDays: 90})
 	pushHere(t, claudeDir, pushOpts{})
 	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
 		t.Error("the next run, from a terminal, did not delete what was left")
@@ -1948,6 +2054,59 @@ func TestAgeRuleDatesByTheOthersWhenThisClockIsAhead(t *testing.T) {
 			held != "" && (!strings.Contains(held, bound) || !strings.Contains(held, now.Local().Format("2006-01-02 15:04")) || !strings.Contains(held, "LAP-2")) {
 			t.Errorf("%s: logged %q, want one line naming %s, LAP-2 and this clock's time only when it holds back", c.name, held, bound)
 		}
+	}
+}
+
+// A shard under a name this computer went by before is not another computer: its
+// lastPush, from this clock, bounds nothing.
+func TestAgeRuleFormerNameIsNotAnotherClock(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	ahead := time.Now().Add(365 * 24 * time.Hour)
+	shards, _, _ := archive.ReadShards(dest)
+	lap := shards["LAP-2"]
+	lap.LastPush = time.Now().UTC().Truncate(time.Hour)
+	writeJSON(t, filepath.Join(archive.ManifestDir(dest), "LAP-2.json"), lap)
+	writeJSON(t, filepath.Join(archive.ManifestDir(dest), "old-mac.json"),
+		archive.Shard{SchemaVersion: archive.SchemaVersion, Machine: "old-mac", HonorsDeleted: true, LastPush: ahead.UTC().Truncate(time.Hour)})
+	was := formerMachines
+	formerMachines = []string{"old-mac"}
+	t.Cleanup(func() { formerMachines = was })
+	ret, _ := archive.LoadRetention(dest)
+	if n, err := runAgeRule(claudeDir, dest, ret, ahead, 0, func(string, ...any) {}); n != 1 || err != nil {
+		t.Errorf("deleted %d, %v: want the 120-day-old one", n, err)
+	}
+	if archivedCopy(dest, "e--web-app", newWeb) == "" {
+		t.Error("the 10-day-old conversation was deleted: a former name's shard served as another clock")
+	}
+}
+
+// M7: keep-days lowered while the rule is on gets a day's grace too: the next run only
+// records its time, the one after deletes what the lower setting makes due. Raised, it
+// waits for nothing.
+func TestAgeRuleWaitsADayAfterKeepDaysIsLowered(t *testing.T) {
+	claudeDir, dest := ageFixture(t) // oldWeb 120 days old: due at 90, not at 365
+	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour), KeepDays: 365})
+	var logged []string
+	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	if n, err := ageRule(t, claudeDir, dest, logf); n != 0 || err != nil || archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
+		t.Fatalf("the first run at 90 after 365 deleted %d, %v", n, err)
+	}
+	if r, ok := pruneLast(claudeDir); !ok || r.KeepDays != 90 || time.Since(r.LastRun) > time.Minute {
+		t.Errorf("prune-last.json %+v %v: want this run, at 90", r, ok)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "365") || !strings.Contains(logged[0], "90") {
+		t.Errorf("logged %q, want one line naming 365 and 90", logged)
+	}
+	ret, _ := archive.LoadRetention(dest)
+	if n, err := runAgeRule(claudeDir, dest, ret, time.Now().Add(25*time.Hour), 0, func(string, ...any) {}); n != 1 || err != nil {
+		t.Errorf("the next day's run deleted %d, %v", n, err)
+	}
+
+	claudeDir, dest = ageFixture(t)
+	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour), KeepDays: 90})
+	writeJSON(t, archive.RetentionPath(dest), archive.Retention{KeepDays: 100})
+	if n, err := ageRule(t, claudeDir, dest, func(string, ...any) {}); n != 1 || err != nil {
+		t.Errorf("raised to 100: deleted %d, %v: want the 120-day-old one", n, err)
 	}
 }
 
