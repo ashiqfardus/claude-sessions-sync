@@ -1,6 +1,6 @@
 # Browser panel: design
 
-Date: 2026-11-25. Status: draft for the owner's approval.
+Date: 2026-11-25. Status: ready for the owner's approval.
 Mockups (approved by the owner 2026-11-25): https://claude.ai/artifact/EhxAMwwqmLs72xChPRLJ3J.
 The mockups are private to the owner; the screens are described below.
 
@@ -38,7 +38,8 @@ someone who has never used the command line, because the setup page
 - Remote access. The panel is reachable from this computer only. Phones read the
   existing pages in the sync client, as today.
 - A desktop app, a tray icon, or a background service. The scheduled sweep already
-  backs up in the background.
+  backs up in the background; the panel runs only while it is open (see the shortcut
+  under Decisions).
 - Accounts or multiple users. It runs as the user who started it, with their files.
 - Editing conversations, or changing anything the CLI cannot change.
 - Shell completion setup.
@@ -258,4 +259,18 @@ them, and is large enough to deserve its own review and release.
   `open`, `xdg-open` or `start` is a private file (mode 0600, in the user's temp
   folder). That file redirects to the address with the key and is deleted after use.
   Other users on the computer cannot read it from the process list.
-- **Opening it without a terminal: OPEN, the owner's call.**
+- **Opening it without a terminal (the owner's choice, 2026-11-25): a shortcut that
+  stops by itself.**
+  - **Where the shortcut goes:** `claude-sessions install` adds a "claude-sessions
+    panel" shortcut, and `uninstall` removes it:
+    - Windows: the Start menu, launching with no console window (the same windowless
+      start the sweep uses, `internal/hostagent`);
+    - macOS: `~/Applications`, a small app made with the built-in `osacompile`;
+    - Linux: a `.desktop` entry in `~/.local/share/applications`.
+  - **What it runs:** `claude-sessions ui --from-shortcut`. A second launch while the
+    panel is running just opens a new tab on the running one.
+  - **When it stops:** the page sends a heartbeat every 30 seconds. Started from the
+    shortcut, the panel stops 10 minutes after the last heartbeat, never while a job is
+    running. A Stop panel button in Settings stops it at once.
+  - **Started from a terminal:** `claude-sessions ui` keeps running until Ctrl-C, as
+    above.
