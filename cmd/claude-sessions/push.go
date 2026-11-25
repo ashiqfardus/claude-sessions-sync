@@ -1037,9 +1037,8 @@ type bothSeen struct {
 }
 
 // bothSettle is how long a zip and the loose files beside it must have stood as they
-// are before a sweep removes or rewrites either: longer than a sync client takes to
-// carry another machine's zipping or unzipping across.
-const bothSettle = time.Hour
+// are before a sweep removes or rewrites either.
+const bothSettle = 24 * time.Hour // a day: outlasts a lid closed mid-upload, and costs only space
 
 // bothState is a zip and the loose files beside it, by stat alone: the zip's size and
 // time, then each loose file's name and size, sorted. "" when either is missing.

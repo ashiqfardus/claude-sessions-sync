@@ -88,9 +88,15 @@ func bothSeenFile(m machine) string {
 	return filepath.Join(m.claudeDir, "session-sync-base", "both-seen.json")
 }
 
-// anHourOn makes each pair m's sweeps recorded seen two hours earlier: its next sweep
+// aDayOn makes each pair m's sweeps recorded seen 25 hours earlier: its next sweep
 // finds a state it has seen long enough to act on.
-func anHourOn(t *testing.T, m machine) {
+func aDayOn(t *testing.T, m machine) {
+	t.Helper()
+	ageRecord(t, m, 25*time.Hour)
+}
+
+// ageRecord makes each pair m's sweeps recorded seen by earlier.
+func ageRecord(t *testing.T, m machine, by time.Duration) {
 	t.Helper()
 	var seen map[string]struct {
 		State string    `json:"state"`
@@ -104,7 +110,7 @@ func anHourOn(t *testing.T, m machine) {
 		t.Fatalf("the record cannot be read (%v): %s", err, data)
 	}
 	for k, e := range seen {
-		e.Since = e.Since.Add(-2 * time.Hour)
+		e.Since = e.Since.Add(-by)
 		seen[k] = e
 	}
 	b, _ := json.Marshal(seen)
@@ -113,7 +119,7 @@ func anHourOn(t *testing.T, m machine) {
 
 // A zipped the conversation; on B the zip has arrived and A's deletions have not. B's
 // sweep, seeing the zip beside loose files for the first time, changes nothing. A's
-// deletions land before its next sweep, an hour on, which finds A's zip alone: it
+// deletions land before its sweep a day on, which finds A's zip alone: it
 // holds the conversation, the tool output only the archive had and every turn. Also
 // when A's deletion of the transcript came first.
 func TestSharedBucketKeepsAZipWhoseDeletionsAreOnTheWay(t *testing.T) {
@@ -142,7 +148,7 @@ func TestSharedBucketKeepsAZipWhoseDeletionsAreOnTheWay(t *testing.T) {
 				t.Errorf("B's first sight of the zip beside loose files changed the bucket:\n%s\nwas\n%s", after, before)
 			}
 			deletionsLand(files)
-			anHourOn(t, b)
+			aDayOn(t, b)
 			b.run(t, "push", "--no-html")
 
 			if st, err := os.Stat(convzip.Path(bucket, forkSession)); err != nil || !os.SameFile(zst, st) {
@@ -158,7 +164,7 @@ func TestSharedBucketKeepsAZipWhoseDeletionsAreOnTheWay(t *testing.T) {
 
 // The other ordering. A went on with the zipped conversation and unzipped it: on B the
 // loose files A wrote have arrived, A's removal of the zip and its new turns have not.
-// B's sweep changes nothing on that first sight; by its next, an hour on, A's writes
+// B's sweep changes nothing on that first sight; by its sweep a day on, A's writes
 // have landed and the zip is gone: every turn and every folder file is still there,
 // the tool output only the zip held among them.
 func TestSharedBucketKeepsLooseFilesWhoseUnzipIsOnTheWay(t *testing.T) {
@@ -183,17 +189,17 @@ func TestSharedBucketKeepsLooseFilesWhoseUnzipIsOnTheWay(t *testing.T) {
 	os.Remove(zp) // A's writes land: the zip goes, its continuation arrives
 	loose := filepath.Join(bucket, forkSession+".jsonl")
 	mustWrite(t, loose, sessionLines(repo, "u1", "m1", "w1"))
-	anHourOn(t, b)
+	aDayOn(t, b)
 	b.run(t, "push", "--no-html")
 
 	holdsConversation(t, bucket, []string{"u1", "m1", "w1"}, map[string]string{"subagents/agent-a1.jsonl": `"s1"`, "tool-results/r0.txt": "archived only"})
 }
 
 // A zip with loose files beside it that stay so - a run here killed after the zip was
-// in place, before the loose files went - is settled by the first sweep at least an
-// hour after that state was first seen, and not before: the loose files go, the zip
-// stays.
-func TestALeftoverBesideItsZipIsSettledAnHourOn(t *testing.T) {
+// in place, before the loose files went - is settled by the first sweep at least a day
+// after that state was first seen, and not before, even hours on: the loose files go,
+// the zip stays.
+func TestALeftoverBesideItsZipIsSettledADayOn(t *testing.T) {
 	archive, mac, repo := pushedSession(t)
 	ageSession(t, mac, repo, 31*day)
 	bucket := archiveBucket(archive, repo)
@@ -205,10 +211,12 @@ func TestALeftoverBesideItsZipIsSettledAnHourOn(t *testing.T) {
 	before := tree(t, bucket)
 	mac.run(t, "push", "--no-html")
 	mac.run(t, "push", "--no-html")
+	ageRecord(t, mac, 2*time.Hour)
+	mac.run(t, "push", "--no-html")
 	if after := tree(t, bucket); after != before {
-		t.Fatalf("a sweep within the hour changed the leftover:\n%s\nwas\n%s", after, before)
+		t.Fatalf("a sweep within the day changed the leftover:\n%s\nwas\n%s", after, before)
 	}
-	anHourOn(t, mac)
+	aDayOn(t, mac)
 	mac.run(t, "push", "--no-html")
 	onlyZip(t, bucket)
 	if st, err := os.Stat(convzip.Path(bucket, forkSession)); err != nil || !os.SameFile(zst, st) {
