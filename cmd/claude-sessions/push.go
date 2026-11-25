@@ -830,6 +830,13 @@ func (h *heldRecord) hit(dest, bucket, id string, src os.FileInfo) bool {
 	return in != nil && in.Size() == s.InSize && archive.SameMTime(in.ModTime(), s.InMTime)
 }
 
+// leftTo reports whether the transcript is unchanged since push left it to a copy that
+// is still archived. That copy may have grown since: it is only replaced by one with
+// more.
+func (h *heldRecord) leftTo(dest, bucket, id string, src os.FileInfo) bool {
+	return h.known(bucket, id, src) && archivedCopy(dest, h.m[bucket+"/"+id].In, id) != ""
+}
+
 // known reports whether the transcript is unchanged since push found it held: its
 // lines were looked through for work folders then.
 func (h *heldRecord) known(bucket, id string, src os.FileInfo) bool {
@@ -841,7 +848,7 @@ func (h *heldRecord) known(bucket, id string, src os.FileInfo) bool {
 }
 
 // covers reports whether one of the others holds every turn of the transcript at path,
-// and records which.
+// and everything in its own folder, and records which.
 func (h *heldRecord) covers(dest, bucket, id, path string, src os.FileInfo, others []string) bool {
 	if h == nil {
 		return false
@@ -854,7 +861,10 @@ func (h *heldRecord) covers(dest, bucket, id, path string, src os.FileInfo, othe
 	for _, other := range others {
 		if p := archivedCopy(dest, other, id); p != "" {
 			in := archive.StatOrNil(p)
-			if r := claude.Compare(path, p); in != nil && (r == claude.Same || r == claude.Behind) {
+			// The folder too: a copy archived by a build that left subagents behind
+			// lacks this one's.
+			if r := claude.Compare(path, p); in != nil && (r == claude.Same || r == claude.Behind) &&
+				folderHeld(filepath.Join(filepath.Dir(path), id), filepath.Join(archive.ProjectsDir(dest), other, id)) == nil {
 				h.m[key] = heldStat{Size: src.Size(), MTime: src.ModTime(), In: other, InSize: in.Size(), InMTime: in.ModTime()}
 				h.dirty = true
 				return true

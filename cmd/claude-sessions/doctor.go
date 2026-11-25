@@ -397,7 +397,7 @@ func liveness(root, dest string, buckets []claude.Bucket) []check {
 			// bucket's archived copy holds in whole.
 			fork := archive.StatOrNil(forkPath(dest, b.Name, t.ID, machineName()))
 			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) &&
-				!held.hit(dest, b.Name, t.ID, src) {
+				!held.leftTo(dest, b.Name, t.ID, src) {
 				pending = append(pending, b.Name+"/"+t.ID)
 			}
 		}

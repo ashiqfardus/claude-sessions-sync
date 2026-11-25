@@ -229,11 +229,66 @@ func TestCleanIgnoresAPlantedCopy(t *testing.T) {
 func TestCleanDeletesNothingWithAnUnreadableManifest(t *testing.T) {
 	archive, _, win, macRepo, _ := continuedOnWin(t)
 	mustWrite(t, filepath.Join(archive, "manifest", "OTHER.json"), "{\"machine\": \"OTH")
+	if out, _ := win.clean(t); !strings.Contains(out, "Nothing can be deleted") || strings.Contains(out, "clean --yes") {
+		t.Errorf("the preview offers what --yes will refuse:\n%s", out)
+	}
 	out, err := win.clean(t, "--yes")
-	if err == nil || !strings.Contains(out, "nothing deleted") {
-		t.Errorf("clean went ahead (err %v):\n%s", err, out)
+	if err == nil || !strings.Contains(out, "nothing deleted") || strings.Contains(out, "Deleting") {
+		t.Errorf("clean went ahead, or said it would (err %v):\n%s", err, out)
 	}
 	if archived(t, archive, macRepo) == "" {
 		t.Fatal("clean deleted with a manifest it could not read")
+	}
+}
+
+// importedOnWin is MAC's session, with a subagent, imported on WIN and left as it was.
+func importedOnWin(t *testing.T) (archive string, mac, win machine, macRepo, winRepo string) {
+	t.Helper()
+	archive = t.TempDir()
+	mac, win = newMachine(t, "MAC", archive), newMachine(t, "WIN", archive)
+	macRepo = gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	winRepo = gitRepo(t, filepath.Join(t.TempDir(), "work", "api"))
+	mustWrite(t, mac.session(macRepo), sessionLines(macRepo, "u1", "m1"))
+	mustWrite(t, filepath.Join(filepath.Dir(mac.session(macRepo)), forkSession, "subagents", "agent-a1.jsonl"), sessionLines(macRepo, "s1"))
+	mac.run(t, "push", "--no-html")
+	away(t, macRepo, func() { win.run(t, "import", "--search-root", filepath.Dir(winRepo), "--no-plugins") })
+	return
+}
+
+// A copy archived by a build that left subagents out does not hold WIN's: WIN archives
+// its own, folder and all.
+func TestHeldTakesTheSessionFolderToo(t *testing.T) {
+	archive, _, win, macRepo, winRepo := importedOnWin(t)
+	if err := os.RemoveAll(filepath.Join(archive, "projects", claude.Slug(macRepo), forkSession)); err != nil {
+		t.Fatal(err)
+	}
+	win.run(t, "push", "--no-html")
+	if archived(t, archive, winRepo) == "" {
+		t.Fatal("WIN left its session to a copy that lacks its subagent")
+	}
+	if _, err := os.Stat(filepath.Join(archive, "projects", claude.Slug(winRepo), forkSession, "subagents", "agent-a1.jsonl")); err != nil {
+		t.Errorf("WIN's subagent is not archived: %v", err)
+	}
+}
+
+// MAC goes on with the session: the copy WIN left it to grows, and still holds WIN's.
+func TestDoctorTrustsAHeldCopyThatGrew(t *testing.T) {
+	archive, _, win, macRepo, winRepo := importedOnWin(t)
+	ago := time.Now().Add(-time.Hour)
+	os.Chtimes(win.session(winRepo), ago, ago)
+	win.run(t, "push", "--no-html")
+	if archived(t, archive, winRepo) != "" {
+		t.Fatal("setup: WIN archived the session it imported")
+	}
+	macCopy := filepath.Join(archive, "projects", claude.Slug(macRepo), forkSession+".jsonl")
+	f, err := os.OpenFile(macCopy, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(sessionLines(macRepo, "m2"))
+	f.Close()
+	later(t, macCopy)
+	if out := win.doctor(t); strings.Contains(out, "not in the archive") {
+		t.Errorf("doctor reports the session as unarchived because MAC's copy grew:\n%s", out)
 	}
 }

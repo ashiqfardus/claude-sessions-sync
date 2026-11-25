@@ -13,7 +13,8 @@ to see the space duplicate copies take, and `clean --yes` to free it.
   was archived again by this computer's next push, under its own folder for the
   project, so a conversation used on two computers was stored twice: about half of one
   real archive. Push now leaves a session alone when another folder's copy already
-  holds every turn of it, and archives it here only once it is continued here.
+  holds every turn of it, and its subagent and tool-output files, and archives it here
+  only once it is continued here.
   `session-sync-base/held.json` remembers those, so they are compared again only when
   they change.
 

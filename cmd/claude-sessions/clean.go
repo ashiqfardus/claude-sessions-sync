@@ -58,7 +58,7 @@ func cmdClean(args []string) error {
 	}
 	if plan.Unread != "" {
 		// A machine whose manifest cannot be read may be one that uploads them again.
-		return fmt.Errorf("nothing deleted: %s; run clean again once it has synced", plan.Unread)
+		return fmt.Errorf("nothing deleted: %s", plan.Unread)
 	}
 
 	var freed int64
@@ -113,7 +113,7 @@ func planClean(dest string, progress bool) cleanPlan {
 	shards, bad, err := archive.ReadShards(dest)
 	switch {
 	case err != nil:
-		plan.Unread = err.Error()
+		plan.Unread = "cannot read manifest: " + err.Error()
 	case len(bad) > 0:
 		plan.Unread = "cannot read manifest/" + strings.Join(bad, ", manifest/")
 	}
@@ -140,6 +140,13 @@ func planClean(dest string, progress bool) cleanPlan {
 	for n, id := range ids {
 		if progress && n%25 == 0 {
 			fmt.Fprintf(os.Stderr, "\rcomparing copies: %d/%d", n, len(ids))
+		}
+		// A bucket named twice - a second file whose id differs only in case, or folders
+		// whose names differ only in case on a case-sensitive drive - is one copy seen
+		// twice, or a planted twin of a listed bucket: either could have the real copy
+		// deleted for itself. Such a session is left alone.
+		if namedTwice(holders[id]) {
+			continue
 		}
 		type cp struct {
 			bucket, path string
@@ -226,6 +233,17 @@ func planClean(dest string, progress bool) cleanPlan {
 	return plan
 }
 
+func namedTwice(buckets []string) bool {
+	seen := map[string]bool{}
+	for _, b := range buckets {
+		if seen[strings.ToLower(b)] {
+			return true
+		}
+		seen[strings.ToLower(b)] = true
+	}
+	return false
+}
+
 func inverse(r claude.Relation) claude.Relation {
 	switch r {
 	case claude.Extends:
@@ -301,6 +319,9 @@ func pagePath(dest, bucket, id string) string {
 // of its transcript and of each subagent transcript in its folder, and every other file
 // there at least as large. The plan judged by last turns and names; this reads it all.
 func (c dupCopy) verify(dest string) error {
+	if strings.EqualFold(c.Bucket, c.In) {
+		return fmt.Errorf("it would be kept for itself")
+	}
 	keep, own := archivedCopy(dest, c.In, c.ID), archivedCopy(dest, c.Bucket, c.ID)
 	if keep == "" || own == "" {
 		return fmt.Errorf("a copy is no longer there")
@@ -308,14 +329,22 @@ func (c dupCopy) verify(dest string) error {
 	if !claude.HoldsAll(keep, own) {
 		return fmt.Errorf("%s lacks some of its turns", c.In)
 	}
-	dir := filepath.Join(archive.ProjectsDir(dest), c.Bucket, c.ID)
+	if err := folderHeld(filepath.Join(archive.ProjectsDir(dest), c.Bucket, c.ID), filepath.Join(archive.ProjectsDir(dest), c.In, c.ID)); err != nil {
+		return fmt.Errorf("%s %w", c.In, err)
+	}
+	return nil
+}
+
+// folderHeld reports what other, the folder of another copy of a session, lacks of
+// dir, this copy's folder: a subagent's turn, or another file there - saved tool
+// output, copied byte for byte - at its size. A missing dir lacks nothing.
+func folderHeld(dir, other string) error {
 	if _, err := os.Lstat(dir); err != nil {
 		return nil // no folder of its own
 	}
 	if !archive.IsRealDir(dir) {
-		return fmt.Errorf("its folder is not a plain folder")
+		return fmt.Errorf("is not compared with %s, which is not a plain folder", dir)
 	}
-	other := filepath.Join(archive.ProjectsDir(dest), c.In, c.ID)
 	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -326,14 +355,14 @@ func (c dupCopy) verify(dest string) error {
 		rel, _ := filepath.Rel(dir, p)
 		kept, err := os.Lstat(filepath.Join(other, rel))
 		if err != nil || !kept.Mode().IsRegular() {
-			return fmt.Errorf("%s has no %s", c.In, filepath.ToSlash(rel))
+			return fmt.Errorf("has no %s", filepath.ToSlash(rel))
 		}
 		if strings.EqualFold(filepath.Ext(p), ".jsonl") {
 			if !claude.HoldsAll(filepath.Join(other, rel), p) {
-				return fmt.Errorf("%s lacks turns of %s", c.In, filepath.ToSlash(rel))
+				return fmt.Errorf("lacks turns of %s", filepath.ToSlash(rel))
 			}
 		} else if info, err := d.Info(); err != nil || kept.Size() < info.Size() {
-			return fmt.Errorf("%s has a smaller %s", c.In, filepath.ToSlash(rel))
+			return fmt.Errorf("has a smaller %s", filepath.ToSlash(rel))
 		}
 		return nil
 	})
@@ -377,7 +406,7 @@ func printCleanPlan(plan cleanPlan, yes bool) {
 			byBucket[c.Bucket] = append(byBucket[c.Bucket], c)
 		}
 		verb := "Would delete"
-		if yes {
+		if yes && plan.Unread == "" {
 			verb = "Deleting"
 		}
 		fmt.Printf("%s %d duplicate copies, %s - each session stays archived in the other folder:\n", verb, len(plan.Remove), mb(total))
@@ -405,7 +434,12 @@ func printCleanPlan(plan cleanPlan, yes bool) {
 	if plan.Unsure > 0 {
 		fmt.Printf("\n%d copies kept: their subagent or tool-output files are not all in the other copy.\n", plan.Unsure)
 	}
-	if !yes && len(plan.Remove) > 0 {
+	switch {
+	case plan.Unread != "" && len(plan.Remove) > 0:
+		fmt.Printf("\nNothing can be deleted: clean %s, and the computer it belongs to may upload them again.\n"+
+			"If the file is a sync conflict copy - a name ending in (1) or holding \"conflict\" - delete it;\n"+
+			"otherwise let it finish syncing. Then run clean again.\n", plan.Unread)
+	case !yes && len(plan.Remove) > 0:
 		fmt.Println("\nRun `claude-sessions clean --yes` to delete them.")
 	}
 }
