@@ -4,8 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -97,15 +99,14 @@ func TestZipRefusesOverCap(t *testing.T) {
 
 func TestZipReadErrorKeepsLoose(t *testing.T) {
 	dir, _ := bucket(t)
-	before, _ := os.ReadFile(filepath.Join(dir, testID+".jsonl"))
+	before := snapshot(t, dir)
 	defer func(old func(string) (map[string]work.PackEntry, error)) { readBack = old }(readBack)
 	readBack = func(string) (map[string]work.PackEntry, error) { return nil, errors.New("drive offline") }
 	if _, err := Zip(dir, testID); err == nil {
 		t.Fatal("want error")
 	}
-	after, _ := os.ReadFile(filepath.Join(dir, testID+".jsonl"))
-	if !bytes.Equal(before, after) || !exists(filepath.Join(dir, testID, "subagents", "agent-a.jsonl")) {
-		t.Fatal("loose changed")
+	if after := snapshot(t, dir); len(after) != 3 || !reflect.DeepEqual(before, after) {
+		t.Fatalf("loose changed: %d files", len(after))
 	}
 	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
@@ -193,7 +194,9 @@ func TestMaterializeRejectsCraftedZip(t *testing.T) {
 			w, _ := zw.Create(entry)
 			n := 10
 			if name == "over cap" {
-				n = work.MaxFileBytes + 1
+				defer func(old int64) { maxBytes = old }(maxBytes)
+				maxBytes = 1 << 20
+				n = 2 << 20
 			}
 			w.Write(make([]byte, n))
 			zw.Close()
@@ -211,5 +214,194 @@ func TestMaterializeRejectsCraftedZip(t *testing.T) {
 				t.Fatalf("Unzip must refuse and keep the zip: %v", err)
 			}
 		})
+	}
+}
+
+// snapshot maps every file under dir to its bytes.
+func snapshot(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	m := map[string]string{}
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			b, _ := os.ReadFile(p)
+			m[p] = string(b)
+		}
+		return nil
+	})
+	return m
+}
+
+func TestZipTakesFilesOverTheWorkPackCap(t *testing.T) {
+	dir := t.TempDir()
+	var b strings.Builder
+	for i := 0; b.Len() <= work.MaxFileBytes; i++ {
+		fmt.Fprintf(&b, `{"type":"user","uuid":"u%d","message":{"content":"%s"}}`+"\n", i, strings.Repeat("z", 1000))
+	}
+	put(t, filepath.Join(dir, testID+".jsonl"), b.String(), time.Now().Add(-40*24*time.Hour))
+	if _, err := Zip(dir, testID); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(dir, testID+".jsonl")) {
+		t.Fatal("not zipped")
+	}
+	got, cleanup, err := Materialize(dir, testID, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if st, _ := os.Stat(got); st.Size() <= work.MaxFileBytes {
+		t.Fatal("short")
+	}
+}
+
+func TestZipRefusesSingleFileOverCap(t *testing.T) {
+	dir, _ := bucket(t)
+	defer func(old int64) { maxBytes = old }(maxBytes)
+	maxBytes = 1000
+	put(t, filepath.Join(dir, testID, "tool-results", "x.txt"), strings.Repeat("a", 1001), time.Now())
+	if _, err := Zip(dir, testID); !errors.Is(err, ErrTooLarge) || exists(Path(dir, testID)) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestZipRefusesWhenZipExists(t *testing.T) {
+	dir, _ := bucket(t)
+	os.WriteFile(Path(dir, testID), []byte("x"), 0o644)
+	if _, err := Zip(dir, testID); !errors.Is(err, ErrZipExists) {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(Path(dir, testID)); string(b) != "x" || !exists(filepath.Join(dir, testID+".jsonl")) {
+		t.Fatal("touched")
+	}
+}
+
+func TestZipKeepsFileChangedWhileZipping(t *testing.T) {
+	dir, _ := bucket(t)
+	x := filepath.Join(dir, testID, "tool-results", "x.txt")
+	defer func(old func(string) (map[string]work.PackEntry, error)) { readBack = old }(readBack)
+	readBack = func(p string) (map[string]work.PackEntry, error) {
+		put(t, x, "replaced by a sync client", time.Now())
+		return work.ReadPackIndex(p)
+	}
+	if _, err := Zip(dir, testID); err == nil {
+		t.Fatal("want error")
+	}
+	if b, _ := os.ReadFile(x); string(b) != "replaced by a sync client" {
+		t.Fatal("lost the new file")
+	}
+	if exists(Path(dir, testID)) {
+		t.Fatal("zip left")
+	}
+}
+
+func TestZipLeavesFilesItDidNotPack(t *testing.T) {
+	dir, _ := bucket(t)
+	late := filepath.Join(dir, testID, "tool-results", "late.txt")
+	defer func(old func(string) (map[string]work.PackEntry, error)) { readBack = old }(readBack)
+	readBack = func(p string) (map[string]work.PackEntry, error) {
+		put(t, late, "arrived mid-zip", time.Now())
+		return work.ReadPackIndex(p)
+	}
+	Zip(dir, testID)
+	if b, _ := os.ReadFile(late); string(b) != "arrived mid-zip" {
+		t.Fatal("deleted a file that was never packed")
+	}
+}
+
+func TestUnzipDivergedChangesNothing(t *testing.T) {
+	dir, _ := bucket(t)
+	if _, err := Zip(dir, testID); err != nil {
+		t.Fatal(err)
+	}
+	forked := turn(1) + turn(2) + turn(9)
+	put(t, filepath.Join(dir, testID+".jsonl"), forked, time.Now())
+	if err := Unzip(dir, testID); !errors.Is(err, ErrDiverged) {
+		t.Fatalf("err = %v", err)
+	}
+	if !exists(Path(dir, testID)) || exists(filepath.Join(dir, testID, "tool-results", "x.txt")) {
+		t.Fatal("changed something")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, testID+".jsonl")); string(b) != forked {
+		t.Fatal("loose changed")
+	}
+	got, cleanup, err := Materialize(dir, testID, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if b, _ := os.ReadFile(got); string(b) != forked {
+		t.Fatal("diverged: loose should be read")
+	}
+}
+
+func TestUnzipReplacesShorterLoose(t *testing.T) {
+	dir, _ := bucket(t)
+	if _, err := Zip(dir, testID); err != nil {
+		t.Fatal(err)
+	}
+	put(t, filepath.Join(dir, testID+".jsonl"), turn(1), time.Now())
+	if err := Unzip(dir, testID); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, testID+".jsonl")); string(b) != turn(1)+turn(2)+turn(3) {
+		t.Fatal("zipped transcript did not replace the shorter loose one")
+	}
+}
+
+func TestUnzipRefusesForeignEntryAndKeepsZip(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, n := range []string{testID + ".jsonl", "other/file"} {
+		w, _ := zw.Create(n)
+		w.Write([]byte(turn(1)))
+	}
+	zw.Close()
+	os.WriteFile(Path(dir, testID), buf.Bytes(), 0o644)
+	if err := Unzip(dir, testID); err == nil || !exists(Path(dir, testID)) || exists(filepath.Join(dir, testID+".jsonl")) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestUnzipLeavesNoTempInBucketAndFolderDoesNotBreakLoose(t *testing.T) {
+	dir, _ := bucket(t)
+	if _, err := Zip(dir, testID); err != nil {
+		t.Fatal(err)
+	}
+	if err := Unzip(dir, testID); err != nil {
+		t.Fatal(err)
+	}
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if strings.Contains(e.Name(), "tmp") {
+			t.Fatalf("left %s", e.Name())
+		}
+	}
+	// A folder named like the zip is not a zip: the loose copy is read as it is.
+	os.Mkdir(Path(dir, testID), 0o755)
+	got, cleanup, err := Materialize(dir, testID, t.TempDir())
+	if err != nil || got != filepath.Join(dir, testID+".jsonl") {
+		t.Fatalf("%v %v", got, err)
+	}
+	cleanup()
+}
+
+func TestUnzipUpperCaseIDWithLowerCaseKey(t *testing.T) {
+	dir, _ := bucket(t)
+	up := strings.ToUpper(testID)
+	// An upper-case id on disk: Find keys it lower-case.
+	os.Rename(filepath.Join(dir, testID+".jsonl"), filepath.Join(dir, up+".jsonl"))
+	os.Rename(filepath.Join(dir, testID), filepath.Join(dir, up))
+	if _, err := Zip(dir, up); err != nil {
+		t.Fatal(err)
+	}
+	if Find(dir)[testID] == "" {
+		t.Fatal("not found by lower-case key")
+	}
+	if err := Unzip(dir, up); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(filepath.Join(dir, up+".jsonl")) || exists(Path(dir, up)) {
+		t.Fatal("not restored")
 	}
 }

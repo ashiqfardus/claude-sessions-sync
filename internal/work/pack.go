@@ -119,6 +119,12 @@ func ReadPackIndex(path string) (map[string]PackEntry, error) {
 // tmpDir nil nothing is read or written, and the entries are listed as they would be,
 // for a dry run. An error refuses the whole pack; the caller removes dir.
 func ExtractPack(path string, tmpDir func() (string, error), skip func(rel string, size int64, mtime time.Time) bool) ([]PackFile, []string, error) {
+	return ExtractPackLimit(path, tmpDir, skip, MaxFileBytes)
+}
+
+// ExtractPackLimit is ExtractPack with the per-entry cap maxFile in place of
+// MaxFileBytes. The total stays capped at MaxFolderBytes.
+func ExtractPackLimit(path string, tmpDir func() (string, error), skip func(rel string, size int64, mtime time.Time) bool, maxFile uint64) ([]PackFile, []string, error) {
 	r, in, err := openPack(path)
 	if err != nil {
 		return nil, nil, err
@@ -140,8 +146,8 @@ func ExtractPack(path string, tmpDir func() (string, error), skip func(rel strin
 			why = "not a plain path inside the pack"
 		case !f.Mode().IsRegular():
 			why = "not a regular file"
-		case f.UncompressedSize64 > MaxFileBytes:
-			why = fmt.Sprintf("over %d MB", MaxFileBytes>>20)
+		case f.UncompressedSize64 > maxFile:
+			why = fmt.Sprintf("over %d MB", maxFile>>20)
 		}
 		if why == "" && skip != nil && skip(f.Name, int64(f.UncompressedSize64), f.Modified) {
 			continue
@@ -154,7 +160,7 @@ func ExtractPack(path string, tmpDir func() (string, error), skip func(rel strin
 				}
 			}
 			pf.Path = filepath.Join(dir, filepath.FromSlash(f.Name))
-			if err := extractOne(f, pf.Path); err != nil {
+			if err := extractOne(f, pf.Path, maxFile); err != nil {
 				// Not the path: it is built from the name, which the note quotes.
 				var pe *fs.PathError
 				if errors.As(err, &pe) {
@@ -292,9 +298,9 @@ func packName(n string) bool {
 }
 
 // extractOne writes entry f to p, a new file, read through the zip's own size and
-// CRC checks and never past MaxFileBytes, with f's time. A failed entry leaves no
+// CRC checks and never past maxFile, with f's time. A failed entry leaves no
 // file.
-func extractOne(f *zip.File, p string) error {
+func extractOne(f *zip.File, p string, maxFile uint64) error {
 	rc, err := f.Open()
 	if err != nil {
 		return err
@@ -309,9 +315,9 @@ func extractOne(f *zip.File, p string) error {
 	if err != nil {
 		return err
 	}
-	n, err := io.Copy(out, io.LimitReader(rc, MaxFileBytes+1))
-	if err == nil && n > MaxFileBytes {
-		err = fmt.Errorf("over %d MB", MaxFileBytes>>20)
+	n, err := io.Copy(out, io.LimitReader(rc, int64(maxFile)+1))
+	if err == nil && uint64(n) > maxFile {
+		err = fmt.Errorf("over %d MB", maxFile>>20)
 	}
 	if cerr := out.Close(); err == nil {
 		err = cerr
