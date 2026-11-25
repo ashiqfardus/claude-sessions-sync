@@ -286,9 +286,10 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	pushed := pushedBefore(dest, shard.Machine)
 	repointed := loadRepointed(root)
 	repointedWas := len(repointed)
-	held, holders := loadHeld(root), sessionHolders(dest)
-	// Zipped copies the held check compares with are unpacked here, gone when push returns.
-	held.tmp, _ = os.MkdirTemp("", "claude-sessions-held-")
+	held, holders, zips := loadHeld(root), sessionHolders(dest), loadZipCompared(root)
+	// Zipped copies push compares with are unpacked here, gone when push returns.
+	held.tmp, _ = os.MkdirTemp("", "claude-sessions-push-")
+	zips.tmp = held.tmp
 	defer os.RemoveAll(held.tmp)
 	shard.SkipsHeld = true
 	// Transcripts to look for work folders in: those changed since the last full push
@@ -313,7 +314,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 				continue
 			}
 			wasHeld := held.known(b.Name, t.ID, srcInfo)
-			outcome := archiveTranscript(dest, b.Name, t.ID, t.Path, srcInfo, pushed, repointed, held, othersHolding(holders, b.Name, t.ID), dryRun, logf)
+			outcome := archiveTranscript(dest, b.Name, t.ID, t.Path, srcInfo, pushed, repointed, held, othersHolding(holders, b.Name, t.ID), zips, dryRun, logf)
 			// A transcript held, and unchanged, since a push that looked through it has
 			// nothing new to look for work folders in; one held from now on is looked
 			// through this once, as the per-reply hook may have archived lines of it.
@@ -421,6 +422,9 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	if !dryRun {
 		if err := held.save(root); err != nil {
 			logf("WARN: %s: %v", heldPath(root), err)
+		}
+		if err := zips.save(root); err != nil {
+			logf("WARN: %s: %v", zipComparedPath(root), err)
 		}
 	}
 
@@ -687,7 +691,7 @@ const (
 	keptShorter
 	copyFailed
 	heldOther  // another bucket's copy holds all of it: nothing written
-	keptZipped // the archived copy is zipped, and holds it and its folder as they are
+	keptZipped // the archived copy is zipped and holds every turn of it and its folder
 )
 
 // archiveTranscript brings the archived copy of one local transcript up to date. The
@@ -699,27 +703,18 @@ const (
 // same session - already holds every turn of this one: a conversation imported from
 // another machine, and not continued here, is not archived a second time under this
 // machine's folder for it. held, nil in the per-reply hook, remembers those.
-func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushed map[string]archive.Session, repointed map[string]repointedStat, held *heldRecord, others []string, dryRun bool, logf func(string, ...any)) archiveOutcome {
+//
+// A bucket's zipped copy is settled first, by zips: see zipRecord.judge.
+func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushed map[string]archive.Session, repointed map[string]repointedStat, held *heldRecord, others []string, zips *zipRecord, dryRun bool, logf func(string, ...any)) archiveOutcome {
 	target := filepath.Join(archive.ProjectsDir(dest), bucket, filepath.Base(path))
 	if held.hit(dest, bucket, id, srcInfo) {
 		delete(repointed, bucket+"/"+id)
 		return heldOther
 	}
-	// A loose copy is never written beside a zipped one unread. A zip holding this one
-	// as it is stays; any other is unzipped, and the rules below judge the loose copy.
-	// One whose transcript diverged from the loose copy stays beside it: no branch lost.
+	// A loose copy is never written beside a zipped one it was not compared with.
 	if zp := zippedCopy(dest, bucket, id); zp != "" {
-		if zipHolds(zp, id, path, srcInfo) {
-			return keptZipped
-		}
-		if !dryRun {
-			switch err := convzip.Unzip(filepath.Dir(target), id); {
-			case errors.Is(err, convzip.ErrDiverged):
-				logf("WARN: %s: %v; the zip is kept beside the loose copy", id, err)
-			case err != nil && !errors.Is(err, os.ErrNotExist):
-				logf("WARN: %s: %v", id, err)
-				return copyFailed
-			}
+		if out, done := zips.judge(bucket, id, zp, path, srcInfo, dryRun, logf); done {
+			return out
 		}
 	}
 	dstInfo := archive.StatOrNil(target)
@@ -798,6 +793,109 @@ func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushe
 		}
 	}
 	return copiedOver
+}
+
+// zipCompared is a local transcript as push compared it with its bucket's zipped copy,
+// and that zip as it then was.
+type zipCompared struct {
+	Size     int64     `json:"size"`
+	MTime    time.Time `json:"mtime"`
+	ZipSize  int64     `json:"zipSize"`
+	ZipMTime time.Time `json:"zipMtime"`
+	Diverged bool      `json:"diverged,omitempty"` // the zip and the loose copy beside it each lack turns
+}
+
+// zipRecord remembers, by "bucket/id", how a local transcript compared with its zipped
+// copy, so each pair is unpacked and compared once: the zip may be on a cloud drive, and
+// the per-reply hook runs after every reply. Nothing in it comes from the archive.
+type zipRecord struct {
+	m     map[string]zipCompared
+	dirty bool
+	tmp   string // where zips are unpacked to compare; "" for the OS temp folder
+}
+
+func zipComparedPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "zip-compared.json")
+}
+
+// loadZipCompared reads the record. Missing or unreadable is empty: push compares again.
+func loadZipCompared(root string) *zipRecord {
+	z := &zipRecord{}
+	if raw, err := os.ReadFile(zipComparedPath(root)); err == nil {
+		_ = json.Unmarshal(raw, &z.m)
+	}
+	if z.m == nil {
+		z.m = map[string]zipCompared{}
+	}
+	return z
+}
+
+func (z *zipRecord) save(root string) error {
+	if !z.dirty {
+		return nil
+	}
+	data, err := json.MarshalIndent(z.m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return archive.WriteFileAtomic(zipComparedPath(root), append(data, '\n'), 0o644)
+}
+
+// judge settles a local transcript whose bucket's copy is the zip zp, before the rules
+// in archiveTranscript run. A zip holding every turn of it and of its folder stays, and
+// nothing is archived: done, keptZipped. A zip that cannot be read: done, copyFailed.
+// Otherwise the zip is unzipped and the rules judge the loose copy - also when the zip
+// diverged from a loose copy beside it, which then stays beside it: no branch lost.
+func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun bool, logf func(string, ...any)) (archiveOutcome, bool) {
+	zst, err := os.Lstat(zp)
+	if err != nil {
+		return 0, false
+	}
+	key := bucket + "/" + id
+	prev, had := z.m[key]
+	now := zipCompared{Size: src.Size(), MTime: src.ModTime(), ZipSize: zst.Size(), ZipMTime: zst.ModTime()}
+	if had && prev.Size == now.Size && archive.SameMTime(prev.MTime, now.MTime) &&
+		prev.ZipSize == now.ZipSize && archive.SameMTime(prev.ZipMTime, now.ZipMTime) {
+		return keptZipped, !prev.Diverged // a diverged pair: the rules judge the loose copy
+	}
+	if !zipHolds(zp, id, path, src) {
+		p, done, err := convzip.Materialize(filepath.Dir(zp), id, z.tmp)
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, false
+		}
+		if err != nil {
+			logf("WARN: %s: %v", id, err)
+			return copyFailed, true
+		}
+		r := claude.Compare(path, p)
+		holds := (r == claude.Same || r == claude.Behind) &&
+			folderHeld(filepath.Join(filepath.Dir(path), id), filepath.Join(filepath.Dir(p), id)) == nil
+		done()
+		if !holds {
+			if dryRun {
+				return 0, false
+			}
+			switch err := convzip.Unzip(filepath.Dir(zp), id); {
+			case errors.Is(err, convzip.ErrDiverged):
+				if !had || !prev.Diverged { // said once, not on every run until it is resolved
+					logf("WARN: %s: %v; the zip is kept beside the loose copy", id, err)
+				}
+				now.Diverged = true
+				z.m[key], z.dirty = now, true
+				return 0, false
+			case err != nil && !errors.Is(err, os.ErrNotExist):
+				logf("WARN: %s: %v", id, err)
+				return copyFailed, true
+			}
+			if had {
+				delete(z.m, key)
+				z.dirty = true
+			}
+			return 0, false
+		}
+	}
+	z.m[key], z.dirty = now, true
+	return keptZipped, true
 }
 
 // heldStat is a local transcript as push found it, held in whole by the archived
@@ -1088,15 +1186,21 @@ func pushOne(root, dest, transcript string, dryRun bool, logf func(string, ...an
 	}
 	repointed := loadRepointed(root)
 	was := len(repointed)
+	zips := loadZipCompared(root)
 	// Not compared with other buckets' copies: a session still replying here holds
 	// turns no other copy has. The next full push judges one that does not.
-	switch archiveTranscript(dest, bucket, id, abs, srcInfo, pushedBefore(dest, machineName()), repointed, nil, nil, dryRun, logf) {
+	switch archiveTranscript(dest, bucket, id, abs, srcInfo, pushedBefore(dest, machineName()), repointed, nil, nil, zips, dryRun, logf) {
 	case copiedOver, keptFork:
 		archiveExtras(bucketDir, destBucket, id, claude.SessionFiles(filepath.Join(bucketDir, id)), dryRun, logf)
 	}
 	if len(repointed) != was && !dryRun {
 		if err := saveRepointed(root, repointed); err != nil {
 			logf("WARN: %s: %v", repointedPath(root), err)
+		}
+	}
+	if !dryRun {
+		if err := zips.save(root); err != nil {
+			logf("WARN: %s: %v", zipComparedPath(root), err)
 		}
 	}
 	return nil

@@ -6,6 +6,7 @@ package main_test
 // holds a session imported here.
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -181,9 +182,10 @@ func TestPushKeepsADivergedZip(t *testing.T) {
 	later(t, loose)
 	appendTurns(t, mac.session(repo), repo, "m3")
 
-	out := mac.run(t, "push", "--no-html")
+	// Remembered: the WARN is said once, not on every run.
+	out := mac.run(t, "push", "--no-html") + mac.run(t, "push", "--no-html")
 	if n := strings.Count(out, "WARN: "+forkSession); n != 1 {
-		t.Errorf("%d WARN line(s) for the session, want 1:\n%s", n, out)
+		t.Errorf("%d WARN line(s) for the session across two pushes, want 1:\n%s", n, out)
 	}
 	if _, err := os.Lstat(convzip.Path(bucket, forkSession)); err != nil {
 		t.Fatalf("the zip, the only copy of m2 in the archive but the fork, is gone: %v", err)
@@ -194,5 +196,85 @@ func TestPushKeepsADivergedZip(t *testing.T) {
 	fork := mustRead(t, filepath.Join(archive, "forks", claude.Slug(repo), forkSession, "MAC.jsonl"))
 	if !strings.Contains(fork, `"m3"`) {
 		t.Errorf("this machine's turns were not kept as a fork:\n%s", fork)
+	}
+}
+
+// onlyZip fails unless the bucket holds the session as its zip alone.
+func onlyZip(t *testing.T, bucket string) {
+	t.Helper()
+	ents, _ := os.ReadDir(bucket)
+	if len(ents) != 1 || ents[0].Name() != forkSession+convzip.Suffix {
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("the archive holds %v, want only the zip", names)
+	}
+}
+
+// The zipped copy went on elsewhere, on the same layout: this machine's copy has no turn
+// it lacks, so the zip stays and nothing is written. The pair is remembered, and the next
+// push reads nothing of the zip: one garbled at the same size and time goes unnoticed.
+func TestPushLeavesAZipAheadOfTheLocalCopy(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	bucket := filepath.Join(archive, "projects", claude.Slug(repo))
+	ahead := filepath.Join(bucket, forkSession+".jsonl")
+	mustWrite(t, ahead, sessionLines(repo, "u1", "m1", "x1"))
+	later(t, ahead)
+	zipArchived(t, archive, repo)
+	zp := convzip.Path(bucket, forkSession)
+
+	for i := 0; i < 2; i++ {
+		out := mac.run(t, "push", "--no-html")
+		if strings.Contains(out, "WARN") || !strings.Contains(out, "PUSH: 0 copied") {
+			t.Errorf("push %d unzipped, copied or failed:\n%s", i+1, out)
+		}
+		onlyZip(t, bucket)
+		if i == 0 {
+			st, err := os.Stat(zp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustWrite(t, zp, strings.Repeat("x", int(st.Size())))
+			os.Chtimes(zp, st.ModTime(), st.ModTime())
+		}
+	}
+}
+
+// A pair remembered as held never hides a continuation: the turn after it is archived.
+func TestARememberedZipStillTakesAContinuation(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	bucket := zipArchived(t, archive, repo)
+	later(t, mac.session(repo)) // the same turns at a new time: compared, and remembered
+	mac.run(t, "push", "--no-html")
+	onlyZip(t, bucket)
+	if rec := mustRead(t, filepath.Join(mac.claudeDir, "session-sync-base", "zip-compared.json")); !strings.Contains(rec, forkSession) {
+		t.Fatalf("setup: the pair is not remembered:\n%s", rec)
+	}
+	appendTurns(t, mac.session(repo), repo, "w1")
+	mac.run(t, "push", "--no-html")
+	got := archived(t, archive, repo)
+	for _, turn := range []string{"u1", "m1", "w1"} {
+		if !strings.Contains(got, `"`+turn+`"`) {
+			t.Errorf("the archived transcript lacks %s:\n%s", turn, got)
+		}
+	}
+	if _, err := os.Lstat(convzip.Path(bucket, forkSession)); err == nil {
+		t.Error("the zip is still beside the loose copy")
+	}
+}
+
+// A record that cannot be read is no record: push compares again, and writes it anew.
+func TestPushComparesAgainWithACorruptZipRecord(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	bucket := zipArchived(t, archive, repo)
+	later(t, mac.session(repo))
+	rec := filepath.Join(mac.claudeDir, "session-sync-base", "zip-compared.json")
+	mustWrite(t, rec, `{"`+claude.Slug(repo)+"/"+forkSession+`": {"size": "garbled`)
+	mac.run(t, "push", "--no-html")
+	onlyZip(t, bucket)
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(mustRead(t, rec)), &m); err != nil || m[claude.Slug(repo)+"/"+forkSession] == nil {
+		t.Errorf("the record was not compared again and rewritten (%v):\n%s", err, mustRead(t, rec))
 	}
 }
