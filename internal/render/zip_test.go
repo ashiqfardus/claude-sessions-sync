@@ -182,6 +182,25 @@ func TestRenderShowsTheZipBesideALooseCopyThatHoldsLess(t *testing.T) {
 		t.Errorf("the page lacks the turn only the zip holds:\n%s", got)
 	}
 
+	// The zip is replaced by one holding more, the loose copy unchanged: the page is
+	// rendered again.
+	other := filepath.Join(t.TempDir(), "e--work-api")
+	a2 := `{"type":"assistant","uuid":"a2","timestamp":"2026-08-30T09:06:00.000Z","message":{"role":"assistant","content":"zipped again with more"}}` + "\n"
+	os.MkdirAll(other, 0o755)
+	os.WriteFile(filepath.Join(other, zipID+".jsonl"), []byte(q+a+a2), 0o644)
+	if _, err := convzip.Zip(other, zipID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(convzip.Path(other, zipID), convzip.Path(bucket, zipID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Archive(dest, Options{LocalProjects: local}); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(mustRead(t, page)); !strings.Contains(got, "zipped again with more") {
+		t.Errorf("the page was not rendered again from the new zip beside the loose copy:\n%s", got)
+	}
+
 	garble(t, convzip.Path(bucket, zipID))
 	if res, err := Archive(dest, Options{Force: true}); err != nil || res.Failed != 0 {
 		t.Fatalf("%+v, %v", res, err)

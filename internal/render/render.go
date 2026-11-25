@@ -171,11 +171,20 @@ func Archive(dest string, opts Options) (Result, error) {
 			id := strings.TrimSuffix(name, filepath.Ext(name))
 			out := filepath.Join(res.OutputDir, bucket, id+".html")
 
+			// A loose copy with a zip beside it: its page is current only while that zip is.
+			var beside *zipState
+			if zp, ok := zips[strings.ToLower(id)]; ok && z == nil {
+				beside = &zipState{}
+				if st, err := os.Lstat(zp); err == nil {
+					beside.Size, beside.MTime = st.Size(), st.ModTime()
+				}
+			}
+
 			// Prefer this machine's own copy when it is byte-identical: push has just
 			// written it across, and reading it straight back is a needless round trip
 			// through a cloud filesystem. Not for a loose copy with a zip beside it, which
 			// may hold more.
-			if _, beside := zips[strings.ToLower(id)]; opts.LocalProjects != "" && (z != nil || !beside) {
+			if opts.LocalProjects != "" && beside == nil {
 				local := filepath.Join(opts.LocalProjects, bucket, name)
 				// Size AND timestamp: same size with different content is unlikely but
 				// possible, and rendering local bytes while the page claims to be the
@@ -187,13 +196,13 @@ func Archive(dest string, opts Options) (Result, error) {
 
 			key := bucket + "/" + id
 			var known *pageState
-			if ps, ok := prev.Pages[key]; ok && !opts.Force && prev.Version == templateVersion && ps.Size == size {
+			if ps, ok := prev.Pages[key]; ok && !opts.Force && prev.Version == templateVersion && ps.Size == size && sameZipFile(ps.Beside, beside) {
 				known = &ps
 			}
 			mayRender := opts.Budget <= 0 || now().Sub(start) < opts.Budget
 			page, err := renderOne(open, project, id, known, out, mtime, mayRender)
 			if err == nil && !page.deferred {
-				next.Pages[key] = pageState{Size: size, Prompt: page.prompt, Zip: z}
+				next.Pages[key] = pageState{Size: size, Prompt: page.prompt, Zip: z, Beside: beside}
 			}
 			switch {
 			case err != nil:
@@ -402,7 +411,16 @@ func progress(prev, next renderState) renderState {
 type pageState struct {
 	Size   int64     `json:"size"`
 	Prompt string    `json:"prompt"`
-	Zip    *zipState `json:"zip,omitempty"` // for a zipped transcript
+	Zip    *zipState `json:"zip,omitempty"`    // for a zipped transcript
+	Beside *zipState `json:"beside,omitempty"` // the zip beside a loose transcript, Entry unused
+}
+
+// sameZipFile reports whether two records name the same zip file, or both none.
+func sameZipFile(a, b *zipState) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Size == b.Size && archive.SameMTime(a.MTime, b.MTime)
 }
 
 // zipState is a zipped transcript's zip file as its page was made from it, and the

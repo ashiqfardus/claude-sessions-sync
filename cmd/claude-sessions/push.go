@@ -1024,18 +1024,70 @@ func zipSkippedPath(root string) string {
 	return filepath.Join(root, "session-sync-base", "zip-skipped.json")
 }
 
+// bothSeenPath remembers, by "bucket/id", each zip a sweep found with loose files beside
+// it: that state by stat alone, and when it was first seen. Nothing in it comes from
+// the archive.
+func bothSeenPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "both-seen.json")
+}
+
+type bothSeen struct {
+	State string    `json:"state"`
+	Since time.Time `json:"since"`
+}
+
+// bothSettle is how long a zip and the loose files beside it must have stood as they
+// are before a sweep removes or rewrites either: longer than a sync client takes to
+// carry another machine's zipping or unzipping across.
+const bothSettle = time.Hour
+
+// bothState is a zip and the loose files beside it, by stat alone: the zip's size and
+// time, then each loose file's name and size, sorted. "" when either is missing.
+func bothState(dir, id string) string {
+	st, err := os.Lstat(convzip.Path(dir, id))
+	if err != nil || !st.Mode().IsRegular() {
+		return ""
+	}
+	var b strings.Builder
+	for _, top := range []string{filepath.Join(dir, id+".jsonl"), filepath.Join(dir, id)} {
+		filepath.WalkDir(top, func(p string, d os.DirEntry, err error) error {
+			if err != nil || !d.Type().IsRegular() {
+				return nil
+			}
+			if info, err := d.Info(); err == nil {
+				rel, _ := filepath.Rel(dir, p)
+				fmt.Fprintf(&b, "|%s %d", filepath.ToSlash(rel), info.Size())
+			}
+			return nil
+		})
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d %d", st.Size(), st.ModTime().Unix()) + b.String()
+}
+
 // zipIdleCopies zips each conversation archived in buckets whose loose files, and this
 // machine's transcript of it, are all unchanged since now-zipIdle, until budget (0 for
 // none) runs out: the rest wait for the next run. Loose files beside a zip - another
-// machine's zip whose deletions have not arrived, or a run killed half way - are removed
-// when the zip holds every one, and the zip left as it is; only loose files holding
-// something it lacks are unzipped into it, then zipped again. A dry run lists them.
+// machine's zip whose deletions have not arrived, another machine's unzip whose removal
+// of the zip has not, or a run killed half way - are only recorded the first time. Once
+// the same state was seen bothSettle before, whatever was in flight has landed: they are
+// removed when the zip holds every one, and the zip left as it is; only loose files
+// holding something it lacks are unzipped into it, then zipped again. A dry run lists
+// them.
 func zipIdleCopies(root, dest string, buckets []string, now time.Time, budget time.Duration, dryRun bool, logf func(string, ...any)) (zipped int, raw, packed int64) {
 	skipped := map[string]int64{}
 	if data, err := os.ReadFile(zipSkippedPath(root)); err == nil {
 		_ = json.Unmarshal(data, &skipped) // unreadable is empty: each is tried, and said, again
 	}
-	dirty, start, cutoff := false, time.Now(), now.Add(-zipIdle)
+	// Unreadable is empty too: each pair waits again, which is the safe way.
+	seen := map[string]bothSeen{}
+	if data, err := os.ReadFile(bothSeenPath(root)); err == nil && json.Unmarshal(data, &seen) != nil {
+		seen = map[string]bothSeen{}
+	}
+	sawNow := map[string]bool{}
+	dirty, seenDirty, start, cutoff := false, false, time.Now(), now.Add(-zipIdle)
 each:
 	for _, bucket := range buckets {
 		dir := filepath.Join(archive.ProjectsDir(dest), bucket)
@@ -1083,6 +1135,18 @@ each:
 				continue
 			}
 			if zp != "" {
+				// The first sight of a zip beside loose files changes nothing: another
+				// machine may be zipping or unzipping it, its writes still on their way.
+				state := bothState(dir, id)
+				if prev, ok := seen[key]; !ok || prev.State != state {
+					seen[key], seenDirty, sawNow[key] = bothSeen{State: state, Since: now}, true, true
+					continue
+				} else if now.Sub(prev.Since) < bothSettle {
+					sawNow[key] = true
+					continue
+				}
+				delete(seen, key) // settled below, or remembered as skipped
+				seenDirty = true
 				err := convzip.DropHeld(dir, id) // the zip stays
 				if err == nil {
 					if _, ok := skipped[key]; ok {
@@ -1130,6 +1194,21 @@ each:
 		data, _ := json.MarshalIndent(skipped, "", "  ")
 		if err := archive.WriteFileAtomic(zipSkippedPath(root), append(data, '\n'), 0o644); err != nil {
 			logf("WARN: %s: %v", zipSkippedPath(root), err)
+		}
+	}
+	// A pair not reached this run is kept only while it stands as it was seen.
+	for key, e := range seen {
+		bucket, id, _ := strings.Cut(key, "/")
+		if !sawNow[key] && (!archive.ValidName(bucket) || !claude.IsSessionID(id) ||
+			bothState(filepath.Join(archive.ProjectsDir(dest), bucket), id) != e.State) {
+			delete(seen, key)
+			seenDirty = true
+		}
+	}
+	if seenDirty && !dryRun {
+		data, _ := json.MarshalIndent(seen, "", "  ")
+		if err := archive.WriteFileAtomic(bothSeenPath(root), append(data, '\n'), 0o644); err != nil {
+			logf("WARN: %s: %v", bothSeenPath(root), err)
 		}
 	}
 	return zipped, raw, packed

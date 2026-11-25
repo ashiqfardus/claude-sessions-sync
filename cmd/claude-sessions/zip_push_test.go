@@ -182,9 +182,11 @@ func TestPushSaysOnceWhenAZipCannotBeRedone(t *testing.T) {
 	bucket := zipArchived(t, archive, repo)
 	garble(t, convzip.Path(bucket, forkSession))
 	mac.run(t, "push", "--no-html") // archives the local copy beside the zip it cannot read
+	anHourOn(t, mac)
+	mac.run(t, "push", "--no-html")
 	mac.run(t, "push", "--no-html")
 	if n := strings.Count(pushLog(t, mac), "not unzipped to zip again"); n != 1 {
-		t.Errorf("%d line(s) for the zip across two pushes, want 1:\n%s", n, pushLog(t, mac))
+		t.Errorf("%d line(s) for the zip across three pushes, want 1:\n%s", n, pushLog(t, mac))
 	}
 	if archived(t, archive, repo) == "" || !fileExists(convzip.Path(bucket, forkSession)) {
 		t.Error("the loose copy or the zip beside it is gone")
@@ -286,6 +288,8 @@ func TestPushZipsALeftoverBesideItsZip(t *testing.T) {
 	mustWrite(t, left, data)
 	agePaths(t, 31*day, left)
 
+	mac.run(t, "push", "--no-html") // first seen: left as it is
+	anHourOn(t, mac)
 	mac.run(t, "push", "--no-html")
 	onlyZip(t, bucket)
 	ents, err := convzip.Entries(convzip.Path(bucket, forkSession))
@@ -308,9 +312,11 @@ func TestPushLeavesADivergedLeftoverOnce(t *testing.T) {
 	agePaths(t, 31*day, loose)
 
 	mac.run(t, "push", "--no-html")
+	anHourOn(t, mac)
+	mac.run(t, "push", "--no-html")
 	mac.run(t, "push", "--no-html")
 	if n := strings.Count(pushLog(t, mac), "WARN: "+forkSession); n != 1 {
-		t.Errorf("%d WARN line(s) for the session across two pushes, want 1:\n%s", n, pushLog(t, mac))
+		t.Errorf("%d WARN line(s) for the session across three pushes, want 1:\n%s", n, pushLog(t, mac))
 	}
 	if !fileExists(convzip.Path(bucket, forkSession)) || !strings.Contains(mustRead(t, loose), `"x1"`) {
 		t.Error("the zip or the loose transcript beside it was not kept")
