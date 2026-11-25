@@ -7,7 +7,7 @@ exit 0
     "Projects": 2,
     "Sessions": 3,
     "LastSeen": "2026-08-30T09:00:00Z",
-    "LastPush": "<LAST-PUSH-HOUR>"
+    "LastPush": "<LASTPUSH-HR>:00:00Z"
   }
 ]
 --- stderr

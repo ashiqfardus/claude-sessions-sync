@@ -8,14 +8,14 @@ claude-sessions <VERSION> doctor
     settings.json    not present
   ! retention        cleanupPeriodDays unset, so Claude Code applies its 30-day default
   + archive          <ARCHIVE> (session-sync.json)
-    last backup      LAP-1 <LAST-PUSH-HOUR>
+    last backup      LAP-1 <LASTPUSH-HR>:00
     zips             off: idle conversations stay loose
     prune            keep-days off: no conversation is deleted for its age
   + manifest         2 project(s) recorded, all routable
   + html             3 page(s) for 3 transcript(s)
   + work folders     0 folder(s), 0 file(s)
   ! session hook     no SessionEnd hook installed
-  ? sweep <SWEEP>
+  ! sweep            <SWEEP>
   + archived         every session that ended over 40 minutes ago is in the archive
   + last push        <PUSHED-AT>
 

@@ -46,12 +46,16 @@ func Normalize(s string, roots map[string]string) string {
 	})
 	for _, p := range pairs {
 		if p.from != "" {
-			s = strings.ReplaceAll(s, p.from, p.to)
+			// A whole name only: /x/001 is not the start of /x/0012. Roots end in a
+			// letter or digit, so \b ends the match at a separator, quote, space, "-",
+			// punctuation or the end of the text.
+			s = regexp.MustCompile(regexp.QuoteMeta(p.from)+`\b`).ReplaceAllLiteralString(s, p.to)
 		}
 	}
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = stamp.ReplaceAllString(s, "<TIME>")
-	// A JSON-escaped separator (\\) is one slash, as the / it is on the other OSes.
+	// A JSON-escaped separator (\\) is one slash, as the / it is on the other OSes. This
+	// also hides a wrong separator in the output, and turns JSON's \" and \u003c into /" and /u003c.
 	return strings.NewReplacer(`\\`, "/", `\`, "/").Replace(s)
 }
 

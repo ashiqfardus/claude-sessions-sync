@@ -33,7 +33,7 @@ exit 0
     {
       "name": "last backup",
       "level": "info",
-      "detail": "LAP-1 <LAST-PUSH-HOUR>"
+      "detail": "LAP-1 <LASTPUSH-HR>:00"
     },
     {
       "name": "zips",
@@ -68,7 +68,10 @@ exit 0
       "advice": "Sessions are only archived by the periodic sweep, so the most recent one can be missed."
     },
     {
-      "name": "sweep" <SWEEP>
+      "name": "sweep",
+      "level": "warn",
+      "detail": "<SWEEP>",
+      "advice": "<SWEEP-ADVICE>"
     },
     {
       "name": "archived",

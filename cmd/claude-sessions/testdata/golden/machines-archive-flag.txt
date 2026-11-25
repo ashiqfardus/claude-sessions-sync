@@ -1,0 +1,12 @@
+$ claude-sessions machines --claude-dir <CLAUDE> --archive <ARCHIVE>
+exit 0
+--- stdout
+MACHINE  PROJECTS  SESSIONS  LAST BACKUP       LAST SESSION
+LAP-1    2         3         <LASTPUSH-HR>:00  2026-08-30 09:00
+
+LAST BACKUP is the hour of that machine's last full push ("-" for an older version);
+LAST SESSION is the newest session archived from it.
+
+Remove a machine you no longer use with --forget <name>.
+Its transcripts are kept; only its manifest and index entries go.
+--- stderr

@@ -37,21 +37,23 @@ var versionMasks = []mask{
 	{`"version": "[^"]*"`, `"version": "<VERSION>"`},
 }
 
-// lastPushMasks hide the shard's lastPush: the hour, in UTC, of the push the fixture
-// just made. A shard from an older build prints "-" (zero time in JSON), left as is.
+// lastPushMasks hide the date and hour of the shard's lastPush, from the push the
+// fixture just made. It is cut to the hour, so ":00" stays and is checked. A shard from
+// an older build prints "-" (zero time, year 0001, in JSON), left as is.
 var lastPushMasks = []mask{
-	{`(?m)^(LAP-1 +\d+ +\d+ +)\d{4}-\d\d-\d\d \d\d:\d\d`, "${1}<LAST-PUSH-HOUR>"},
-	{`("LastPush": ")[1-9][^"]*"`, `${1}<LAST-PUSH-HOUR>"`},
-	{`(last backup +LAP-1 |"detail": "LAP-1 )\d{4}-\d\d-\d\d \d\d:\d\d`, "${1}<LAST-PUSH-HOUR>"},
+	{`(?m)^(LAP-1 +\d+ +\d+ +)\d{4}-\d\d-\d\d \d\d(:00)`, "${1}<LASTPUSH-HR>$2"},
+	{`("LastPush": ")[1-9]\d{3}-\d\d-\d\dT\d\d(:00:00Z")`, "${1}<LASTPUSH-HR>$2"},
+	{`(last backup +LAP-1 |"detail": "LAP-1 )\d{4}-\d\d-\d\d \d\d(:00)`, "${1}<LASTPUSH-HR>$2"},
 }
 
 var doctorMasks = append([]mask{
-	// The sweep is launchd, systemd or cron, or Task Scheduler, and its job name holds
-	// a hash of the temp profile's path.
-	{`(?m)^  . sweep .*$`, "  ? sweep <SWEEP>"},
-	{`(?m)^  sweep: .*$`, "  sweep: <SWEEP-ADVICE>"},
-	{`(?s)"name": "sweep",.*?\n    \}`, "\"name\": \"sweep\" <SWEEP>\n    }"},
-	{`\d+[hms][\dhms.]* ago`, "<AGO> ago"},
+	// The sweep's detail and advice name launchd, systemd or cron, or Task Scheduler,
+	// and the job name holds a hash of the temp profile's path. Its level stays: the job
+	// is unregistered on every OS here, a warning (see TestGoldenReadOnly).
+	{`(?m)^(  . sweep +).*$`, "${1}<SWEEP>"},
+	{`(?m)^(  sweep: ).*$`, "${1}<SWEEP-ADVICE>"},
+	{`("name": "sweep",\s+"level": "[a-z]+",\s+"detail": ")[^"]*"`, `${1}<SWEEP>"`},
+	{`("name": "sweep",\s+"level": "[a-z]+",\s+"detail": "<SWEEP>",\s+"advice": ")[^"]*"`, `${1}<SWEEP-ADVICE>"`},
 	// The last push is the one the fixture just made, timed by the wall clock.
 	{`(last push +)\d{4}-\d\d-\d\d \d\d:\d\d`, "${1}<PUSHED-AT>"},
 	{`("name": "last push",\s+"level": "ok",\s+"detail": ")\d{4}-\d\d-\d\d \d\d:\d\d`, "${1}<PUSHED-AT>"},
@@ -192,8 +194,16 @@ func TestGoldenReadOnly(t *testing.T) {
 		{"stats-json", []string{"stats", "--json"}, nil},
 		{"machines", []string{"machines"}, lastPushMasks},
 		{"machines-json", []string{"machines", "--json"}, lastPushMasks},
+		// 3 warnings on every OS: retention, session hook and the sweep, which is not
+		// registered for a temp profile. Only a Task Scheduler that cannot be queried
+		// at all reports it differently (still a warning, with no advice).
 		{"doctor", []string{"doctor"}, doctorMasks},
 		{"doctor-json", []string{"doctor", "--json"}, doctorMasks},
+		// The flag, not the saved destination; "<ARCHIVE>" is the fixture's archive.
+		{"doctor-archive-flag", []string{"doctor", "--archive", "<ARCHIVE>"}, doctorMasks},
+		{"machines-archive-flag", []string{"machines", "--archive", "<ARCHIVE>"}, lastPushMasks},
+		{"ls-archived-archive-flag", []string{"ls", "--archive", "<ARCHIVE>"}, nil},
+		{"search-archive-flag", []string{"search", "--archive", "<ARCHIVE>", "migration"}, nil},
 		{"config-show", []string{"config", "show"}, nil},
 		{"config-map-list", []string{"config", "map"}, nil},
 		{"config-keep-list", []string{"config", "keep"}, nil},
@@ -204,7 +214,13 @@ func TestGoldenReadOnly(t *testing.T) {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			e := goldenFixture(t)
-			golden.Check(t, c.name, applyMasks(runGolden(t, e, c.args...), c.masks))
+			args := append([]string(nil), c.args...)
+			for i, a := range args {
+				if a == "<ARCHIVE>" {
+					args[i] = e.m.archive
+				}
+			}
+			golden.Check(t, c.name, applyMasks(runGolden(t, e, args...), c.masks))
 		})
 	}
 }
