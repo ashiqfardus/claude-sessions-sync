@@ -33,3 +33,6 @@ var driveRoots = func() []string {
 	}
 	return roots
 }
+
+// DriveRoots lists the Windows drive roots to browse.
+func DriveRoots() []string { return driveRoots() }

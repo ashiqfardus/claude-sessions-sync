@@ -125,3 +125,28 @@ func TestDetectsMyDriveOnADriveRoot(t *testing.T) {
 		t.Fatalf("detected %q, want %q", got, want)
 	}
 }
+
+func TestDetectedFoldersIncludesDetect(t *testing.T) {
+	home := fakeHome(t)
+	mkdirs(t, filepath.Join(home, "Sync", archiveFolderName))
+
+	got := DetectedFolders()
+	want := filepath.Join(home, "Sync", archiveFolderName)
+	if len(got) == 0 || got[0] != want {
+		t.Fatalf("existing archive must come first: %v", got)
+	}
+	if d := detected(t); d != want {
+		t.Fatalf("detected %q", d)
+	}
+
+	os.RemoveAll(filepath.Join(home, "Sync"))
+	mkdirs(t, filepath.Join(home, "Library", "CloudStorage", "GoogleDrive-me@example.com", "My Drive"))
+	d := detected(t)
+	found := false
+	for _, f := range DetectedFolders() {
+		found = found || f == d
+	}
+	if d == "" || !found {
+		t.Fatalf("detected %q not in %v", d, DetectedFolders())
+	}
+}

@@ -234,16 +234,18 @@ func RenderExcludes(claudeRoot, dest string, extra []string, persist bool) []str
 
 const archiveFolderName = "claude-sessions"
 
-// detect looks for a synced folder in the conventional places.
-func detect() string {
-	var candidates []string
-
+// detectLists gathers what detect considers: archive folders that may exist, in
+// priority order, and the existing synced parents a first push could create one in.
+func detectLists() (candidates, driveParents, cloudDrives []string) {
 	// Google Drive for Desktop mounts as <letter>:\My Drive on Windows.
 	for _, root := range driveRoots() {
 		candidates = append(candidates, filepath.Join(root, "My Drive", archiveFolderName))
+		parent := filepath.Join(root, "My Drive")
+		if st, err := os.Stat(parent); err == nil && st.IsDir() {
+			driveParents = append(driveParents, parent)
+		}
 	}
 
-	var cloudDrives []string
 	if home, err := os.UserHomeDir(); err == nil {
 		for _, rel := range [][]string{
 			{"Google Drive", "My Drive"},
@@ -270,25 +272,50 @@ func detect() string {
 			cloudDrives = drives
 		}
 	}
+	return
+}
 
+func isDir(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
+}
+
+// detect looks for a synced folder in the conventional places.
+func detect() string {
+	candidates, driveParents, cloudDrives := detectLists()
 	for _, c := range candidates {
-		if st, err := os.Stat(c); err == nil && st.IsDir() {
+		if isDir(c) {
 			return c
 		}
 	}
 
 	// Nothing named claude-sessions yet: fall back to a synced parent that exists, so
 	// a first run has somewhere sensible to create it.
-	for _, root := range driveRoots() {
-		parent := filepath.Join(root, "My Drive")
-		if st, err := os.Stat(parent); err == nil && st.IsDir() {
-			return filepath.Join(parent, archiveFolderName)
-		}
+	if len(driveParents) > 0 {
+		return filepath.Join(driveParents[0], archiveFolderName)
 	}
 	if len(cloudDrives) == 1 {
 		return filepath.Join(cloudDrives[0], archiveFolderName)
 	}
 	return ""
+}
+
+// DetectedFolders lists every synced folder detect would consider, each ending in
+// claude-sessions: existing archives first, then the parents a first push could use.
+func DetectedFolders() []string {
+	candidates, driveParents, cloudDrives := detectLists()
+	var out []string
+	for _, c := range candidates {
+		if isDir(c) {
+			out = append(out, c)
+		}
+	}
+	for _, p := range append(driveParents, cloudDrives...) {
+		if c := filepath.Join(p, archiveFolderName); !isDir(c) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // cloudStorage lists what the per-account folders under ~/Library/CloudStorage hold:
