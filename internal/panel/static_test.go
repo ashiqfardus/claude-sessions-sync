@@ -170,7 +170,7 @@ func TestShellCarriesTheToken(t *testing.T) {
 	}
 	// The pieces the page scripts and the screen tasks build on.
 	for _, want := range []string{
-		`<link rel="stylesheet" href="/static/panel.css">`, `<script type="module" src="/static/js/app.js">`,
+		`<link rel="stylesheet" href="/static/panel.css">`, `<script type="module" src="/static/js/app.js">`, `<link rel="icon" href="/static/favicon.svg">`,
 		`href="#main">Skip to content</a>`, `<nav id="rail" aria-label="Panel" class="rail">`, `role="separator" aria-orientation="vertical" aria-controls="rail"`,
 		`<main id="main"`, `id="toasts" role="status"`, `id="dialogs"`,
 		`id="t-overview"`, `id="t-conversations"`, `id="t-storage"`, `id="t-delete"`, `id="t-import"`, `id="t-settings"`, `id="t-commands"`,
@@ -179,11 +179,15 @@ func TestShellCarriesTheToken(t *testing.T) {
 			t.Errorf("shell lacks %s", want)
 		}
 	}
+	// The icon is named, so the browser never asks for /favicon.ico (a 404 in the console).
+	if w := do(s, http.MethodGet, "/static/favicon.svg", "Cookie", login(t, s)); w.Code != http.StatusOK || w.Header().Get("Content-Type") != "image/svg+xml" {
+		t.Errorf("GET /static/favicon.svg gave %d %q", w.Code, w.Header().Get("Content-Type"))
+	}
 }
 
 // pageCore is what Task 18's modules export for every screen.
 var pageCore = map[string][]string{
-	"static/js/app.js":     {"h", "icon", "api", "follow", "toast", "modal", "confirmDialog", "register", "noArchive", "when"},
+	"static/js/app.js":     {"h", "icon", "api", "follow", "toast", "modal", "confirmDialog", "register", "noArchive", "when", "reducedMotion", "allowExternal", "GENERIC"},
 	"static/js/rail.js":    {"rail"},
 	"static/js/combo.js":   {"combo"},
 	"static/js/pager.js":   {"pager"},
@@ -192,6 +196,8 @@ var pageCore = map[string][]string{
 
 var (
 	jsExport      = regexp.MustCompile(`export\s+(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)`)
+	jsExportList  = regexp.MustCompile(`export\s*\{([^}]*)\}`)
+	jsDoneCloses  = regexp.MustCompile(`addEventListener\(\s*'done'\s*,[^}]*\.close\(\)`)
 	jsImportPath  = regexp.MustCompile(`(?:\bfrom|\bimport)\s*\(?\s*['"](\.[^'"]+)['"]`)
 	jsNamedImport = regexp.MustCompile(`import\s*\{([^}]*)\}\s*from\s*['"](\.[^'"]+)['"]`)
 )
@@ -205,6 +211,13 @@ func TestPageModulesLink(t *testing.T) {
 			exports[p] = map[string]bool{}
 			for _, m := range jsExport.FindAllStringSubmatch(s, -1) {
 				exports[p][m[1]] = true
+			}
+			for _, m := range jsExportList.FindAllStringSubmatch(s, -1) {
+				for _, n := range strings.Split(m[1], ",") {
+					if f := strings.Fields(n); len(f) > 0 {
+						exports[p][f[len(f)-1]] = true // `a as b` exports b
+					}
+				}
 			}
 		}
 	}
@@ -315,8 +328,8 @@ func TestPageScriptsKeepTheRules(t *testing.T) {
 				t.Errorf("%s:%d uses localStorage outside a one-line try/catch", p, i+1)
 			}
 		}
-		if strings.Contains(s, "new EventSource(") && !strings.Contains(s, ".close()") {
-			t.Errorf("%s opens an EventSource and never closes it", p)
+		if strings.Contains(s, "new EventSource(") && !jsDoneCloses.MatchString(s) {
+			t.Errorf("%s opens an EventSource whose 'done' handler does not close it first", p)
 		}
 	}
 	app := files["static/js/app.js"]

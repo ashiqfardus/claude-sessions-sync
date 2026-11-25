@@ -1,5 +1,5 @@
 // The folder browser: a dialog over GET /api/folders, which lists folder names only.
-import { h, api, modal } from './app.js'
+import { h, api, modal, GENERIC } from './app.js'
 
 // chooseFolder({title, start}) gives the chosen folder's path, or null. The detected
 // sync folders choose at once; the roots, the typed path, Up and the subfolders
@@ -13,21 +13,21 @@ export function chooseFolder({ title, start } = {}) {
     const detected = h('div', { class: 'stack gap-6', hidden: true })
     const roots = h('div', { class: 'row gap-6' })
     const error = h('p', { class: 'note red', role: 'alert', hidden: true })
-    const status = h('p', { class: 'muted small', hidden: true })
+    const status = h('span', { class: 'muted small', role: 'status' }) // loading and truncation, announced
     const list = h('ul', { class: 'folder-browser', 'aria-label': 'Folders inside' })
     let parent = '', current = start || '', n = 0
 
     async function go(to) {
       const mine = ++n
       status.textContent = 'Loading…'
-      status.hidden = false
       let v
       try {
         v = await api.get('/api/folders', { path: to || undefined, hidden: hidden.checked ? 1 : undefined })
+        if (!v || typeof v !== 'object') throw new Error('not a folder list')
       } catch (e) {
         if (mine !== n) return
-        status.hidden = true
-        error.textContent = e.message // api errors are plain sentences
+        status.textContent = ''
+        error.textContent = e.plain ? e.message : GENERIC
         error.hidden = false
         return
       }
@@ -38,7 +38,6 @@ export function chooseFolder({ title, start } = {}) {
       error.textContent = v.error || ''
       error.hidden = !v.error
       status.textContent = v.truncated ? 'Showing the first 2,000 folders.' : ''
-      status.hidden = !v.truncated
 
       const found = v.detected || []
       detected.hidden = !found.length
@@ -63,8 +62,8 @@ export function chooseFolder({ title, start } = {}) {
         h('div', { class: 'field grow' }, h('label', { for: fid }, 'Folder'), path),
         h('button', { type: 'button', class: 'btn', onclick: () => go(path.value.trim()) }, 'Go to')),
       error,
-      h('div', { class: 'row spread' }, up, h('label', { class: 'opt' }, hidden, 'Show hidden folders')),
-      list, status,
+      h('div', { class: 'row spread' }, up, status, h('label', { class: 'opt' }, hidden, 'Show hidden folders')),
+      list,
       h('div', { class: 'row end' },
         h('button', { type: 'button', class: 'btn', onclick: () => done(null) }, 'Cancel'),
         h('button', { type: 'button', class: 'btn primary', onclick: choose }, 'Choose this folder')))

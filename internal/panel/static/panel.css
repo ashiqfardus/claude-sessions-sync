@@ -297,7 +297,7 @@ p.status{white-space:normal}
 .combo-input[aria-expanded=true]+.combo-chev{transform:rotate(180deg)}
 .combo-list{position:absolute;top:100%;left:0;right:0;z-index:30;margin:4px 0 0;padding:4px;list-style:none;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(22,32,28,.16);max-height:232px;overflow-y:auto}
 .combo-opt{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px;padding:5px 10px;border-radius:7px;cursor:pointer;transition:background .1s}
-.combo-opt.is-active{background:#E6F1EC}
+.combo-opt.is-active{background:#E6F1EC;box-shadow:inset 3px 0 0 var(--accent)} /* the bar is 6.9:1 on white (WCAG 1.4.11); the tint alone is not */
 .combo-opt[aria-selected=true]{font-weight:600}
 .combo-opt svg{flex:none;color:var(--accent)}
 .combo-empty{padding:8px 10px;color:var(--muted)}

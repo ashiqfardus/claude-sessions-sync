@@ -4,7 +4,7 @@
 import { rail } from './rail.js'
 import { chooseFolder } from './folders.js'
 
-const GENERIC = "That didn't work. The details are in the log on the Settings page."
+export const GENERIC = "That didn't work. The details are in the log on the Settings page."
 const NO_ARCHIVE = 'No archive folder yet. Choose the folder your sync app keeps in sync.'
 const UNREACHABLE = "The archive folder can't be reached right now. Check that your sync app is running, then try again."
 const SVG_NS = 'http://www.w3.org/2000/svg'
@@ -21,12 +21,25 @@ const main = document.getElementById('main')
 const nav = document.getElementById('rail')
 const dialogs = document.getElementById('dialogs')
 
+const external = new Set()
+const LOCAL = /^(#|\/(?![/\\]))/ // "#..." or "/...", never "//host" or "/\host"
+
+// allowExternal(url) lets h() set that one absolute URL as an href: the README link,
+// whose module is the only one allowed to hold it.
+export function allowExternal(url) {
+  external.add(url)
+}
+
 // h(tag, attrs, ...children). A function attribute named on<event> becomes a listener;
 // true sets an empty attribute; false, null and undefined set nothing. Strings and
-// numbers become text nodes; null and false children are skipped.
+// numbers become text nodes; null and false children are skipped. It refuses `style`
+// (the CSP drops it) and an href or src that leaves the panel, so archive text can
+// never become a link elsewhere.
 export function h(tag, attrs, ...kids) {
   const el = document.createElement(tag)
   for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'style') throw new Error('h: style is refused; use a class or element.style')
+    if ((k === 'href' || k === 'src') && v != null && !LOCAL.test(String(v)) && !external.has(v)) throw new Error('h: refused ' + k)
     if (k.startsWith('on')) {
       if (typeof v === 'function') el.addEventListener(k.slice(2), v)
     } else if (v === true) el.setAttribute(k, '')
@@ -66,6 +79,11 @@ export function when(t) {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
+const motion = matchMedia('(prefers-reduced-motion: reduce)')
+// reducedMotion is live: JS-driven motion (Overview's count-up) skips itself when true.
+export let reducedMotion = motion.matches
+motion.addEventListener('change', (e) => { reducedMotion = e.matches })
+
 // --- API ---------------------------------------------------------------------------
 
 // Every error the API gives has a plain message (plain: true) that can be shown as is.
@@ -81,7 +99,8 @@ async function call(path, init) {
   try {
     r = await fetch(path, { credentials: 'same-origin', ...init })
   } catch {
-    stopped()
+    // One failed request is not yet a stopped panel: the heartbeat decides, and shows the notice.
+    if (path !== '/api/heartbeat') await beat()
     throw fail(GENERIC, 0)
   }
   let body = null
@@ -101,9 +120,19 @@ function query(params) {
   return s ? '?' + s : ''
 }
 
+const inflight = new Map()
+
 export const api = {
-  // get('/api/summary', {page: 2}) gives the decoded JSON.
-  get: (path, params) => call(path + query(params)),
+  // get('/api/summary', {page: 2}) gives the decoded JSON. Two callers asking for the
+  // same URL at once share one request; every summary also updates the rail foot.
+  get(path, params) {
+    const url = path + query(params)
+    if (!inflight.has(url)) {
+      inflight.set(url, call(url).then((v) => { if (path === '/api/summary') lastBackup(v); return v })
+        .finally(() => inflight.delete(url)))
+    }
+    return inflight.get(url)
+  },
   // run('push', {dryRun: true}) starts an action and gives {id}; with {wait: true} it
   // gives the job's final State. A running job answers 409 with a plain error.
   run: (name, body, { wait } = {}) => {
@@ -112,24 +141,36 @@ export const api = {
   },
 }
 
-// follow(id, {onLine, onProgress}) streams a job's lines and progress, and gives
-// {id, ok, result, error, lines} when it is done.
-export function follow(id, { onLine, onProgress } = {}) {
+function parse(text) {
+  try { return JSON.parse(text) } catch { return undefined }
+}
+
+// follow(id, {onLine, onProgress, signal}) streams a job's lines and progress, and gives
+// {id, ok, result, error, lines} when it is done. Aborting signal (the router aborts a
+// screen's signal when it unmounts) closes the stream and gives null.
+export function follow(id, { onLine, onProgress, signal } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return resolve(null)
     const es = new EventSource('/api/jobs/events?id=' + encodeURIComponent(id))
     const lines = []
-    es.addEventListener('line', (e) => { const s = JSON.parse(e.data); lines.push(s); if (onLine) onLine(s) })
-    es.addEventListener('progress', (e) => { if (onProgress) onProgress(JSON.parse(e.data)) })
+    const abort = () => { es.close(); resolve(null) }
+    const end = () => { if (signal) signal.removeEventListener('abort', abort) }
+    if (signal) signal.addEventListener('abort', abort)
+    es.addEventListener('line', (e) => { const s = parse(e.data); if (typeof s !== 'string') return; lines.push(s); if (onLine) onLine(s) })
+    es.addEventListener('progress', (e) => { const s = parse(e.data); if (typeof s === 'string' && onProgress) onProgress(s) })
     es.addEventListener('done', (e) => {
       es.close() // otherwise it reconnects every few seconds (Ruling P20)
+      end()
       poll()
-      resolve({ id, ...JSON.parse(e.data), lines })
+      const d = parse(e.data)
+      if (d && typeof d === 'object') resolve({ id, ...d, lines })
+      else reject(fail(GENERIC))
     })
     es.onerror = () => {
       // CLOSED: the server refused the stream (an unknown job). Otherwise the browser is
       // reconnecting; a heartbeat tells a dropped stream from a stopped panel.
-      if (es.readyState === EventSource.CLOSED) return reject(fail(GENERIC, 404))
-      beat().then((alive) => { if (!alive) { es.close(); reject(fail(GENERIC, 0)) } })
+      if (es.readyState === EventSource.CLOSED) { end(); return reject(fail(GENERIC, 404)) }
+      beat().then((alive) => { if (!alive) { es.close(); end(); reject(fail(GENERIC, 0)) } })
     }
   })
 }
@@ -162,6 +203,7 @@ export function toast(text, { action } = {}) {
 // --- Dialogs -----------------------------------------------------------------------
 
 let dialogN = 0
+const openDialogs = new Set() // each open dialog's cancel, so navigation can close them
 
 // modal(title, cancelValue, build) opens a modal dialog. build(box, done) adds the
 // content and returns the element to focus first; done(value) closes it. Esc gives
@@ -177,7 +219,12 @@ export function modal(title, cancelValue, build) {
       if (e.key === 'Escape') { e.preventDefault(); done(cancelValue) }
       else if (e.key === 'Tab') trap(e, box)
     }
+    let closed = false
+    const cancel = () => done(cancelValue)
     const done = (value) => {
+      if (closed) return
+      closed = true
+      openDialogs.delete(cancel)
       document.removeEventListener('keydown', onKey)
       scrim.remove()
       if (!dead) (dialogs.lastElementChild || app).inert = false
@@ -187,6 +234,7 @@ export function modal(title, cancelValue, build) {
     const first = build(box, done)
     for (const el of [app, ...dialogs.children]) el.inert = true
     dialogs.append(scrim)
+    openDialogs.add(cancel)
     document.addEventListener('keydown', onKey)
     ;(first || box.querySelector('button, input, a[href]')).focus()
   })
@@ -246,15 +294,16 @@ async function setArchive() {
 // --- Router ------------------------------------------------------------------------
 
 const screens = {}
-let current = null, shown = '', navN = 0
+let current = null, shown = '', navN = 0, mounted = null
 
-// register(name, {mount(el, params), unmount()}). mount fills the cloned template in el
-// and may return a promise of its first view: until it settles the screen shows only
-// its h1 and a loading line. A view with `problem` set shows the shared empty state
-// instead (a screen that places noArchive() itself, like Settings, returns nothing);
-// a rejection shows its plain message with Try again. params are the hash's query
-// (#/conversations?page=2); change it with history.replaceState to keep the screen
-// mounted, or with location.hash to remount it.
+// register(name, {mount(el, params, signal), unmount()}). mount fills the cloned template
+// in el and may return a promise of its first view: until it settles the screen shows
+// only its h1 and a loading line. A view with `problem` set shows the shared empty
+// state instead (a screen that places noArchive() itself, like Settings, returns
+// nothing); a rejection shows its plain message with Try again. params are the hash's
+// query (#/conversations?page=2); change it with history.replaceState to keep the
+// screen mounted, or with location.hash to remount it. signal is aborted when the
+// screen goes: pass it to follow() so no event stream outlives its screen.
 export function register(name, screen) {
   screens[name] = screen
 }
@@ -266,6 +315,9 @@ async function show(force, first) {
   if (!SCREENS.includes(name)) return location.replace('#/overview')
   shown = hash
   const n = ++navN
+  for (const cancel of [...openDialogs].reverse()) cancel()
+  if (mounted) mounted.abort()
+  mounted = null
   if (current && current.unmount) try { current.unmount() } catch (e) { console.error(e) }
   current = null
   if (!screens[name]) await import(`./${name}.js`).catch((e) => console.error(e))
@@ -283,20 +335,22 @@ async function show(force, first) {
   const s = current = screens[name] || null
   if (!s) return
   const unhide = isolate(h1)
-  const line = h('p', { class: 'muted' }, 'Loading…')
+  const line = h('p', { class: 'muted', role: 'status' })
   let top = h1
   while (top.parentElement !== main) top = top.parentElement
   top.after(line)
+  setTimeout(() => { line.textContent = 'Loading…' }) // filled after it is in the page, so it is announced
   const retry = () => show(true)
+  mounted = new AbortController()
   try {
-    const view = await s.mount(main, new URLSearchParams(q || ''))
+    const view = await s.mount(main, new URLSearchParams(q || ''), mounted.signal)
     if (n !== navN) return
     if (view && view.problem) line.replaceWith(noArchive(view.problem, retry))
     else { line.remove(); unhide() }
   } catch (e) {
     if (n !== navN) return
     if (!e || !e.plain) console.error(e)
-    line.replaceWith(h('div', { class: 'panel pad stack' }, h('p', null, e && e.plain ? e.message : GENERIC),
+    line.replaceWith(h('div', { class: 'panel pad stack', role: 'alert' }, h('p', null, e && e.plain ? e.message : GENERIC),
       h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: retry }, 'Try again'))))
   }
 }
@@ -355,15 +409,20 @@ async function poll() {
   if (job) {
     nav.querySelector('[data-slot="foot"]').textContent = job.label
     pollTimer = setTimeout(poll, 5000)
-  } else if (busy !== false) footTime() // the first poll, or a job just ended
+  } else if (busy !== false && Date.now() - summaryAt > 3000) {
+    // The first poll, or a job just ended, and no screen has just read the summary.
+    api.get('/api/summary').catch(() => { /* the foot keeps its text */ })
+  }
   busy = !!job
 }
 
-async function footTime() {
-  try {
-    const t = when((await api.get('/api/summary')).lastBackup)
-    if (!busy) nav.querySelector('[data-slot="foot"]').textContent = t ? 'Backed up ' + t : 'Not backed up yet'
-  } catch { /* the foot keeps its text */ }
+let summaryAt = 0
+
+// lastBackup shows a summary's last backup in the rail foot, unless a job is running.
+function lastBackup(summary) {
+  summaryAt = Date.now()
+  const t = when(summary && summary.lastBackup)
+  if (!busy) nav.querySelector('[data-slot="foot"]').textContent = t ? 'Backed up ' + t.replace(/^Yesterday/, 'yesterday') : 'Not backed up yet'
 }
 
 rail(nav, document.querySelector('.grip[role="separator"]'))

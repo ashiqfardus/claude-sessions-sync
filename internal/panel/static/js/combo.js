@@ -18,9 +18,11 @@ export function combo(container, { id, label, options = [], value, onChange } = 
   const chev = icon(14, 'M6 9l6 6 6-6')
   chev.classList.add('combo-chev')
   const list = h('ul', { id: id + '-list', role: 'listbox', 'aria-label': label, class: 'combo-list pop', hidden: true })
-  container.replaceChildren(h('div', { class: 'field combo' }, h('label', { for: id }, label), h('div', { class: 'combo-box' }, input, chev), list))
+  const status = h('span', { class: 'sr', role: 'status' }) // says "Nothing matches", which the listbox can't
+  container.replaceChildren(h('div', { class: 'field combo' }, h('label', { for: id }, label), h('div', { class: 'combo-box' }, input, chev), list, status))
 
   const selected = () => opts.find((o) => o.value === sel)
+  const say = (text) => { if (status.textContent !== text) status.textContent = text } // only real changes are announced
 
   function render() {
     const s = selected(), text = s ? s.label : ''
@@ -29,12 +31,16 @@ export function combo(container, { id, label, options = [], value, onChange } = 
     input.placeholder = open ? 'Type to filter' : text
     input.setAttribute('aria-expanded', String(open))
     list.hidden = !open
-    if (!open) return input.removeAttribute('aria-activedescendant')
+    if (!open) {
+      say('')
+      return input.removeAttribute('aria-activedescendant')
+    }
     const f = q.toLowerCase()
     shown = f ? opts.filter((o) => o.label.toLowerCase().includes(f)) : opts
     list.replaceChildren(...shown.map((o, i) => h('li', { id: id + '-opt-' + i, role: 'option', class: 'combo-opt', 'aria-selected': String(o === s) },
       h('span', null, o.label), o === s && icon(14, 'M5 12.5l4.5 4.5L19 7.5'))))
     if (!shown.length) list.append(h('li', { role: 'presentation', class: 'combo-empty' }, `Nothing matches "${q}"`))
+    say(shown.length ? '' : `Nothing matches "${q}"`)
     mark(Math.min(active, shown.length - 1), true)
   }
 

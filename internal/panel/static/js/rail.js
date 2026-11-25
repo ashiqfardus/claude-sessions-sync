@@ -5,6 +5,7 @@ const RAIL = 200, MIN = 64, MAX = 320, SNAP = 140, STEP = 16
 const KEY = 'cs.railWidth'
 const clamp = (w) => Math.max(MIN, Math.min(MAX, Math.round(w)))
 const snap = (w) => (w < SNAP ? MIN : w)
+const phone = matchMedia('(max-width: 760px)') // the stylesheet's top-bar breakpoint
 
 export function rail(nav, grip) {
   let w = RAIL, drag = null
@@ -13,12 +14,13 @@ export function rail(nav, grip) {
   const set = (n, save) => {
     w = n
     nav.style.width = w + 'px'
-    nav.classList.toggle('narrow', w < SNAP)
+    nav.classList.toggle('narrow', w < SNAP && !phone.matches) // the top bar is never folded
     grip.setAttribute('aria-valuenow', w)
     if (save) try { localStorage.setItem(KEY, String(w)) } catch { /* not remembered */ }
   }
   const toggle = () => set(w < SNAP ? RAIL : MIN, true)
   set(w)
+  phone.addEventListener('change', () => set(w))
 
   grip.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return
