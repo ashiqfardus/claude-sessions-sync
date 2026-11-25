@@ -15,6 +15,7 @@ import (
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 )
 
@@ -147,17 +148,54 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		return res, fmt.Errorf("source not readable: %w", err)
 	}
 	var transcripts []string
+	byID := map[string]int{} // lower-cased id -> its transcript
 	for _, e := range entries {
 		// Regular files only: a symlink in the archive would be read through, filing
 		// whatever it points at as a transcript.
-		// A transcript is named by its id. Anything else - "<id> (conflicted copy).jsonl",
-		// a sync client's - would be filed as a session of its own and pushed back.
-		id, ok := strings.CutSuffix(e.Name(), filepath.Ext(e.Name()))
-		if ok && e.Type().IsRegular() && strings.EqualFold(filepath.Ext(e.Name()), ".jsonl") && claude.IsTranscriptID(id) {
+		if e.Type().IsRegular() && isTranscriptName(e.Name()) {
+			byID[strings.ToLower(strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())))] = len(transcripts)
 			transcripts = append(transcripts, filepath.Join(source, e.Name()))
 		}
 	}
-	if len(transcripts) == 0 {
+	// A zipped conversation is read from a temp extract, its folder beside it, with any
+	// loose file beside the zip laid over it. One that cannot be read is not filed;
+	// a loose transcript beside it still is.
+	// shortcut: every zip of the bucket is extracted at once, so temp space peaks at
+	// all of them; extract per conversation if buckets of large zips appear.
+	if zips := convzip.Find(source); len(zips) > 0 {
+		tmp, err := os.MkdirTemp("", "claude-sessions-restore-")
+		if err != nil {
+			return res, err
+		}
+		defer os.RemoveAll(tmp)
+		paths := make([]string, 0, len(zips))
+		for _, zp := range zips {
+			paths = append(paths, zp)
+		}
+		sort.Strings(paths)
+		for _, zp := range paths {
+			id := strings.TrimSuffix(filepath.Base(zp), convzip.Suffix)
+			i, loose := byID[strings.ToLower(id)]
+			p, _, err := convzip.Materialize(source, id, tmp)
+			if err == nil { // the checks a loose transcript passes
+				if st, serr := os.Lstat(p); serr != nil || !st.Mode().IsRegular() || !isTranscriptName(filepath.Base(p)) {
+					err = errors.New("its transcript is not a regular file named by its id")
+				}
+			}
+			switch {
+			case err != nil && loose:
+				res.Failed = append(res.Failed, fmt.Sprintf("%s could not be read, only the loose copy beside it is used: %v", filepath.Base(zp), err))
+			case err != nil:
+				res.Failed = append(res.Failed, fmt.Sprintf("%s could not be read, not filed: %v", filepath.Base(zp), err))
+			case loose:
+				transcripts[i] = p
+			default:
+				byID[strings.ToLower(id)] = len(transcripts)
+				transcripts = append(transcripts, p)
+			}
+		}
+	}
+	if len(transcripts) == 0 && len(res.Failed) == 0 {
 		return res, fmt.Errorf("no .jsonl transcripts in %s (memory .md files are not sessions - check the folder)", source)
 	}
 
@@ -235,7 +273,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		if dst := filepath.Join(res.Bucket, filepath.Base(src)); archive.StatOrNil(dst) == nil {
 			landing = append(landing, dst)
 		}
-		sessionFiles[id] = claude.SessionFiles(filepath.Join(source, id))
+		sessionFiles[id] = claude.SessionFiles(sessionDir(src))
 		for _, rel := range sessionFiles[id] {
 			if dst := filepath.Join(res.Bucket, id, rel); archive.StatOrNil(dst) == nil {
 				landing = append(landing, dst)
@@ -266,7 +304,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 			continue
 		}
 		id := strings.TrimSuffix(name, filepath.Ext(name))
-		failed, err := restoreSessionFiles(source, res.Bucket, id, sessionFiles[id], rules, bareLeaf, opts.DryRun, opts.Imported)
+		failed, err := restoreSessionFiles(sessionDir(src), res.Bucket, id, sessionFiles[id], rules, bareLeaf, opts.DryRun, opts.Imported)
 		if err != nil {
 			return res, err
 		}
@@ -321,7 +359,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 			if isMe(owner) {
 				owner = ""
 			}
-			fid, outcome, err := fileFork(root, src, filepath.Join(source, id), res.Bucket, id,
+			fid, outcome, err := fileFork(root, src, sessionDir(src), res.Bucket, id,
 				forkTag(filepath.Base(source), owner), rules, bareLeaf, opts, &res)
 			if errors.Is(err, errRecord) {
 				return res, err
@@ -354,7 +392,11 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 				if !ok || !c.Type().IsRegular() || isMe(machine) {
 					continue
 				}
-				fid, outcome, err := fileFork(root, filepath.Join(opts.Forks, d.Name(), c.Name()), filepath.Join(source, d.Name()),
+				dir := filepath.Join(source, d.Name())
+				if i, ok := byID[strings.ToLower(d.Name())]; ok {
+					dir = sessionDir(transcripts[i]) // from the zip when it is zipped
+				}
+				fid, outcome, err := fileFork(root, filepath.Join(opts.Forks, d.Name(), c.Name()), dir,
 					res.Bucket, d.Name(), forkTag(filepath.Base(source), machine), rules, bareLeaf, opts, &res)
 				if errors.Is(err, errRecord) {
 					return res, err
@@ -381,6 +423,20 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		return res, fmt.Errorf("no transcript could be filed: %s", res.Failed[0])
 	}
 	return res, nil
+}
+
+// isTranscriptName reports whether a file at the top of a bucket is named as a
+// transcript, by its id. Anything else - "<id> (conflicted copy).jsonl", a sync
+// client's - would be filed as a session of its own and pushed back.
+func isTranscriptName(name string) bool {
+	ext := filepath.Ext(name)
+	return strings.EqualFold(ext, ".jsonl") && claude.IsTranscriptID(strings.TrimSuffix(name, ext))
+}
+
+// sessionDir is a transcript's own folder, beside it: its subagent transcripts and
+// saved tool output.
+func sessionDir(transcript string) string {
+	return strings.TrimSuffix(transcript, filepath.Ext(transcript))
 }
 
 func (r *restoreResult) add(out rewrite.Result) {
@@ -955,18 +1011,18 @@ func mergeIndex(base, theirs, mine string, theirsNewer bool, held map[string]boo
 	return strings.Join(out, "\n") + "\n"
 }
 
-// restoreSessionFiles files a session's own folder - rels, its subagent transcripts
-// and saved tool output - adding only files that are not here yet. A local file
+// restoreSessionFiles files a session's own folder, srcDir - rels, its subagent
+// transcripts and saved tool output - adding only files that are not here yet. A local file
 // belongs to a live or newer session and is never replaced. Each subagent transcript
 // was pended in r before; its size is journaled once it lands, and a journal error
 // stops it. failed names the files that could not be filed.
-func restoreSessionFiles(srcBucket, dstBucket, id string, rels []string, rules []rewrite.Rule, bareLeaf string, dryRun bool, r *importRecord) (failed []string, err error) {
+func restoreSessionFiles(srcDir, dstBucket, id string, rels []string, rules []rewrite.Rule, bareLeaf string, dryRun bool, r *importRecord) (failed []string, err error) {
 	for _, rel := range rels {
 		dst := filepath.Join(dstBucket, id, rel)
 		if dryRun || archive.StatOrNil(dst) != nil {
 			continue
 		}
-		if ferr := fileSessionFile(filepath.Join(srcBucket, id, rel), dst, rel, rules, bareLeaf); ferr != nil {
+		if ferr := fileSessionFile(filepath.Join(srcDir, rel), dst, rel, rules, bareLeaf); ferr != nil {
 			failed = append(failed, fmt.Sprintf("%s/%s: %v", id, filepath.ToSlash(rel), ferr))
 		}
 		if err := r.settle(dst, true); err != nil {

@@ -377,3 +377,147 @@ func TestPushWritesNoFolderFileThroughAPlantedLink(t *testing.T) {
 		t.Errorf("the transcript is not archived:\n%s", got)
 	}
 }
+
+// zippedOnMac is MAC's session, with a subagent and a tool output, pushed and zipped in
+// the archive. WIN keeps the project at another path.
+func zippedOnMac(t *testing.T) (archive string, mac, win machine, macRepo, winRepo string) {
+	t.Helper()
+	archive, mac, macRepo = pushedSession(t)
+	mustWrite(t, filepath.Join(archive, "projects", claude.Slug(macRepo), forkSession, "tool-results", "r0.txt"), "archived only\n")
+	zipArchived(t, archive, macRepo)
+	win = newMachine(t, "WIN", archive)
+	winRepo = gitRepo(t, filepath.Join(t.TempDir(), "work", "api"))
+	return
+}
+
+// importOn runs import on m, searching beside here, with gone, the other machine's
+// folder, moved away.
+func importOn(t *testing.T, m machine, gone, here string, args ...string) string {
+	t.Helper()
+	var out string
+	away(t, gone, func() {
+		out = m.run(t, append([]string{"import", "--search-root", filepath.Dir(here), "--no-plugins"}, args...)...)
+	})
+	return out
+}
+
+// A zipped conversation is filed as a loose one is: every turn, its folder, paths
+// rewritten. The archive keeps the zip, and the extraction is removed.
+func TestImportRestoresAZippedConversation(t *testing.T) {
+	archive, _, win, macRepo, winRepo := zippedOnMac(t)
+	tmp := t.TempDir()
+	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(k, tmp)
+	}
+	out := importOn(t, win, macRepo, winRepo)
+
+	got := mustRead(t, win.session(winRepo))
+	for _, turn := range []string{"u1", "m1"} {
+		if !strings.Contains(got, `"`+turn+`"`) {
+			t.Errorf("the filed transcript lacks %s:\n%s\n%s", turn, got, out)
+		}
+	}
+	if !strings.Contains(got, `"cwd":`+quoted(winRepo)) {
+		t.Errorf("the cwd is not rewritten to %s:\n%s", winRepo, got)
+	}
+	dir := filepath.Join(filepath.Dir(win.session(winRepo)), forkSession)
+	if sub := mustRead(t, filepath.Join(dir, "subagents", "agent-a1.jsonl")); !strings.Contains(sub, `"cwd":`+quoted(winRepo)) {
+		t.Errorf("the subagent is not filed with its paths rewritten:\n%s", sub)
+	}
+	if r := mustRead(t, filepath.Join(dir, "tool-results", "r0.txt")); r != "archived only\n" {
+		t.Errorf("the tool output is %q", r)
+	}
+	onlyZip(t, filepath.Join(archive, "projects", claude.Slug(macRepo)))
+	if ents, _ := os.ReadDir(tmp); len(ents) != 0 {
+		t.Errorf("import left %d temporary item(s) behind", len(ents))
+	}
+}
+
+// A bucket of zips alone is a project to import, placed from the manifest or, with
+// none, from the zipped transcript's cwd.
+func TestImportFindsABucketOfOnlyZips(t *testing.T) {
+	archive, _, win, macRepo, winRepo := zippedOnMac(t)
+	placed := claude.Slug(macRepo) + " -> " + winRepo
+	if out := importOn(t, win, macRepo, winRepo, "--dry-run"); !strings.Contains(out, placed) || !strings.Contains(out, "1 filed") {
+		t.Errorf("the bucket of zips is not listed with its placement:\n%s", out)
+	}
+	for _, f := range []string{filepath.Join("manifest", "MAC.json"), "projects.json"} {
+		if err := os.Remove(filepath.Join(archive, f)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out := importOn(t, win, macRepo, winRepo, "--dry-run"); !strings.Contains(out, placed) {
+		t.Errorf("with no manifest the bucket is not placed from its zipped transcript:\n%s", out)
+	}
+}
+
+// MAC went on with the session imported on WIN, and its copy was zipped since: --update
+// brings the new turns, with paths rewritten.
+func TestImportUpdateFromAZippedCopy(t *testing.T) {
+	archive, mac, win, macRepo, winRepo := importedOnWin(t)
+	appendTurns(t, mac.session(macRepo), macRepo, "m2")
+	mac.run(t, "push", "--no-html")
+	zipArchived(t, archive, macRepo)
+	out := importOn(t, win, macRepo, winRepo, "--update")
+	got := mustRead(t, win.session(winRepo))
+	if !strings.Contains(got, `"m2"`) || !strings.Contains(got, `"cwd":`+quoted(winRepo)) {
+		t.Errorf("the new turn did not arrive rewritten:\n%s\n%s", got, out)
+	}
+	if s := win.sessions(t, winRepo); len(s) != 1 {
+		t.Errorf("WIN holds %v, want the one session", s)
+	}
+}
+
+func TestPullReadsZips(t *testing.T) {
+	archive, _, repo := pushedSession(t)
+	zipArchived(t, archive, repo)
+	lap := newMachine(t, "LAP-2", archive)
+	out := lap.run(t, "pull", "--no-plugins")
+	if got := mustRead(t, lap.session(repo)); !strings.Contains(got, `"m1"`) {
+		t.Errorf("pull did not file the zipped conversation:\n%s\n%s", got, out)
+	}
+	if !fileExists(filepath.Join(filepath.Dir(lap.session(repo)), forkSession, "subagents", "agent-a1.jsonl")) {
+		t.Error("pull did not file the zipped subagent")
+	}
+}
+
+// Another machine continued the conversation loose beside a zip it could not see yet:
+// the loose turns win, the subagent comes from the zip, and the id is filed once.
+func TestPullReadsALooseCopyBesideItsZip(t *testing.T) {
+	archive, _, repo := pushedSession(t)
+	bucket := zipArchived(t, archive, repo)
+	mustWrite(t, filepath.Join(bucket, forkSession+".jsonl"), sessionLines(repo, "u1", "m1", "x1"))
+	lap := newMachine(t, "LAP-2", archive)
+	out := lap.run(t, "pull", "--no-plugins")
+	if !strings.Contains(out, "filed 1 transcript(s)") {
+		t.Errorf("not filed once:\n%s", out)
+	}
+	if got := mustRead(t, lap.session(repo)); !strings.Contains(got, `"x1"`) {
+		t.Errorf("the loose continuation is not what was filed:\n%s", got)
+	}
+	if !fileExists(filepath.Join(filepath.Dir(lap.session(repo)), forkSession, "subagents", "agent-a1.jsonl")) {
+		t.Error("the subagent only the zip holds was not filed")
+	}
+}
+
+// A zip that cannot be read is named and skipped; the bucket's other conversations are
+// filed.
+func TestPullSkipsAnUnreadableZip(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	const other = "77777777-7777-7777-7777-777777777777"
+	mustWrite(t, filepath.Join(filepath.Dir(mac.session(repo)), other+".jsonl"), sessionLines(repo, "o1"))
+	mac.run(t, "push", "--no-html")
+	bucket := zipArchived(t, archive, repo)
+	mustWrite(t, convzip.Path(bucket, forkSession), "not a zip")
+	lap := newMachine(t, "LAP-2", archive)
+	out := lap.run(t, "pull", "--no-plugins")
+	if !strings.Contains(out, forkSession+convzip.Suffix) {
+		t.Errorf("the unreadable zip is not named:\n%s", out)
+	}
+	if fileExists(lap.session(repo)) {
+		t.Error("a conversation was filed from a zip that cannot be read")
+	}
+	if !fileExists(filepath.Join(filepath.Dir(lap.session(repo)), other+".jsonl")) {
+		t.Errorf("the bucket's other conversation was not filed:\n%s", out)
+	}
+}

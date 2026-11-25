@@ -13,6 +13,7 @@ import (
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
@@ -499,7 +500,8 @@ func cmdImport(args []string) error {
 }
 
 // newestCwd is the working directory recorded by the newest transcript in an archived
-// bucket, or "" when there is none.
+// bucket, or "" when there is none. A zipped one is dated by its entry, from the zip's
+// index, and read from a temp extract only when it is the newest.
 func newestCwd(dir string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -512,13 +514,28 @@ func newestCwd(dir string) string {
 			continue
 		}
 		if info, err := e.Info(); err == nil && info.ModTime().After(at) {
-			newest, at = e.Name(), info.ModTime()
+			newest, at = filepath.Join(dir, e.Name()), info.ModTime()
+		}
+	}
+	zipped := ""
+	for _, zp := range convzip.Find(dir) {
+		id := strings.TrimSuffix(filepath.Base(zp), convzip.Suffix)
+		if ents, err := convzip.Entries(zp); err == nil && ents[id+".jsonl"].ModTime.After(at) {
+			zipped, at = id, ents[id+".jsonl"].ModTime
+		}
+	}
+	if zipped != "" {
+		if tmp, err := os.MkdirTemp("", "claude-sessions-cwd-"); err == nil {
+			defer os.RemoveAll(tmp)
+			if p, _, err := convzip.Materialize(dir, zipped, tmp); err == nil {
+				newest = p // else the newest loose one
+			}
 		}
 	}
 	if newest == "" {
 		return ""
 	}
-	s, _ := claude.ScanHead(filepath.Join(dir, newest), headScanLines)
+	s, _ := claude.ScanHead(newest, headScanLines)
 	return s.Cwd
 }
 
@@ -532,7 +549,7 @@ func hasTranscripts(dir string) bool {
 			return true
 		}
 	}
-	return false
+	return len(convzip.Find(dir)) > 0
 }
 
 // defaultSearchRoots picks somewhere sensible to look when the user has not said.
