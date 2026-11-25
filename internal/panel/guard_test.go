@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const usedLinkText = "This link has already been used."
+const (
+	usedLinkText   = "This link has already been used."
+	refreshToShell = `<meta http-equiv="refresh" content="0;url=/">`
+)
 
 // newTestServer builds a server with one GET route and one POST route, listening on a
 // random loopback port so the Host check has a real port to match.
@@ -61,7 +64,7 @@ func do(s *Server, method, path string, hdr ...string) *httptest.ResponseRecorde
 func login(t *testing.T, s *Server) string {
 	t.Helper()
 	w := do(s, http.MethodGet, "/k/"+s.NewKey())
-	if w.Code != http.StatusSeeOther {
+	if w.Code != http.StatusOK {
 		t.Fatalf("/k/ gave %d", w.Code)
 	}
 	for _, c := range w.Result().Cookies() {
@@ -136,8 +139,14 @@ func TestKeyWorksOnce(t *testing.T) {
 	}
 
 	w := do(s, http.MethodGet, "/k/"+key)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
-		t.Fatalf("first use: %d to %q, want 303 to /", w.Code, w.Header().Get("Location"))
+	if w.Code != http.StatusOK || w.Header().Get("Location") != "" || !strings.Contains(w.Body.String(), refreshToShell) {
+		t.Fatalf("first use: %d %q, want 200 with a page refreshing to /", w.Code, w.Body.String())
+	}
+	if strings.Contains(strings.ToLower(w.Body.String()), "<script") {
+		t.Errorf("the key page has a script: %q", w.Body.String())
+	}
+	if w.Header().Get("Content-Security-Policy") != CSP || w.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("key page headers: %v", w.Header())
 	}
 	sc := w.Header().Get("Set-Cookie")
 	for _, want := range []string{"cs_panel_" + strconv.Itoa(s.Port()) + "=", "Path=/", "HttpOnly", "SameSite=Strict"} {
@@ -265,8 +274,8 @@ func TestLaunchNeedsTheSecret(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || len(got.Key) != 64 {
 		t.Fatalf("body %q: %v", w.Body.String(), err)
 	}
-	if w := do(s, http.MethodGet, "/k/"+got.Key); w.Code != http.StatusSeeOther {
-		t.Errorf("launch key first use: %d, want 303", w.Code)
+	if w := do(s, http.MethodGet, "/k/"+got.Key); w.Code != http.StatusOK {
+		t.Errorf("launch key first use: %d, want 200", w.Code)
 	}
 	if w := do(s, http.MethodGet, "/k/"+got.Key); w.Code != http.StatusForbidden {
 		t.Errorf("launch key second use: %d, want 403", w.Code)
@@ -290,20 +299,57 @@ func TestListensOnLoopbackOnly(t *testing.T) {
 	if got, want := s.KeyURL("abc"), "http://127.0.0.1:"+strconv.Itoa(a.Port)+"/k/abc"; got != want {
 		t.Errorf("KeyURL = %q, want %q", got, want)
 	}
+}
 
-	// End to end over the real socket: the key URL lands on the shell, which holds the token.
-	go http.Serve(l, s.Handler())
-	jar, _ := cookiejar.New(nil)
-	c := &http.Client{Jar: jar, Timeout: 5 * time.Second}
-	res, err := c.Get(s.KeyURL(s.NewKey()))
+// End to end over the real socket: the key page's refresh, followed by the same client,
+// reaches / with the cookie and gets the shell. (A Go client ignores SameSite; the
+// file:// case it guards against was checked in Chrome.)
+func TestRefreshLandsOnTheShell(t *testing.T) {
+	s, err := New(Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(res.Body)
-	res.Body.Close()
+	l, err := s.Listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go http.Serve(l, s.Handler())
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Jar: jar, Timeout: 5 * time.Second}
+	get := func(u string) (*http.Response, string) {
+		res, err := c.Get(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		return res, string(b)
+	}
+
+	res, body := get(s.KeyURL(s.NewKey()))
+	i := strings.Index(body, `content="0;url=`)
+	if res.StatusCode != http.StatusOK || i < 0 {
+		t.Fatalf("key page: %d %q", res.StatusCode, body)
+	}
+	target := body[i+len(`content="0;url=`):]
+	next, err := res.Request.URL.Parse(target[:strings.IndexByte(target, '"')])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The jar's cookies for / are what the client sends there; the guard refuses / without one.
+	carried := false
+	for _, ck := range jar.Cookies(next) {
+		carried = carried || ck.Name == s.cookieName() && ck.Value == s.cookie
+	}
+	if !carried {
+		t.Fatalf("the client has no session cookie for %s", next)
+	}
+	res, body = get(next.String())
 	want := `<meta name="cs-token" content="` + s.Token() + `">`
-	if res.StatusCode != http.StatusOK || res.Request.URL.Path != "/" || !strings.Contains(string(body), want) {
-		t.Errorf("got %d at %s, body %q, want the shell with %s", res.StatusCode, res.Request.URL, body, want)
+	if res.StatusCode != http.StatusOK || next.Path != "/" || !strings.Contains(body, want) {
+		t.Errorf("got %d at %s, body %q, want the shell with %s", res.StatusCode, next, body, want)
 	}
 	if ct := res.Header.Get("Content-Type"); ct != "text/html; charset=utf-8" {
 		t.Errorf("shell Content-Type %q", ct)

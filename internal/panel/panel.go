@@ -154,8 +154,12 @@ func (s *Server) useKey(w http.ResponseWriter, r *http.Request) {
 		f(key)
 	}
 	http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: s.cookie, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	// A Strict cookie is not sent on a redirect that starts from a file:// page, so the hop to / starts from this page.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	io.WriteString(w, keyPage)
 }
+
+const keyPage = "<!doctype html>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"refresh\" content=\"0;url=/\">\n<title>claude-sessions panel</title>\n<p><a href=\"/\">Open the claude-sessions panel</a></p>\n"
 
 // page is the shell, with the per-run token for the page's POSTs.
 func (s *Server) page(w http.ResponseWriter, r *http.Request) {
