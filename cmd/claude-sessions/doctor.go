@@ -66,11 +66,32 @@ func cmdDoctor(args []string) error {
 			printCheck(c)
 		}
 	}
+	hinted, stuck := false, false
+	hint := func() {
+		if !hinted {
+			hinted = true
+			add(check{"archive files", levelWarn, streamingAdvice, ""})
+		}
+	}
+	// Once one archive step has timed out the folder is not answering: the steps left are
+	// skipped at once, not each waited out. Checks of this computer still run.
+	giveUp := func() {
+		stuck = true
+		hint()
+		add(check{"archive checks", levelWarn, "skipped: the archive folder is not responding (see the hint above)", ""})
+	}
 	// A step that reads the archive runs under archiveLimit (see timed): a sync folder
 	// that downloads each file as it is opened can hold one read for minutes.
 	slow := func(name string, step func(add func(check))) {
-		for _, c := range timedAll(name, archiveLimit, step) {
+		if stuck {
+			return
+		}
+		cs, done := timedAll(name, archiveLimit, step)
+		for _, c := range cs {
 			add(c)
+		}
+		if !done {
+			giveUp()
 		}
 	}
 
@@ -141,7 +162,7 @@ func cmdDoctor(args []string) error {
 			"Run `claude-sessions config set-destination <folder>` to choose one."})
 		return report(checks, *asJSON)
 	}
-	// Not reachable in time, every later archive check would wait out its limit too.
+	// It fails or passes; a warning is the time limit.
 	reach := timed("archive", archiveLimit, func() check {
 		st, err := os.Stat(dest)
 		switch {
@@ -154,11 +175,13 @@ func cmdDoctor(args []string) error {
 		return check{"archive", levelOK, fmt.Sprintf("%s (%s)", dest, src), ""}
 	})
 	add(reach)
-	if reach.Level != levelOK {
+	switch {
+	case reach.Level == levelFail:
 		return report(checks, *asJSON)
-	}
-	if streamingHint(dest) {
-		add(check{"archive files", levelWarn, streamingAdvice, ""})
+	case reach.Level == levelWarn:
+		giveUp()
+	case streamingHint(dest):
+		hint()
 	}
 
 	// A read-only mount, an exhausted quota or a permissions problem passes every
@@ -388,7 +411,8 @@ func cmdDoctor(args []string) error {
 	// --- is anything actually being archived? ---------------------------------
 	// The hook and the sweep both exit 0 by design, so a scheduler's "last result"
 	// only ever proves that something started. Ask the question directly.
-	for _, c := range liveness(root, dest, buckets) {
+	slow("archived", func(add func(check)) { add(archivedCheck(root, dest, buckets)) })
+	for _, c := range liveness(root) {
 		add(c)
 	}
 
@@ -430,23 +454,24 @@ const streamingAdvice = "Your archive folder downloads files only when they're o
 // timed runs a check with a time limit. One over it is abandoned, never waited on, and
 // reported as a warning instead.
 func timed(name string, limit time.Duration, run func() check) check {
-	return timedAll(name, limit, func(add func(check)) { add(run()) })[0]
+	cs, _ := timedAll(name, limit, func(add func(check)) { add(run()) })
+	return cs[0]
 }
 
-// timedAll is timed for a step that reports any number of checks, through add. An
-// abandoned step prints nothing and holds no lock: it only fills a slice no one reads
-// again, and the process exits under it.
-func timedAll(name string, limit time.Duration, step func(add func(check))) []check {
+// timedAll is timed for a step that reports any number of checks, through add, and
+// says whether it finished. An abandoned step prints nothing and holds no lock: it only
+// fills a slice no one reads again, and the process exits under it.
+func timedAll(name string, limit time.Duration, step func(add func(check))) ([]check, bool) {
 	var out []check
 	before := beforeArchive
 	if withinDeadline(limit, func() {
 		before(name)
 		step(func(c check) { out = append(out, c) })
 	}) {
-		return out
+		return out, true
 	}
 	return []check{{name, levelWarn,
-		fmt.Sprintf("%s: not finished after %ds - the archive folder may be downloading files on demand", name, int(limit.Seconds())), ""}}
+		fmt.Sprintf("%s: not finished after %ds - the archive folder may be downloading files on demand", name, int(limit.Seconds())), ""}}, false
 }
 
 // streamingHint reports whether reading the first 64 KB of one archived transcript or
@@ -491,43 +516,45 @@ const archiveLag = 40 * time.Minute
 // missed runs - or a machine that was switched off.
 const quietPushAge = 3 * time.Hour
 
-// liveness checks the two things that show the archive is really being kept up to
-// date: sessions that ended a while ago are in it, and pushes are succeeding.
-func liveness(root, dest string, buckets []claude.Bucket) []check {
-	out := []check{timed("archived", archiveLimit, func() check {
-		var pending []string
-		cutoff := time.Now().Add(-archiveLag)
-		held, zips := loadHeld(root), loadZipCompared(root)
-		for _, b := range buckets {
-			for _, t := range b.Transcripts {
-				if t.ModTime.After(cutoff) {
-					continue // may still be live, or the sweep has not come round yet
-				}
-				src, err := os.Stat(t.Path)
-				if err != nil {
-					continue
-				}
-				dst := archive.StatOrNil(filepath.Join(archive.ProjectsDir(dest), b.Name, filepath.Base(t.Path)))
-				// A shorter local copy is a session forked across machines, which push
-				// deliberately leaves alone; it is not a failure to archive. Nor is one
-				// whose copy is saved as a fork beside the archived one, or one another
-				// bucket's archived copy holds in whole, nor one whose copy is zipped.
-				fork := archive.StatOrNil(forkPath(dest, b.Name, t.ID, machineName()))
-				if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) &&
-					!held.leftTo(dest, b.Name, t.ID, src) && !(dst == nil && zipCovers(dest, b.Name, t.ID, src, zips)) {
-					pending = append(pending, b.Name+"/"+t.ID)
-				}
+// archivedCheck and liveness check the two things that show the archive is really
+// being kept up to date: sessions that ended a while ago are in it, and pushes are
+// succeeding. Only the first reads the archive.
+func archivedCheck(root, dest string, buckets []claude.Bucket) check {
+	var pending []string
+	cutoff := time.Now().Add(-archiveLag)
+	held, zips := loadHeld(root), loadZipCompared(root)
+	for _, b := range buckets {
+		for _, t := range b.Transcripts {
+			if t.ModTime.After(cutoff) {
+				continue // may still be live, or the sweep has not come round yet
+			}
+			src, err := os.Stat(t.Path)
+			if err != nil {
+				continue
+			}
+			dst := archive.StatOrNil(filepath.Join(archive.ProjectsDir(dest), b.Name, filepath.Base(t.Path)))
+			// A shorter local copy is a session forked across machines, which push
+			// deliberately leaves alone; it is not a failure to archive. Nor is one
+			// whose copy is saved as a fork beside the archived one, or one another
+			// bucket's archived copy holds in whole, nor one whose copy is zipped.
+			fork := archive.StatOrNil(forkPath(dest, b.Name, t.ID, machineName()))
+			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) &&
+				!held.leftTo(dest, b.Name, t.ID, src) && !(dst == nil && zipCovers(dest, b.Name, t.ID, src, zips)) {
+				pending = append(pending, b.Name+"/"+t.ID)
 			}
 		}
-		if len(pending) > 0 {
-			return check{"archived", levelFail,
-				fmt.Sprintf("%d session(s) that ended over %d minutes ago are not in the archive, e.g. %s",
-					len(pending), int(archiveLag.Minutes()), pending[0]),
-				"Neither the hook nor the sweep has copied them. Run `claude-sessions push` and read ~/.claude/session-sync.log for why."}
-		}
-		return check{"archived", levelOK, fmt.Sprintf("every session that ended over %d minutes ago is in the archive", int(archiveLag.Minutes())), ""}
-	})}
+	}
+	if len(pending) > 0 {
+		return check{"archived", levelFail,
+			fmt.Sprintf("%d session(s) that ended over %d minutes ago are not in the archive, e.g. %s",
+				len(pending), int(archiveLag.Minutes()), pending[0]),
+			"Neither the hook nor the sweep has copied them. Run `claude-sessions push` and read ~/.claude/session-sync.log for why."}
+	}
+	return check{"archived", levelOK, fmt.Sprintf("every session that ended over %d minutes ago is in the archive", int(archiveLag.Minutes())), ""}
+}
 
+func liveness(root string) []check {
+	var out []check
 	last, ok := lastPush(root)
 	switch {
 	case !ok:

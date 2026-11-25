@@ -640,7 +640,8 @@ Nothing is backed up until it is.
 crawl.** Your sync app downloads each file only when it is opened. Make the archive
 folder available offline: in Google Drive, right-click the `claude-sessions` folder and
 choose Offline access, then Available offline; in OneDrive, choose Always keep on this
-device. `doctor` gives up on an archive check after 20 seconds, so it always finishes.
+device. `doctor` gives up on the archive after one check has taken 20 seconds, so it
+always finishes.
 
 **`doctor` fails "archive access" on macOS.** macOS privacy settings refused access to
 the archive. The hint says which program to allow: the background sweep needs
@@ -944,7 +945,8 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `bucket naming` | Information only: `CLAUDE_CODE_PROJECT_DIR_NAME` is set, so project names are not path-based |
 | `local buckets` | Information only: projects here with memory but no sessions |
 | `archive`, `archive writable`, `archive config` | The archive is reachable and writable (`--no-write-probe` skips the test file), and whether its path is saved or only auto-detected |
-| `archive files` | Reading the start of one archived file took over 3 seconds: the folder downloads files only when they are opened |
+| `archive files` | Reading the start of one archived file took over 3 seconds, or an archive check gave up: the folder downloads files only when they are opened |
+| `archive checks` | The archive checks skipped after one did not finish in 20 seconds |
 | `manifest`, `manifest format` | Archived projects `import` could not place, ignored manifest files (unreadable, or a sync app's conflict copy), and an archive still in the PowerShell tools' format |
 | `html`, `html excluded` | Whether pages are current, and which projects are withheld |
 | `session hook`, `reply hook`, `sweep` | The hooks and the scheduled sweep are installed and run this program; duplicates or the older PowerShell hook |
@@ -958,6 +960,8 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 
 Each check prints as it finishes. A check that reads the archive and has not finished
 after 20 seconds is left behind and shown as a warning, `<check>: not finished after 20s`.
+The archive checks after it are then skipped, in one `archive checks` line, and the
+checks of this computer still run.
 
 It exits non-zero when any check fails, so it can be monitored. `doctor --json` prints
 `{version, checks, warnings, failures, ok}`.

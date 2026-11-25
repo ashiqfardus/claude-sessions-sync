@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,25 +179,50 @@ func TestDoctorPrintsHeaderBeforeReadingTheArchive(t *testing.T) {
 	}
 }
 
-// A check over its limit is abandoned and named, and the checks after it still run.
+const skipLine = "skipped: the archive folder is not responding (see the hint above)"
+
+// blockSteps blocks the named archive steps forever and returns the steps started, in
+// order. Never released: an abandoned step stays blocked here, touching no file while
+// the test's folders are removed.
+func blockSteps(t *testing.T, names ...string) (started func() []string) {
+	var mu sync.Mutex
+	var got []string
+	block := make(chan struct{})
+	hook(t, &beforeArchive, func(name string) {
+		mu.Lock()
+		got = append(got, name)
+		mu.Unlock()
+		for _, n := range names {
+			if n == name {
+				<-block
+			}
+		}
+	})
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), got...)
+	}
+}
+
+// unblocked times doctor on the fixture with nothing blocked: the time limits below are
+// on top of it, as the sweep check alone runs schtasks on Windows, which a CI runner can
+// make slow.
+func unblocked(t *testing.T, claudeDir, dest string) time.Duration {
+	start := time.Now()
+	runDoctorHere(t, claudeDir, dest)
+	return time.Since(start)
+}
+
+// A check over its limit is abandoned and named. The archive checks after it are
+// skipped in one line below the hint; the checks of this computer still run.
 func TestDoctorTimesOutASlowCheck(t *testing.T) {
 	claudeDir, dest := doctorFixture(t)
 	hook(t, &archiveLimit, time.Second)
-	// The 3 s are on top of an unblocked run: the sweep check alone runs schtasks on
-	// Windows, which a CI runner can make slow.
-	start := time.Now()
-	runDoctorHere(t, claudeDir, dest)
-	baseline := time.Since(start)
+	baseline := unblocked(t, claudeDir, dest)
+	blockSteps(t, "manifest")
 
-	// Never released: the abandoned check stays blocked here, touching no file while the
-	// test's folders are removed.
-	block := make(chan struct{})
-	hook(t, &beforeArchive, func(name string) {
-		if name == "manifest" {
-			<-block
-		}
-	})
-	start = time.Now()
+	start := time.Now()
 	out := runDoctorHere(t, claudeDir, dest)
 	if took := time.Since(start); took > baseline+3*time.Second {
 		t.Errorf("doctor took %s with one check blocked and a 1s limit (%s unblocked)", took, baseline)
@@ -205,10 +231,63 @@ func TestDoctorTimesOutASlowCheck(t *testing.T) {
 	if !strings.Contains(out, want) || !strings.Contains(out, "  ! manifest ") {
 		t.Errorf("no warning for the slow check, want %q in:\n%s", want, out)
 	}
-	for _, later := range []string{"session hook", "+ archived", "warning(s),"} {
+	// The one read the hint makes was fast, so the hint is printed for the timeout.
+	if hint, skip := strings.Index(out, streamingText), strings.Index(out, skipLine); hint < 0 || skip < hint ||
+		strings.Count(out, streamingText) != 1 || strings.Count(out, skipLine) != 1 {
+		t.Errorf("want the hint once, then the skip line once:\n%s", out)
+	}
+	for _, later := range []string{"session hook", "sweep", "last push", "warning(s),"} {
 		if !strings.Contains(out, later) {
-			t.Errorf("%q missing: the checks after the slow one did not run:\n%s", later, out)
+			t.Errorf("%q missing: the checks of this computer did not run:\n%s", later, out)
 		}
+	}
+	for _, skipped := range []string{"work folders", "+ archived"} {
+		if strings.Contains(out, skipped) {
+			t.Errorf("%q ran after the archive stopped answering:\n%s", skipped, out)
+		}
+	}
+}
+
+// R20: with two archive steps blocked, doctor waits out the first only, and never starts
+// the second, so a stuck folder costs one time limit.
+func TestDoctorSkipsTheArchiveOnceAStepTimesOut(t *testing.T) {
+	claudeDir, dest := doctorFixture(t)
+	hook(t, &archiveLimit, time.Second)
+	baseline := unblocked(t, claudeDir, dest)
+	started := blockSteps(t, "versions", "manifest")
+
+	start := time.Now()
+	out := runDoctorHere(t, claudeDir, dest)
+	// Waiting out both would take 2s over the baseline.
+	if took := time.Since(start); took > baseline+1900*time.Millisecond {
+		t.Errorf("doctor took %s with two steps blocked and a 1s limit (%s unblocked)", took, baseline)
+	}
+	if !strings.Contains(out, "versions: not finished after 1s") || !strings.Contains(out, skipLine) {
+		t.Errorf("want the first warning and the skip line:\n%s", out)
+	}
+	if strings.Contains(out, "manifest: not finished") {
+		t.Errorf("the second blocked step was waited out too:\n%s", out)
+	}
+	if got := started(); strings.Join(got, ",") != "archive,versions" {
+		t.Errorf("archive steps started: %v; want archive, versions and nothing after", got)
+	}
+}
+
+// The archive's own folder not answering in time is the same: no archive step after it
+// runs, and the checks of this computer do.
+func TestDoctorRunsLocalChecksWhenTheArchiveDoesNotAnswer(t *testing.T) {
+	claudeDir, dest := doctorFixture(t)
+	hook(t, &archiveLimit, time.Second)
+	started := blockSteps(t, "archive")
+
+	out := runDoctorHere(t, claudeDir, dest)
+	for _, want := range []string{"archive: not finished after 1s", streamingText, skipLine, "session hook", "last push"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q missing:\n%s", want, out)
+		}
+	}
+	if got := started(); strings.Join(got, ",") != "archive" {
+		t.Errorf("archive steps started: %v; want only archive", got)
 	}
 }
 
