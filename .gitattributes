@@ -7,3 +7,5 @@
 *.png binary
 *.pdf binary
 *.woff2 binary
+# goldens are byte-exact output (some hold a lone CR from progress lines)
+cmd/claude-sessions/testdata/golden/*.txt -text
