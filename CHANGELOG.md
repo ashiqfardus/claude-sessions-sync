@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] - 2026-11-25
 
 Upgrading: update every computer, let each push once, then run `claude-sessions clean`
 to see the space duplicate copies take, and `clean --yes` to free it.
