@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -86,5 +87,39 @@ func TestRoots(t *testing.T) {
 	r = Roots("/h", []string{`C:\`, `D:\`})
 	if len(r) != 3 || r[1].Path != `C:\` {
 		t.Fatalf("%v", r)
+	}
+}
+
+func TestListFoldersRefusesUNCAndEmpty(t *testing.T) {
+	for _, p := range []string{"", `\\host\share`, "//host/share", `\\?\C:\x`} {
+		if l := ListFolders(p, false); l.Error != cantOpen || len(l.Entries) != 0 {
+			t.Fatalf("%q: %+v", p, l)
+		}
+	}
+}
+
+func TestListFoldersSkipsBrokenAndLoopLinks(t *testing.T) {
+	root := t.TempDir()
+	os.Mkdir(filepath.Join(root, "real"), 0o755)
+	if os.Symlink(filepath.Join(root, "gone"), filepath.Join(root, "broken")) != nil {
+		t.Skip("symlinks unavailable")
+	}
+	os.Symlink(filepath.Join(root, "loop2"), filepath.Join(root, "loop1"))
+	os.Symlink(filepath.Join(root, "loop1"), filepath.Join(root, "loop2"))
+	if l := ListFolders(root, false); !reflect.DeepEqual(names(l), []string{"real"}) {
+		t.Fatalf("%v", names(l))
+	}
+}
+
+func TestListFoldersPermissionDenied(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("permissions not enforced")
+	}
+	d := filepath.Join(t.TempDir(), "locked")
+	os.Mkdir(d, 0o755)
+	os.Chmod(d, 0)
+	t.Cleanup(func() { os.Chmod(d, 0o755) })
+	if l := ListFolders(d, false); l.Error != cantOpen {
+		t.Fatalf("%+v", l)
 	}
 }

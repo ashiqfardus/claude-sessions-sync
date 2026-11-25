@@ -28,7 +28,8 @@ const cantOpen = "You can't open this folder."
 // files, no contents. A symlink is listed only if it points to a directory; the
 // listed path is never rewritten to the link's target.
 func ListFolders(path string, hidden bool) FolderList {
-	if !filepath.IsAbs(path) {
+	// UNC/SMB paths would make Windows connect to a chosen host and leak NTLM credentials.
+	if !filepath.IsAbs(path) || strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, "//") {
 		return FolderList{Path: path, Error: cantOpen}
 	}
 	path = filepath.Clean(path)
@@ -53,6 +54,8 @@ func ListFolders(path string, hidden bool) FolderList {
 			continue
 		}
 		full := filepath.Join(path, name)
+		// Following a linked folder is a navigation convenience, not a jail: the real
+		// access control is the route's localhost and token guard.
 		if e.Type()&os.ModeSymlink != 0 {
 			if st, err := os.Stat(full); err != nil || !st.IsDir() {
 				continue
