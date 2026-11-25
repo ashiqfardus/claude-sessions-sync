@@ -636,6 +636,12 @@ per-reply hook and would leave it running.
 **`doctor` says the archive is not reachable.** Your cloud drive is not mounted.
 Nothing is backed up until it is.
 
+**`doctor` warns `archive files` or `not finished after 20s`, or `import` and `push`
+crawl.** Your sync app downloads each file only when it is opened. Make the archive
+folder available offline: in Google Drive, right-click the `claude-sessions` folder and
+choose Offline access, then Available offline; in OneDrive, choose Always keep on this
+device. `doctor` gives up on an archive check after 20 seconds, so it always finishes.
+
 **`doctor` fails "archive access" on macOS.** macOS privacy settings refused access to
 the archive. The hint says which program to allow: the background sweep needs
 `~/.claude/bin/claude-sessions` added under System Settings › Privacy & Security ›
@@ -938,6 +944,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `bucket naming` | Information only: `CLAUDE_CODE_PROJECT_DIR_NAME` is set, so project names are not path-based |
 | `local buckets` | Information only: projects here with memory but no sessions |
 | `archive`, `archive writable`, `archive config` | The archive is reachable and writable (`--no-write-probe` skips the test file), and whether its path is saved or only auto-detected |
+| `archive files` | Reading the start of one archived file took over 3 seconds: the folder downloads files only when they are opened |
 | `manifest`, `manifest format` | Archived projects `import` could not place, ignored manifest files (unreadable, or a sync app's conflict copy), and an archive still in the PowerShell tools' format |
 | `html`, `html excluded` | Whether pages are current, and which projects are withheld |
 | `session hook`, `reply hook`, `sweep` | The hooks and the scheduled sweep are installed and run this program; duplicates or the older PowerShell hook |
@@ -948,6 +955,9 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `work folders` | Off, or how many folders and files are archived; warns over 500 MB, or when a folder is too large to back up |
 | `zips` | Whether idle conversations are zipped: off, or waiting for the computers it names to update |
 | `secrets` | `.credentials.json` or `.claude.json` anywhere in the archive outside the pages |
+
+Each check prints as it finishes. A check that reads the archive and has not finished
+after 20 seconds is left behind and shown as a warning, `<check>: not finished after 20s`.
 
 It exits non-zero when any check fails, so it can be monitored. `doctor --json` prints
 `{version, checks, warnings, failures, ok}`.

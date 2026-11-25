@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -54,8 +55,24 @@ func cmdDoctor(args []string) error {
 		return err
 	}
 
+	// Each check prints as it finishes: on a slow archive a silent doctor reads as hung.
+	if !*asJSON {
+		fmt.Printf("claude-sessions %s doctor\n\n", version)
+	}
 	var checks []check
-	add := func(c check) { checks = append(checks, c) }
+	add := func(c check) {
+		checks = append(checks, c)
+		if !*asJSON {
+			printCheck(c)
+		}
+	}
+	// A step that reads the archive runs under archiveLimit (see timed): a sync folder
+	// that downloads each file as it is opened can hold one read for minutes.
+	slow := func(name string, step func(add func(check))) {
+		for _, c := range timedAll(name, archiveLimit, step) {
+			add(c)
+		}
+	}
 
 	// --- Claude's own state ---------------------------------------------------
 	root, rootSrc, err := resolveRoot(*claudeDir)
@@ -124,25 +141,37 @@ func cmdDoctor(args []string) error {
 			"Run `claude-sessions config set-destination <folder>` to choose one."})
 		return report(checks, *asJSON)
 	}
-	st, err := os.Stat(dest)
-	switch {
-	case err != nil:
-		add(check{"archive", levelFail, fmt.Sprintf("%s (%s) is not reachable", dest, src),
-			"Sync client offline or not mounted? Nothing is being backed up right now."})
-		return report(checks, *asJSON)
-	case !st.IsDir():
-		add(check{"archive", levelFail, dest + " is not a directory", ""})
+	// Not reachable in time, every later archive check would wait out its limit too.
+	reach := timed("archive", archiveLimit, func() check {
+		st, err := os.Stat(dest)
+		switch {
+		case err != nil:
+			return check{"archive", levelFail, fmt.Sprintf("%s (%s) is not reachable", dest, src),
+				"Sync client offline or not mounted? Nothing is being backed up right now."}
+		case !st.IsDir():
+			return check{"archive", levelFail, dest + " is not a directory", ""}
+		}
+		return check{"archive", levelOK, fmt.Sprintf("%s (%s)", dest, src), ""}
+	})
+	add(reach)
+	if reach.Level != levelOK {
 		return report(checks, *asJSON)
 	}
-	add(check{"archive", levelOK, fmt.Sprintf("%s (%s)", dest, src), ""})
+	if streamingHint(dest) {
+		add(check{"archive files", levelWarn, streamingAdvice, ""})
+	}
 
 	// A read-only mount, an exhausted quota or a permissions problem passes every
 	// other check while backing up precisely nothing.
 	if *noProbe {
 		add(check{"archive writable", levelInfo, "not tested (--no-write-probe)", ""})
-	} else if err := archive.Writable(dest); err != nil {
-		add(check{"archive writable", levelFail, err.Error(),
-			"The archive cannot be written to, so no session can be saved there."})
+	} else {
+		slow("archive writable", func(add func(check)) {
+			if err := archive.Writable(dest); err != nil {
+				add(check{"archive writable", levelFail, err.Error(),
+					"The archive cannot be written to, so no session can be saved there."})
+			}
+		})
 	}
 
 	if src == archive.SourceDetected {
@@ -150,128 +179,139 @@ func cmdDoctor(args []string) error {
 			fmt.Sprintf("Run `claude-sessions config set-destination %q` so every run agrees.", dest)})
 	}
 
-	if mixed := otherVersions(dest); len(mixed) > 0 {
-		add(check{"versions", levelWarn,
-			fmt.Sprintf("other machines run a different version than this one (%s): %s", version, strings.Join(mixed, ", ")),
-			"Mixed versions skip features without saying so - an older build pushes no rules or skills. Install the same release everywhere, or `claude-sessions machines --forget <name>` for a machine no longer in use."})
-	}
-
-	add(zipCheck(root, dest))
-
-	if diffs := profileDiffs(dest); len(diffs) > 0 {
-		add(check{"profile", levelInfo,
-			fmt.Sprintf("%d rule/skill file(s) differ between machines: %s", len(diffs), profileSummary(diffs)),
-			"`import --update-profile` takes the newest. Every machine's own copy stays in the archive under profile/machines/."})
-	}
-
-	// --- manifest drift -------------------------------------------------------
-	// The check that matters: a bucket present in the archive but absent from the
-	// manifest cannot be identity-matched, so `import` on a new machine will not
-	// place it anywhere. Its transcripts are backed up but unroutable.
-	manifest, badShards, err := archive.Merged(dest)
-	if err != nil {
-		add(check{"manifest", levelWarn, err.Error(), ""})
-	}
-	for _, b := range badShards {
-		add(check{"manifest", levelWarn, "ignored manifest file: " + b,
-			"It is unreadable, or a sync client's conflict copy of another machine's file. Other machines' files are still merged; delete this one once you have checked it."})
-	}
-
-	archived, err := archive.BucketNames(dest)
-	if err != nil {
-		add(check{"manifest", levelWarn, err.Error(), ""})
-	}
-	var unroutable []string
-	for _, name := range archived {
-		p, ok := manifest[name]
-		if !ok || !p.Routable() {
-			unroutable = append(unroutable, name)
+	slow("versions", func(add func(check)) {
+		if mixed := otherVersions(dest); len(mixed) > 0 {
+			add(check{"versions", levelWarn,
+				fmt.Sprintf("other machines run a different version than this one (%s): %s", version, strings.Join(mixed, ", ")),
+				"Mixed versions skip features without saying so - an older build pushes no rules or skills. Install the same release everywhere, or `claude-sessions machines --forget <name>` for a machine no longer in use."})
 		}
-	}
-	switch {
-	case len(archived) == 0:
-		add(check{"manifest", levelInfo, "the archive holds no projects yet", ""})
-	case len(unroutable) > 0:
-		add(check{"manifest", levelWarn,
-			fmt.Sprintf("%d of %d archived bucket(s) have no usable identity: %s",
-				len(unroutable), len(archived), strings.Join(unroutable, ", ")),
-			"Identity is read from a transcript's cwd, so a bucket holding only memory files records nothing. `import` cannot place these."})
-	default:
-		add(check{"manifest", levelOK, fmt.Sprintf("%d project(s) recorded, all routable", len(manifest)), ""})
-	}
+	})
 
-	if _, err := os.Stat(archive.ManifestDir(dest)); os.IsNotExist(err) && len(archived) > 0 {
-		add(check{"manifest format", levelInfo,
-			"flat projects.json only (written by the PowerShell tools)",
-			"Sharded manifest/<machine>.json arrives with `push`; until then concurrent pushes from two machines can drop entries."})
-	}
+	slow("zips", func(add func(check)) { add(zipCheck(root, dest)) })
 
-	// Rendering is a user-visible feature that can quietly fall behind.
-	excludePatterns := archive.RenderExcludes(root, dest, splitList(*exclude), false)
-	if len(excludePatterns) > 0 {
-		// A pattern that matches nothing publishes what the user believed was
-		// withheld, so show what is configured and what it actually caught.
-		add(check{"html excluded", levelInfo,
-			fmt.Sprintf("not published as pages: %s", strings.Join(excludePatterns, ", ")),
-			"Check these match the projects you meant; a pattern that matches nothing silently publishes them."})
-	}
-	if pages, transcripts, newestStale := renderState(dest, manifest, excludePatterns); transcripts > 0 {
+	slow("profile", func(add func(check)) {
+		if diffs := profileDiffs(dest); len(diffs) > 0 {
+			add(check{"profile", levelInfo,
+				fmt.Sprintf("%d rule/skill file(s) differ between machines: %s", len(diffs), profileSummary(diffs)),
+				"`import --update-profile` takes the newest. Every machine's own copy stays in the archive under profile/machines/."})
+		}
+	})
+
+	// One step with the pages: they are judged against the manifest it reads.
+	slow("manifest", func(add func(check)) {
+		// --- manifest drift ---------------------------------------------------
+		// The check that matters: a bucket present in the archive but absent from the
+		// manifest cannot be identity-matched, so `import` on a new machine will not
+		// place it anywhere. Its transcripts are backed up but unroutable.
+		manifest, badShards, err := archive.Merged(dest)
+		if err != nil {
+			add(check{"manifest", levelWarn, err.Error(), ""})
+		}
+		for _, b := range badShards {
+			add(check{"manifest", levelWarn, "ignored manifest file: " + b,
+				"It is unreadable, or a sync client's conflict copy of another machine's file. Other machines' files are still merged; delete this one once you have checked it."})
+		}
+
+		archived, err := archive.BucketNames(dest)
+		if err != nil {
+			add(check{"manifest", levelWarn, err.Error(), ""})
+		}
+		var unroutable []string
+		for _, name := range archived {
+			p, ok := manifest[name]
+			if !ok || !p.Routable() {
+				unroutable = append(unroutable, name)
+			}
+		}
 		switch {
-		case pages == 0 && len(excludePatterns) > 0:
-			add(check{"html", levelInfo, "no pages, and every project is excluded", ""})
-		case pages == 0:
-			add(check{"html", levelWarn, "no pages rendered yet",
-				"Run `claude-sessions render` to make the archive readable on a phone."})
-		case newestStale:
-			add(check{"html", levelWarn,
-				fmt.Sprintf("%d page(s) for %d transcript(s), and the newest session has no current page", pages, transcripts),
-				"Run `claude-sessions render`."})
+		case len(archived) == 0:
+			add(check{"manifest", levelInfo, "the archive holds no projects yet", ""})
+		case len(unroutable) > 0:
+			add(check{"manifest", levelWarn,
+				fmt.Sprintf("%d of %d archived bucket(s) have no usable identity: %s",
+					len(unroutable), len(archived), strings.Join(unroutable, ", ")),
+				"Identity is read from a transcript's cwd, so a bucket holding only memory files records nothing. `import` cannot place these."})
 		default:
-			add(check{"html", levelOK, fmt.Sprintf("%d page(s) for %d transcript(s)", pages, transcripts), ""})
+			add(check{"manifest", levelOK, fmt.Sprintf("%d project(s) recorded, all routable", len(manifest)), ""})
 		}
-	}
+
+		if _, err := os.Stat(archive.ManifestDir(dest)); os.IsNotExist(err) && len(archived) > 0 {
+			add(check{"manifest format", levelInfo,
+				"flat projects.json only (written by the PowerShell tools)",
+				"Sharded manifest/<machine>.json arrives with `push`; until then concurrent pushes from two machines can drop entries."})
+		}
+
+		// Rendering is a user-visible feature that can quietly fall behind.
+		excludePatterns := archive.RenderExcludes(root, dest, splitList(*exclude), false)
+		if len(excludePatterns) > 0 {
+			// A pattern that matches nothing publishes what the user believed was
+			// withheld, so show what is configured and what it actually caught.
+			add(check{"html excluded", levelInfo,
+				fmt.Sprintf("not published as pages: %s", strings.Join(excludePatterns, ", ")),
+				"Check these match the projects you meant; a pattern that matches nothing silently publishes them."})
+		}
+		if pages, transcripts, newestStale := renderState(dest, manifest, excludePatterns); transcripts > 0 {
+			switch {
+			case pages == 0 && len(excludePatterns) > 0:
+				add(check{"html", levelInfo, "no pages, and every project is excluded", ""})
+			case pages == 0:
+				add(check{"html", levelWarn, "no pages rendered yet",
+					"Run `claude-sessions render` to make the archive readable on a phone."})
+			case newestStale:
+				add(check{"html", levelWarn,
+					fmt.Sprintf("%d page(s) for %d transcript(s), and the newest session has no current page", pages, transcripts),
+					"Run `claude-sessions render`."})
+			default:
+				add(check{"html", levelOK, fmt.Sprintf("%d page(s) for %d transcript(s)", pages, transcripts), ""})
+			}
+		}
+	})
 
 	// Global rules and skills: without them another machine resumes the sessions but
 	// not the way Claude was told to work.
 	if len(profileFiles(root)) > 0 {
-		if n := len(profileFiles(profileDir(dest))); n == 0 {
-			add(check{"profile", levelWarn, "global rules and skills are not archived yet", "Run `claude-sessions push`."})
-		} else {
-			add(check{"profile", levelOK, fmt.Sprintf("%d rule/skill file(s) archived", n), ""})
-		}
+		slow("profile", func(add func(check)) {
+			if n := len(profileFiles(profileDir(dest))); n == 0 {
+				add(check{"profile", levelWarn, "global rules and skills are not archived yet", "Run `claude-sessions push`."})
+			} else {
+				add(check{"profile", levelOK, fmt.Sprintf("%d rule/skill file(s) archived", n), ""})
+			}
+		})
 	}
 
 	// Work folders: what this machine's shard says is archived outside git repos.
-	if cfg, _ := archive.LoadConfig(root); !cfg.WorkOn() {
-		add(check{"work folders", levelInfo, "off", "`claude-sessions config work on` backs up the folders Claude worked in outside git."})
-	} else {
-		folders := readShard(dest, machineName()).WorkFolders
-		var files, packed int
-		var bytes int64
-		var skipped []string
-		for _, f := range folders {
-			files += f.Files
-			packed += f.Packed
-			bytes += f.Bytes
-			if f.Skipped != "" {
-				skipped = append(skipped, f.Path+" ("+f.Skipped+")")
+	slow("work folders", func(add func(check)) {
+		if cfg, _ := archive.LoadConfig(root); !cfg.WorkOn() {
+			add(check{"work folders", levelInfo, "off", "`claude-sessions config work on` backs up the folders Claude worked in outside git."})
+		} else {
+			folders := readShard(dest, machineName()).WorkFolders
+			var files, packed int
+			var bytes int64
+			var skipped []string
+			for _, f := range folders {
+				files += f.Files
+				packed += f.Packed
+				bytes += f.Bytes
+				if f.Skipped != "" {
+					skipped = append(skipped, f.Path+" ("+f.Skipped+")")
+				}
+			}
+			sum := fmt.Sprintf("%d folder(s), %d file(s)", len(folders), files)
+			if packed > 0 {
+				sum += fmt.Sprintf(", %d packed unit(s)", packed)
+			}
+			switch {
+			case len(skipped) > 0:
+				add(check{"work folders", levelWarn, "not backed up: " + strings.Join(skipped, ", "),
+					"A subfolder over 250 MB is not archived; the rest of the folder is. Keep it out of the way with `claude-sessions config exclude-folder <folder>`, or move the big files out."})
+			case bytes > work.WarnBytes:
+				add(check{"work folders", levelWarn, fmt.Sprintf("%s, %d MB archived", sum, bytes>>20),
+					"The archive is growing large. Drop a folder you do not need with `claude-sessions config exclude-folder <folder>`."})
+			default:
+				add(check{"work folders", levelOK, sum, ""})
 			}
 		}
-		sum := fmt.Sprintf("%d folder(s), %d file(s)", len(folders), files)
-		if packed > 0 {
-			sum += fmt.Sprintf(", %d packed unit(s)", packed)
-		}
-		switch {
-		case len(skipped) > 0:
-			add(check{"work folders", levelWarn, "not backed up: " + strings.Join(skipped, ", "),
-				"A subfolder over 250 MB is not archived; the rest of the folder is. Keep it out of the way with `claude-sessions config exclude-folder <folder>`, or move the big files out."})
-		case bytes > work.WarnBytes:
-			add(check{"work folders", levelWarn, fmt.Sprintf("%s, %d MB archived", sum, bytes>>20),
-				"The archive is growing large. Drop a folder you do not need with `claude-sessions config exclude-folder <folder>`."})
-		default:
-			add(check{"work folders", levelOK, sum, ""})
-		}
-	}
+	})
 
 	if memoryOnly > 0 {
 		add(check{"local buckets", levelInfo,
@@ -356,16 +396,90 @@ func cmdDoctor(args []string) error {
 	// Auth material inside a cloud-synced folder is a stop-everything finding. Walk
 	// the tree: a naive recursive copy puts these inside a bucket, not at the root,
 	// where a root-only check would never see them.
-	for _, found := range findSecrets(dest) {
-		rel, err := filepath.Rel(dest, found)
-		if err != nil {
-			rel = found
+	slow("secrets", func(add func(check)) {
+		for _, found := range findSecrets(dest) {
+			rel, err := filepath.Rel(dest, found)
+			if err != nil {
+				rel = found
+			}
+			add(check{"secrets", levelFail, rel + " is present in the archive",
+				"Delete it from the synced folder and rotate anything it contained. This tool never copies it; something else did."})
 		}
-		add(check{"secrets", levelFail, rel + " is present in the archive",
-			"Delete it from the synced folder and rotate anything it contained. This tool never copies it; something else did."})
-	}
+	})
 
 	return report(checks, *asJSON)
+}
+
+// Test hooks: the time limits, the one read streamingHint makes, how doctor reads a
+// zip's index, and a call each archive step makes as it starts.
+var (
+	archiveLimit = 20 * time.Second
+	hintLimit    = 3 * time.Second
+	readHead     = func(path string) {
+		if f, err := os.Open(path); err == nil {
+			_, _ = io.CopyN(io.Discard, f, 64<<10)
+			f.Close()
+		}
+	}
+	readZipIndex  = convzip.Entries
+	beforeArchive = func(step string) {}
+)
+
+const streamingAdvice = "Your archive folder downloads files only when they're opened, which makes backups and imports slow. In Google Drive, right-click the claude-sessions folder and choose Offline access, then Available offline. OneDrive calls it Always keep on this device."
+
+// timed runs a check with a time limit. One over it is abandoned, never waited on, and
+// reported as a warning instead.
+func timed(name string, limit time.Duration, run func() check) check {
+	return timedAll(name, limit, func(add func(check)) { add(run()) })[0]
+}
+
+// timedAll is timed for a step that reports any number of checks, through add. An
+// abandoned step prints nothing and holds no lock: it only fills a slice no one reads
+// again, and the process exits under it.
+func timedAll(name string, limit time.Duration, step func(add func(check))) []check {
+	var out []check
+	before := beforeArchive
+	if withinDeadline(limit, func() {
+		before(name)
+		step(func(c check) { out = append(out, c) })
+	}) {
+		return out
+	}
+	return []check{{name, levelWarn,
+		fmt.Sprintf("%s: not finished after %ds - the archive folder may be downloading files on demand", name, int(limit.Seconds())), ""}}
+}
+
+// streamingHint reports whether reading the first 64 KB of one archived transcript or
+// zip takes over hintLimit: a folder that downloads each file when it is opened. It
+// reads that one file, never more, and leaves a slow read behind.
+func streamingHint(dest string) (slow bool) {
+	read := readHead
+	return !withinDeadline(hintLimit, func() { read(oneArchived(dest)) })
+}
+
+// oneArchived is the first archived transcript or zip found, or "". Plain files only.
+func oneArchived(dest string) string {
+	buckets, _ := archive.BucketNames(dest)
+	for _, b := range buckets {
+		dir := filepath.Join(archive.ProjectsDir(dest), b)
+		ents, _ := os.ReadDir(dir)
+		for _, e := range ents {
+			if n := e.Name(); e.Type().IsRegular() && (strings.HasSuffix(n, ".jsonl") || strings.HasSuffix(n, convzip.Suffix)) {
+				return filepath.Join(dir, n)
+			}
+		}
+	}
+	return ""
+}
+
+// hintIfSlow is for import and push: started just before their first archive read, it
+// prints the streaming hint once on stderr if that read is still going after hintLimit.
+// It times the read and adds none. Call the result when the read returns.
+func hintIfSlow(show bool) (stop func() bool) {
+	if !show {
+		return func() bool { return false }
+	}
+	return time.AfterFunc(hintLimit, func() { fmt.Fprintln(os.Stderr, "! "+streamingAdvice) }).Stop
 }
 
 // archiveLag is how long a finished session may go unarchived before doctor fails:
@@ -380,40 +494,39 @@ const quietPushAge = 3 * time.Hour
 // liveness checks the two things that show the archive is really being kept up to
 // date: sessions that ended a while ago are in it, and pushes are succeeding.
 func liveness(root, dest string, buckets []claude.Bucket) []check {
-	var out []check
-
-	var pending []string
-	cutoff := time.Now().Add(-archiveLag)
-	held, zips := loadHeld(root), loadZipCompared(root)
-	for _, b := range buckets {
-		for _, t := range b.Transcripts {
-			if t.ModTime.After(cutoff) {
-				continue // may still be live, or the sweep has not come round yet
-			}
-			src, err := os.Stat(t.Path)
-			if err != nil {
-				continue
-			}
-			dst := archive.StatOrNil(filepath.Join(archive.ProjectsDir(dest), b.Name, filepath.Base(t.Path)))
-			// A shorter local copy is a session forked across machines, which push
-			// deliberately leaves alone; it is not a failure to archive. Nor is one
-			// whose copy is saved as a fork beside the archived one, or one another
-			// bucket's archived copy holds in whole, nor one whose copy is zipped.
-			fork := archive.StatOrNil(forkPath(dest, b.Name, t.ID, machineName()))
-			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) &&
-				!held.leftTo(dest, b.Name, t.ID, src) && !(dst == nil && zipCovers(dest, b.Name, t.ID, src, zips)) {
-				pending = append(pending, b.Name+"/"+t.ID)
+	out := []check{timed("archived", archiveLimit, func() check {
+		var pending []string
+		cutoff := time.Now().Add(-archiveLag)
+		held, zips := loadHeld(root), loadZipCompared(root)
+		for _, b := range buckets {
+			for _, t := range b.Transcripts {
+				if t.ModTime.After(cutoff) {
+					continue // may still be live, or the sweep has not come round yet
+				}
+				src, err := os.Stat(t.Path)
+				if err != nil {
+					continue
+				}
+				dst := archive.StatOrNil(filepath.Join(archive.ProjectsDir(dest), b.Name, filepath.Base(t.Path)))
+				// A shorter local copy is a session forked across machines, which push
+				// deliberately leaves alone; it is not a failure to archive. Nor is one
+				// whose copy is saved as a fork beside the archived one, or one another
+				// bucket's archived copy holds in whole, nor one whose copy is zipped.
+				fork := archive.StatOrNil(forkPath(dest, b.Name, t.ID, machineName()))
+				if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) &&
+					!held.leftTo(dest, b.Name, t.ID, src) && !(dst == nil && zipCovers(dest, b.Name, t.ID, src, zips)) {
+					pending = append(pending, b.Name+"/"+t.ID)
+				}
 			}
 		}
-	}
-	if len(pending) > 0 {
-		out = append(out, check{"archived", levelFail,
-			fmt.Sprintf("%d session(s) that ended over %d minutes ago are not in the archive, e.g. %s",
-				len(pending), int(archiveLag.Minutes()), pending[0]),
-			"Neither the hook nor the sweep has copied them. Run `claude-sessions push` and read ~/.claude/session-sync.log for why."})
-	} else {
-		out = append(out, check{"archived", levelOK, fmt.Sprintf("every session that ended over %d minutes ago is in the archive", int(archiveLag.Minutes())), ""})
-	}
+		if len(pending) > 0 {
+			return check{"archived", levelFail,
+				fmt.Sprintf("%d session(s) that ended over %d minutes ago are not in the archive, e.g. %s",
+					len(pending), int(archiveLag.Minutes()), pending[0]),
+				"Neither the hook nor the sweep has copied them. Run `claude-sessions push` and read ~/.claude/session-sync.log for why."}
+		}
+		return check{"archived", levelOK, fmt.Sprintf("every session that ended over %d minutes ago is in the archive", int(archiveLag.Minutes())), ""}
+	})}
 
 	last, ok := lastPush(root)
 	switch {
@@ -463,7 +576,7 @@ func zipCovers(dest, bucket, id string, src os.FileInfo, zips *zipRecord) bool {
 		c.ZipSize == zst.Size() && archive.SameMTime(c.ZipMTime, zst.ModTime()) {
 		return true
 	}
-	ents, err := convzip.Entries(zp)
+	ents, err := readZipIndex(zp)
 	e, ok := ents[id+".jsonl"]
 	if err != nil || !ok {
 		return false
@@ -645,20 +758,7 @@ func report(checks []check, asJSON bool) error {
 		return nil
 	}
 
-	fmt.Println()
-	for _, c := range checks {
-		mark := " "
-		switch c.Level {
-		case levelOK:
-			mark = "+"
-		case levelWarn:
-			mark = "!"
-		case levelFail:
-			mark = "x"
-		}
-		fmt.Printf("  %s %-16s %s\n", mark, c.Name, c.Detail)
-	}
-
+	// The check lines are already printed, each as it finished.
 	fmt.Println()
 	for _, c := range checks {
 		if c.Advice != "" {
@@ -675,6 +775,19 @@ func report(checks []check, asJSON bool) error {
 		return errChecksFailed
 	}
 	return nil
+}
+
+func printCheck(c check) {
+	mark := " "
+	switch c.Level {
+	case levelOK:
+		mark = "+"
+	case levelWarn:
+		mark = "!"
+	case levelFail:
+		mark = "x"
+	}
+	fmt.Printf("  %s %-16s %s\n", mark, c.Name, c.Detail)
 }
 
 // resolveRoot finds the Claude profile, always as an absolute path. A relative

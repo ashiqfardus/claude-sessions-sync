@@ -68,7 +68,9 @@ func cmdImport(args []string) error {
 		return fmt.Errorf("%s is not reachable - is the sync client mounted?", dest)
 	}
 
+	slowRead := hintIfSlow(true)
 	manifest, bad, err := archive.Merged(dest)
+	slowRead()
 	if err != nil {
 		return err
 	}

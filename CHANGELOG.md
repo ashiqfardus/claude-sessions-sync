@@ -20,6 +20,15 @@ All notable changes to this project are documented here. This project follows
   `machines --forget` one no longer in use. The older PowerShell scripts are not
   supported alongside zipping.
 
+### Fixed
+- **`doctor` sat silent on a sync folder that streams files.** Where Google Drive
+  downloads each file only when it is opened, `doctor` printed nothing, not even a
+  header, and waited minutes on the archive. It now prints its header and then each
+  check as it finishes. It gives up on an archive check after 20 seconds and shows it as
+  a warning. When reading one archived file takes over 3 seconds, it says how to make
+  the folder available offline. `import` and `push` print the same hint when their
+  first archive read is that slow.
+
 ## [0.5.0] - 2026-11-25
 
 Upgrading: update every computer, let each push once, then run `claude-sessions clean`

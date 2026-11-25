@@ -264,6 +264,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	}
 
 	statePaths, _ := claude.ProjectPaths(claude.StatePath(root))
+	slowRead := hintIfSlow(!quiet) // the first archive reads, to the one of pushedBefore
 	excludes := archive.RenderExcludes(root, dest, nil, !dryRun)
 
 	res := pushResult{Archive: dest, DryRun: dryRun}
@@ -285,6 +286,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	scanAll := !prevShard.RelatedIndexed
 	shard.RelatedIndexed = true
 	pushed := pushedBefore(dest, shard.Machine)
+	slowRead()
 	repointed := loadRepointed(root)
 	repointedWas := len(repointed)
 	held, holders, zips := loadHeld(root), sessionHolders(dest), loadZipCompared(root)

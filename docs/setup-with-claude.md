@@ -65,6 +65,15 @@ Propose `<that folder>/claude-sessions`. If another computer already uses this t
 claude-sessions config set-destination "<folder>/claude-sessions"
 ```
 
+If the folder is in Google Drive or OneDrive, it must be **available offline**. A folder
+that downloads each file only when it is opened makes every backup and import crawl.
+You cannot change this setting yourself: explain it, ask the user to do it, and wait
+until they say it is done.
+
+- Google Drive: right-click the `claude-sessions` folder, choose **Offline access**, then
+  **Available offline**.
+- OneDrive: right-click it and choose **Always keep on this device**.
+
 ## 4. See the state, then back up once
 
 1. Run `claude-sessions doctor` and summarize its warnings in a few lines.
