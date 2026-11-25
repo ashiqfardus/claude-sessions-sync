@@ -104,9 +104,18 @@ func TestPushContinuesAZippedConversation(t *testing.T) {
 	unzipped(t, archive, repo)
 }
 
-func TestHookPushContinuesAZippedConversation(t *testing.T) {
+// The per-reply hook reads no zip it has not compared before: a zipped conversation
+// continued here is left to the next full push, which unzips it and archives the turns.
+func TestHookPushLeavesAZippedConversationToTheNextPush(t *testing.T) {
 	archive, mac, repo := zippedAndContinued(t)
+	bucket := archiveBucket(archive, repo)
+	zst, _ := os.Stat(convzip.Path(bucket, forkSession))
 	mac.hook(t, mac.session(repo))
+	onlyZip(t, bucket)
+	if st, err := os.Stat(convzip.Path(bucket, forkSession)); err != nil || !os.SameFile(zst, st) {
+		t.Fatalf("the hook changed the zip: %v", err)
+	}
+	mac.run(t, "push", "--no-html")
 	unzipped(t, archive, repo)
 }
 

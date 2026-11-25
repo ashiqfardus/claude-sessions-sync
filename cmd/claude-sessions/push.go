@@ -256,6 +256,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		if n := archive.RemoveOrphanTemps(dest); n > 0 {
 			logf("CLEAN: removed %d temporary file(s) left by an interrupted run", n)
 		}
+		removeStaleExtracts(time.Now())
 		pinMachineName(root)
 	}
 
@@ -889,6 +890,7 @@ type zipRecord struct {
 	m     map[string]zipCompared
 	dirty bool
 	tmp   string // where zips are unpacked to compare; "" for the OS temp folder
+	hook  bool   // the per-reply hook: no zip is read or unzipped, only the record
 }
 
 func zipComparedPath(root string) string {
@@ -947,6 +949,11 @@ func (z *zipRecord) judge(dest, bucket, id, zp, path string, src os.FileInfo, dr
 	// copy, and the sweep settles the pair.
 	if archivedCopy(dest, bucket, id) != "" {
 		return 0, false
+	}
+	// The per-reply hook, which may be killed at any time, leaves what the record does not
+	// settle to the next full push: unpacking a zip there is not worth a reply's wait.
+	if z.hook {
+		return notCopied, true
 	}
 	dir := filepath.Dir(zp)
 	unreadable := func(err error) (archiveOutcome, bool) {
@@ -1046,8 +1053,10 @@ each:
 			switch {
 			case !claude.IsSessionID(id), isTranscript && !e.Type().IsRegular():
 				continue
-			// A folder with no transcript counts only beside its zip: what a killed Zip leaves.
-			case !isTranscript && (!e.IsDir() || zp == "" || archive.StatOrNil(filepath.Join(dir, id+".jsonl")) != nil):
+			// A folder with no transcript counts only beside its zip, and only holding a file:
+			// what a killed Zip leaves. One emptied that the system would not remove is not.
+			case !isTranscript && (!e.IsDir() || zp == "" || archive.StatOrNil(filepath.Join(dir, id+".jsonl")) != nil ||
+				len(claude.SessionFiles(filepath.Join(dir, id))) == 0):
 				continue
 			}
 			// A conversation in use is told by its transcript, without walking its folder.
@@ -1124,6 +1133,24 @@ each:
 		}
 	}
 	return zipped, raw, packed
+}
+
+// removeStaleExtracts removes the folders of zips unpacked in the OS temp folder that a
+// killed run left behind, untouched for an hour: no push, read or check holds one that
+// long, and Windows never clears its temp folder. Only these names, only folders, and a
+// link is never followed.
+func removeStaleExtracts(now time.Time) {
+	tmp := os.TempDir()
+	ents, _ := os.ReadDir(tmp)
+	for _, e := range ents {
+		n := e.Name()
+		if !e.IsDir() || !(strings.HasPrefix(n, "convzip-") || strings.HasPrefix(n, "claude-sessions-push-") || strings.HasPrefix(n, "cs-zip")) {
+			continue
+		}
+		if info, err := e.Info(); err == nil && now.Sub(info.ModTime()) > time.Hour {
+			os.RemoveAll(filepath.Join(tmp, n))
+		}
+	}
 }
 
 // looseSize totals the regular files of id's loose copy in dir, its transcript and
@@ -1468,6 +1495,7 @@ func pushOne(root, dest, transcript string, dryRun bool, logf func(string, ...an
 	repointed := loadRepointed(root)
 	was := len(repointed)
 	zips := loadZipCompared(root)
+	zips.hook = true
 	// Only one with no copy here can be pruned from the archive, and not continued here
 	// since: the list is read for no other, as this runs after every reply.
 	if archive.StatOrNil(filepath.Join(destBucket, id+".jsonl")) == nil && zippedCopy(dest, bucket, id) == "" {

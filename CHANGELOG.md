@@ -38,7 +38,9 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   before it deletes the loose files. A conversation over 250 MB stays loose, and
   `session-sync-base/zip-skipped.json` remembers it, and a zip or unzip that keeps
   failing, so the log says so once. Pages stay as they are. The sweep and `push` from a
-  terminal zip; the hooks never do. `push --dry-run` lists what it would zip, and
+  terminal zip; the hooks never do, and the backup after each reply leaves a continued
+  zipped conversation to the next full push. Push also removes what a run killed while
+  unpacking a zip left in the system's temp folder. `push --dry-run` lists what it would zip, and
   `config zip-sessions off` stops it. Zipping waits until every computer that pushes to
   the archive runs this version and has pushed once, as an older one would upload the
   conversation loose again; `doctor` names the computers it waits for. Update them, or

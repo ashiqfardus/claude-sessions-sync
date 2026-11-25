@@ -1147,8 +1147,9 @@ it past that. `push` from a terminal zips everything due, and `push --dry-run` l
 what it would zip.
 
 Every command reads a zipped conversation as if it were loose. Continue one, on any
-computer, and the next push unzips it and archives the new turns; it is zipped again
-after 30 more quiet days. Its page under `html/` stays, so it can still be read in the
+computer, and the next full push (the sweep, the end of the session, or `push` from a
+terminal) unzips it and archives the new turns; the backup after each reply leaves it to
+that push. It is zipped again after 30 more quiet days. Its page under `html/` stays, so it can still be read in the
 sync app or a browser.
 
 To open one by hand, use any unzip tool (Finder, Explorer, or `unzip`). It holds

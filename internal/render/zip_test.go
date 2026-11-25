@@ -126,8 +126,8 @@ func TestRenderKeepsAndListsZippedPages(t *testing.T) {
 	listed(t, dest)
 }
 
-// A loose copy beside a zip is a continuation the zip lacks: it is rendered, and the
-// zip is not read.
+// A loose copy beside a zip that holds more than the zip - a continuation - is the one
+// rendered; the zip is unpacked to tell, as import does, its index not read.
 func TestRenderPrefersLooseBesideZip(t *testing.T) {
 	dest, bucket, pagePath := zippedArchive(t)
 	loose := filepath.Join(bucket, zipID+".jsonl")
@@ -142,11 +142,52 @@ func TestRenderPrefersLooseBesideZip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Rendered != 1 || *reads != 0 || *unpacks != 0 {
+	if res.Rendered != 1 || *reads != 0 || *unpacks != 1 {
 		t.Errorf("the loose copy was not the one rendered: %+v, %d index read(s), %d unpack(s)", res, *reads, *unpacks)
 	}
 	if got := string(mustRead(t, pagePath)); !strings.Contains(got, "continued elsewhere") {
 		t.Errorf("the page lacks the loose copy's turn:\n%s", got)
+	}
+}
+
+// A loose copy beside a zip that holds more - written by a computer the zip had not
+// reached yet - does not hide the zip's turns from the page, even when it is this
+// machine's own copy byte for byte. A zip beside it that cannot be read leaves the page
+// to the loose copy.
+func TestRenderShowsTheZipBesideALooseCopyThatHoldsLess(t *testing.T) {
+	dest := t.TempDir()
+	bucket := filepath.Join(dest, "projects", "e--work-api")
+	local := filepath.Join(t.TempDir(), "projects")
+	q := `{"type":"user","uuid":"q1","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"a zipped question"}}` + "\n"
+	a := `{"type":"assistant","uuid":"a1","timestamp":"2026-08-30T09:05:00.000Z","message":{"role":"assistant","content":"only the zip has this"}}` + "\n"
+	at := time.Now().Add(-time.Hour)
+	for _, p := range []string{filepath.Join(bucket, zipID+".jsonl"), filepath.Join(local, "e--work-api", zipID+".jsonl")} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(p, []byte(q+a), 0o644)
+	}
+	if _, err := convzip.Zip(bucket, zipID); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{filepath.Join(bucket, zipID+".jsonl"), filepath.Join(local, "e--work-api", zipID+".jsonl")} {
+		os.WriteFile(p, []byte(q), 0o644)
+		os.Chtimes(p, at, at)
+	}
+	page := filepath.Join(dest, "html", "e--work-api", zipID+".html")
+	if _, err := Archive(dest, Options{LocalProjects: local}); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(mustRead(t, page)); !strings.Contains(got, "only the zip has this") {
+		t.Errorf("the page lacks the turn only the zip holds:\n%s", got)
+	}
+
+	garble(t, convzip.Path(bucket, zipID))
+	if res, err := Archive(dest, Options{Force: true}); err != nil || res.Failed != 0 {
+		t.Fatalf("%+v, %v", res, err)
+	}
+	if got := string(mustRead(t, page)); !strings.Contains(got, "a zipped question") {
+		t.Errorf("the loose copy beside an unreadable zip was not rendered:\n%s", got)
 	}
 }
 

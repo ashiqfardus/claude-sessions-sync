@@ -36,10 +36,11 @@ var ErrNotHeld = errors.New("a loose file holds what the zip lacks")
 // hold turns the other lacks. It changes nothing.
 var ErrDiverged = errors.New("loose and zipped transcripts have each turns the other lacks")
 
-// Test hooks: the cap, and how Zip reads its zip back.
+// Test hooks: the cap, how Zip reads its zip back, and how Unzip writes each entry.
 var (
 	maxBytes int64 = work.MaxFolderBytes
 	readBack       = work.ReadPackIndex
+	copyFile       = archive.CopyFile
 )
 
 // Result is what Zip wrote: files packed, their bytes, and the zip's size.
@@ -121,6 +122,12 @@ func Zip(bucketDir, id string) (Result, error) {
 	if d := filepath.Join(bucketDir, id); exists(d) && !archive.IsRealDir(d) {
 		return Result{}, fmt.Errorf("%s is not a plain folder; left loose", id)
 	}
+	// Nor one holding a link or anything else that is neither a file nor a folder: it is
+	// never packed, so the folder would outlive the zip, and each sweep take it for a run
+	// killed half way.
+	if odd := oddEntry(filepath.Join(bucketDir, id)); odd != "" {
+		return Result{}, fmt.Errorf("%s is neither a file nor a folder; left loose", work.Printable(odd))
+	}
 	files, err := loose(bucketDir, id)
 	if err != nil {
 		return Result{}, err
@@ -190,6 +197,19 @@ func removeLoose(bucketDir, id string, files []work.PackFile) error {
 	return nil
 }
 
+// oddEntry names the first entry under root that is neither a regular file nor a
+// folder, "" for none.
+func oddEntry(root string) (odd string) {
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && !d.Type().IsRegular() {
+			odd = p
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return odd
+}
+
 // unchanged reports whether f is still as it was listed.
 func unchanged(f work.PackFile) bool {
 	st, err := os.Lstat(f.Path)
@@ -251,9 +271,10 @@ func verify(path string, files []work.PackFile) error {
 }
 
 // extract unpacks the zip into a new dir under parent ("" for the OS temp dir), taking
-// only id's entries. A refused entry fails the lot, and so does an entry that is not
-// id's: the zip is not one Zip wrote, and is never deleted unread.
-func extract(zipPath, parent, id string) (dir string, out []work.PackFile, err error) {
+// only id's entries, or with only set its transcript alone. A refused entry fails the
+// lot, and so does an entry that is not id's: the zip is not one Zip wrote, and is
+// never deleted unread.
+func extract(zipPath, parent, id string, only bool) (dir string, out []work.PackFile, err error) {
 	dir, err = os.MkdirTemp(parent, "convzip-")
 	if err != nil {
 		return "", nil, err
@@ -264,7 +285,7 @@ func extract(zipPath, parent, id string) (dir string, out []work.PackFile, err e
 			foreign = n
 			return true
 		}
-		return false
+		return only && lowerASCII(n) != lowerASCII(id)+".jsonl"
 	}
 	out, notes, err := work.ExtractPackLimit(zipPath, func() (string, error) { return dir, nil }, skip, uint64(maxBytes))
 	if err == nil && len(notes) > 0 {
@@ -313,7 +334,7 @@ func Materialize(bucketDir, id, tmpDir string) (transcript string, cleanup func(
 		}
 		return lt, func() {}, nil
 	}
-	dir, out, err := extract(zp, tmpDir, id)
+	dir, out, err := extract(zp, tmpDir, id, false)
 	if err != nil {
 		return "", nil, err
 	}
@@ -347,6 +368,21 @@ func Materialize(bucketDir, id, tmpDir string) (transcript string, cleanup func(
 	return "", nil, os.ErrNotExist
 }
 
+// TranscriptOnly extracts id's transcript alone from its zip in bucketDir, under tmpDir,
+// checked as Materialize checks the whole zip, for a reader that needs no folder file:
+// a listing's opening lines. cleanup removes the extraction.
+func TranscriptOnly(bucketDir, id, tmpDir string) (transcript string, cleanup func(), err error) {
+	dir, out, err := extract(Path(bucketDir, id), tmpDir, id, true)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(out) != 1 {
+		os.RemoveAll(dir)
+		return "", nil, os.ErrNotExist
+	}
+	return out[0].Path, func() { os.RemoveAll(dir) }, nil
+}
+
 // Unzip writes each entry into the bucket, then deletes the zip. A loose file is kept
 // when it is at or after the entry's modification time; a transcript is judged by its
 // turns instead, never by time: the loose copy stays when it holds all the zipped
@@ -359,7 +395,7 @@ func Unzip(bucketDir, id string) error {
 	if !isRegular(zp) {
 		return os.ErrNotExist
 	}
-	dir, files, err := extract(zp, "", id)
+	dir, files, err := extract(zp, "", id, false)
 	if err != nil {
 		return err
 	}
@@ -391,7 +427,7 @@ func Unzip(bucketDir, id string) error {
 	for _, f := range write {
 		os.Chmod(f.Path, 0o644) // extraction makes it private; archive files are not
 		dst := filepath.Join(bucketDir, filepath.FromSlash(f.Rel))
-		if err := archive.CopyFile(f.Path, dst); err != nil { // temp, mtime, rename
+		if err := copyFile(f.Path, dst); err != nil { // temp, mtime, rename
 			return err
 		}
 	}
@@ -414,7 +450,7 @@ func DropHeld(bucketDir, id string) error {
 	if err != nil || len(files) == 0 {
 		return err
 	}
-	dir, out, err := extract(zp, "", id)
+	dir, out, err := extract(zp, "", id, false)
 	if err != nil {
 		return err
 	}

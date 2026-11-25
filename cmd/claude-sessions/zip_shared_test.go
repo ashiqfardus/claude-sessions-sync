@@ -6,6 +6,9 @@ package main_test
 // then may take the last copy of a turn, nor rewrite the zip on every push.
 
 import (
+	"archive/zip"
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -180,4 +183,137 @@ func TestAnArchivedForkLeavesItsZipAlone(t *testing.T) {
 		t.Errorf("B's branch is not in its fork:\n%s", got)
 	}
 	f.winB.holdsAll(t, f.api, "p1", "b2")
+}
+
+// Nothing in a conversation's folder that Zip cannot pack makes a sweep zip it again on
+// every push: a link keeps the conversation loose, said once; a folder left empty
+// beside the zip - one the system would not remove - is not taken for a killed run.
+func TestNothingUnpackableRewritesTheZip(t *testing.T) {
+	t.Run("a link", func(t *testing.T) {
+		archive, mac, repo := pushedSession(t)
+		bucket := archiveBucket(archive, repo)
+		if err := os.Symlink(filepath.Join(bucket, forkSession+".jsonl"), filepath.Join(bucket, forkSession, "subagents", "odd")); err != nil {
+			t.Skipf("no symlinks here: %v", err)
+		}
+		ageSession(t, mac, repo, 31*day)
+		for i := 0; i < 3; i++ {
+			mac.run(t, "push", "--no-html")
+		}
+		stillLoose(t, archive, repo)
+		if n := strings.Count(pushLog(t, mac), "WARN: "+forkSession); n != 1 {
+			t.Errorf("%d WARN line(s) for the session across three pushes, want 1:\n%s", n, pushLog(t, mac))
+		}
+	})
+	t.Run("an empty folder", func(t *testing.T) {
+		archive, mac, repo := pushedSession(t)
+		bucket := archiveBucket(archive, repo)
+		ageSession(t, mac, repo, 31*day)
+		mac.run(t, "push", "--no-html")
+		onlyZip(t, bucket)
+		mustMkdir(t, filepath.Join(bucket, forkSession, "subagents"))
+		prev, _ := os.Stat(convzip.Path(bucket, forkSession))
+		for i := 0; i < 2; i++ {
+			mac.run(t, "push", "--no-html")
+			cur, err := os.Stat(convzip.Path(bucket, forkSession))
+			if err != nil || !os.SameFile(prev, cur) {
+				t.Fatalf("push %d unzipped the zip, or wrote it again: %v", i+2, err)
+			}
+		}
+	})
+}
+
+// A push removes what killed runs left in the OS temp folder: its own extracts, older
+// than an hour. Nothing else there - a newer extract, another name, a file, a link and
+// what it points to - is touched.
+func TestPushRemovesStaleExtractsFromTheTempFolder(t *testing.T) {
+	archive, mac, _ := pushedSession(t)
+	tmp := t.TempDir()
+	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(k, tmp)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	at := func(name string, dir bool) string {
+		p := filepath.Join(tmp, name)
+		if dir {
+			mustWrite(t, filepath.Join(p, "x.jsonl"), "extracted\n")
+		} else {
+			mustWrite(t, p, "a file\n")
+		}
+		os.Chtimes(p, old, old)
+		return p
+	}
+	stale := []string{at("convzip-123", true), at("claude-sessions-push-456", true), at("cs-zip789", true)}
+	kept := []string{at("convzip-file", false), at("other-123", true)}
+	fresh := filepath.Join(tmp, "convzip-new")
+	mustWrite(t, filepath.Join(fresh, "x.jsonl"), "in use\n")
+	kept = append(kept, fresh)
+	target := filepath.Join(t.TempDir(), "elsewhere")
+	mustWrite(t, filepath.Join(target, "x.jsonl"), "not ours\n")
+	if os.Symlink(target, filepath.Join(tmp, "convzip-link")) == nil {
+		kept = append(kept, filepath.Join(tmp, "convzip-link"), filepath.Join(target, "x.jsonl"))
+	}
+	os.Chtimes(target, old, old)
+
+	mac.run(t, "push", "--no-html")
+	for _, p := range stale {
+		if fileExists(p) {
+			t.Errorf("%s was left", filepath.Base(p))
+		}
+	}
+	for _, p := range kept {
+		if !fileExists(p) {
+			t.Errorf("%s was removed", p)
+		}
+	}
+	_ = archive
+}
+
+// A loose copy beside a zip that holds more of the conversation - written by a computer
+// the zip had not reached yet - does not hide the zip's turns from search, nor list the
+// conversation twice.
+func TestArchivedReadersReadTheZipBesideALooseCopy(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	bucket := archiveBucket(archive, repo)
+	loose := filepath.Join(bucket, forkSession+".jsonl")
+	behind := mustRead(t, loose)
+	mustWrite(t, loose, behind+sessionLines(repo, "zipneedle"))
+	zipArchived(t, archive, repo)
+	mustWrite(t, loose, behind)
+
+	if out := mac.run(t, "search", "--archived", "zipneedle"); !strings.Contains(out, forkSession) {
+		t.Errorf("search --archived missed the turn only the zip holds:\n%s", out)
+	}
+	if out := mac.run(t, "ls", "--archived"); strings.Count(out, forkSession) != 1 {
+		t.Errorf("ls --archived does not list the conversation once:\n%s", out)
+	}
+	mustWrite(t, convzip.Path(bucket, forkSession), "not a zip") // the loose copy is still read
+	if out := mac.run(t, "search", "--archived", "turn m1"); !strings.Contains(out, forkSession) {
+		t.Errorf("search --archived lost the loose copy beside an unreadable zip:\n%s", out)
+	}
+}
+
+// ls --archived reads a zip's transcript alone: a folder entry it cannot read - its
+// bytes do not match their checksum - does not hide the conversation's row.
+func TestLsArchivedReadsOnlyAZipsTranscript(t *testing.T) {
+	m, bucketDir := zippedArchive(t, "headonly")
+	tr := sessionLines("/work/web-app", "headonly")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range map[string]string{forkSession + ".jsonl": tr, forkSession + "/tool-results/r0.txt": "PAYLOAD-0123456789"} {
+		h := &zip.FileHeader{Name: name, Method: zip.Store, Modified: time.Now().Add(-time.Hour)}
+		h.SetMode(0o644)
+		w, _ := zw.CreateHeader(h)
+		w.Write([]byte(body))
+	}
+	zw.Close()
+	mustWrite(t, convzip.Path(bucketDir, forkSession), string(bytes.Replace(buf.Bytes(), []byte("PAYLOAD-0123456789"), []byte("PAYLOAD-0123456780"), 1)))
+
+	var rows []struct {
+		SessionID   string `json:"session"`
+		FirstPrompt string `json:"firstPrompt"`
+	}
+	out := m.run(t, "ls", "--archived", "--json")
+	if err := json.Unmarshal([]byte(out[strings.Index(out, "["):]), &rows); err != nil || len(rows) != 1 || !strings.Contains(rows[0].FirstPrompt, "headonly") {
+		t.Fatalf("ls --archived did not list the conversation from its transcript (%v):\n%s", err, out)
+	}
 }

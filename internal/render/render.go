@@ -163,6 +163,8 @@ func Archive(dest string, opts Options) (Result, error) {
 			continue
 		}
 
+		zips := convzip.Find(bucketDir)
+
 		// one renders or lists the transcript name, of size and mtime; open gives its path,
 		// and is called only when its page is due. z is its zip, for a zipped one.
 		one := func(name string, size int64, mtime time.Time, z *zipState, open func() (string, func(), error)) {
@@ -171,8 +173,9 @@ func Archive(dest string, opts Options) (Result, error) {
 
 			// Prefer this machine's own copy when it is byte-identical: push has just
 			// written it across, and reading it straight back is a needless round trip
-			// through a cloud filesystem.
-			if opts.LocalProjects != "" {
+			// through a cloud filesystem. Not for a loose copy with a zip beside it, which
+			// may hold more.
+			if _, beside := zips[strings.ToLower(id)]; opts.LocalProjects != "" && (z != nil || !beside) {
 				local := filepath.Join(opts.LocalProjects, bucket, name)
 				// Size AND timestamp: same size with different content is unlikely but
 				// possible, and rendering local bytes while the page claims to be the
@@ -235,15 +238,27 @@ func Archive(dest string, opts Options) (Result, error) {
 				continue
 			}
 			src := filepath.Join(bucketDir, f.Name())
-			loose[strings.ToLower(strings.TrimSuffix(f.Name(), filepath.Ext(f.Name())))] = true
-			one(f.Name(), info.Size(), info.ModTime(), nil, func() (string, func(), error) { return src, func() {}, nil })
+			id := strings.TrimSuffix(f.Name(), filepath.Ext(f.Name()))
+			loose[strings.ToLower(id)] = true
+			open := func() (string, func(), error) { return src, func() {}, nil }
+			// A zip beside it - rare - may hold turns it lacks: the page shows whichever holds
+			// more, as import files it. A zip that cannot be read leaves the loose copy.
+			if _, ok := zips[strings.ToLower(id)]; ok {
+				open = func() (string, func(), error) {
+					if p, done, err := materialize(bucketDir, id, ""); err == nil {
+						return p, done, nil
+					}
+					return src, func() {}, nil
+				}
+			}
+			one(f.Name(), info.Size(), info.ModTime(), nil, open)
 		}
 
 		// A zipped conversation keeps its page. It is dated by its transcript's entry in
 		// the zip, and unpacked only when the page is due: a template change, or a page
-		// withdrawn by an exclusion since lifted. A loose copy beside a zip is a
-		// continuation the zip lacks, so it is the one rendered above.
-		for lid, zp := range convzip.Find(bucketDir) {
+		// withdrawn by an exclusion since lifted. One with a loose copy beside it is
+		// rendered above.
+		for lid, zp := range zips {
 			if loose[lid] {
 				continue
 			}

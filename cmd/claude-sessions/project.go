@@ -89,16 +89,22 @@ func (r *resolver) Known(bucket string) (string, bool) {
 }
 
 // withZipped adds each bucket's zipped conversations to its transcripts, for --archived.
-// A conversation with a loose transcript is listed once, as that. A zipped one carries
-// its zip's path, size and time; scanHead and walkTranscript read it through Materialize.
+// A zipped one carries its zip's path, size and time; scanHead and walkTranscript read
+// it through Materialize. A conversation with a loose transcript is listed once, as
+// that, but read through its zip too when one is beside it: the zip may hold turns the
+// loose copy lacks, and Materialize returns whichever holds more.
 func withZipped(buckets []claude.Bucket) []claude.Bucket {
 	for i := range buckets {
 		b := &buckets[i]
+		zips := convzip.Find(b.Dir)
 		have := map[string]bool{}
-		for _, t := range b.Transcripts {
+		for j, t := range b.Transcripts {
 			have[strings.ToLower(t.ID)] = true
+			if zp, ok := zips[strings.ToLower(t.ID)]; ok {
+				b.Transcripts[j].Path = zp
+			}
 		}
-		for lid, zp := range convzip.Find(b.Dir) {
+		for lid, zp := range zips {
 			st, err := os.Lstat(zp)
 			if have[lid] || err != nil {
 				continue
@@ -123,7 +129,7 @@ var materialize = convzip.Materialize
 
 // openTranscript returns a readable transcript path: a loose one as it is, a zipped
 // one extracted under a temp dir that cleanup removes, even on error. A zip that cannot
-// be read costs one note on stderr.
+// be read costs one note on stderr, unless a loose copy beside it is read instead.
 func openTranscript(path string) (string, func(), error) {
 	if !isZip(path) {
 		return path, func() {}, nil
@@ -136,18 +142,40 @@ func openTranscript(path string) (string, func(), error) {
 	p, cleanup, err := materialize(filepath.Dir(path), id, tmp)
 	if err != nil {
 		os.RemoveAll(tmp)
+		if lt := looseBeside(path); lt != "" {
+			return lt, func() {}, nil
+		}
 		fmt.Fprintf(os.Stderr, "skipped %s: %v\n", path, err)
 		return "", nil, err
 	}
 	return p, func() { cleanup(); os.RemoveAll(tmp) }, nil
 }
 
-// scanHead is claude.ScanHead for a loose or zipped transcript. shortcut: a zipped
-// conversation is extracted whole, as Materialize offers no head-only read; upgrade if
-// listing a drive of large zips proves slow.
+// looseBeside is the loose transcript beside the zip at zp, "" unless it is a plain file.
+func looseBeside(zp string) string {
+	p := strings.TrimSuffix(zp, convzip.Suffix) + ".jsonl"
+	if st, err := os.Lstat(p); err != nil || !st.Mode().IsRegular() {
+		return ""
+	}
+	return p
+}
+
+// scanHead is claude.ScanHead for a loose or zipped transcript. Only the opening lines
+// are read, so only a zip's transcript is extracted, not its folder; a loose copy beside
+// the zip, the same conversation from its start, is read without opening the zip.
 func scanHead(path string, maxLines int) (claude.Summary, error) {
-	p, cleanup, err := openTranscript(path)
+	if !isZip(path) {
+		return claude.ScanHead(path, maxLines)
+	}
+	if lt := looseBeside(path); lt != "" {
+		if s, err := claude.ScanHead(lt, maxLines); err == nil {
+			return s, nil
+		}
+	}
+	id := strings.TrimSuffix(filepath.Base(path), convzip.Suffix)
+	p, cleanup, err := convzip.TranscriptOnly(filepath.Dir(path), id, "")
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "skipped %s: %v\n", path, err)
 		return claude.Summary{}, err
 	}
 	defer cleanup()
