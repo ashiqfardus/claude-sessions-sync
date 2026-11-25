@@ -1893,47 +1893,60 @@ func TestPruneDatesAnUntimedTranscriptAfterReadingIt(t *testing.T) {
 	}
 }
 
-// I2: the age rule dates by no later than a day after another computer's last push, so
-// this computer's clock running a year ahead deletes nothing young, and says so; one in
-// step still deletes what is due.
+// I2: the age rule counts age up to no later than a day after another computer's last
+// push. This clock running a year ahead deletes nothing young; the others switched off
+// for days pause only what fell due meanwhile; in step it deletes all that is due. It says
+// when it holds back, as a fact, not a WARN: the others being off is no fault.
 func TestAgeRuleDatesByTheOthersWhenThisClockIsAhead(t *testing.T) {
-	for _, ahead := range []bool{true, false} {
+	const due91 = "aaaaaaaa-1111-4111-8111-0000000000d1" // 91 days old: due, unless the count stops two days short
+	for _, c := range []struct {
+		name          string
+		ahead, lapOff time.Duration
+		deleted       int
+	}{
+		{"this clock a year ahead", 365 * 24 * time.Hour, 0, 2},
+		{"the others off for 3 days", 0, 72 * time.Hour, 1},
+		{"in step", 0, 0, 2},
+	} {
 		claudeDir, dest := ageFixture(t)
+		conv(t, dest, "e--web-app", due91, time.Now().AddDate(0, 0, -91), "d1")
 		shards, _, err := archive.ReadShards(dest)
 		if err != nil {
 			t.Fatal(err)
 		}
 		lap := shards["LAP-2"]
-		lap.LastPush = time.Now().UTC().Truncate(time.Hour)
+		lap.LastPush = time.Now().Add(-c.lapOff).UTC().Truncate(time.Hour)
 		writeJSON(t, filepath.Join(archive.ManifestDir(dest), "LAP-2.json"), lap)
-		ranYesterday(t, claudeDir)
 		ret, err := archive.LoadRetention(dest)
 		if err != nil {
 			t.Fatal(err)
 		}
-		now := time.Now()
-		if ahead {
-			now = now.AddDate(1, 0, 0)
-		}
-		var warned []string
+		now := time.Now().Add(c.ahead)
+		var warned, held []string
 		n, err := runAgeRule(claudeDir, dest, ret, now, 0, func(f string, a ...any) {
-			if l := fmt.Sprintf(f, a...); strings.HasPrefix(l, "WARN:") {
+			switch l := fmt.Sprintf(f, a...); {
+			case strings.HasPrefix(l, "WARN:"):
 				warned = append(warned, l)
+			case strings.Contains(l, "counting age up to"):
+				held = append(held, l)
 			}
 		})
-		if n != 1 || err != nil || archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
-			t.Errorf("ahead %v: deleted %d, %v: want the 120-day-old one", ahead, n, err)
+		if n != c.deleted || err != nil || archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
+			t.Errorf("%s: deleted %d, %v: want %d, the 120-day-old one among them", c.name, n, err, c.deleted)
 		}
 		if archivedCopy(dest, "e--web-app", newWeb) == "" {
-			t.Errorf("ahead %v: the 10-day-old conversation was deleted", ahead)
+			t.Errorf("%s: the 10-day-old conversation was deleted", c.name)
 		}
-		wantWarn := 0
-		if ahead {
-			wantWarn = 1
+		if (archivedCopy(dest, "e--web-app", due91) == "") != (c.deleted == 2) {
+			t.Errorf("%s: the 91-day-old conversation deleted: %v", c.name, archivedCopy(dest, "e--web-app", due91) == "")
 		}
-		if len(warned) != wantWarn || ahead && (!strings.Contains(warned[0], now.Local().Format("2006-01-02 15:04")) ||
-			!strings.Contains(warned[0], lap.LastPush.Local().Format("2006-01-02 15:04")) || !strings.Contains(warned[0], "LAP-2")) {
-			t.Errorf("ahead %v: warned %q, want one naming this clock's time and LAP-2's last push", ahead, warned)
+		bound := lap.LastPush.Add(25 * time.Hour).Local().Format("2006-01-02 15:04")
+		if len(warned) > 0 {
+			t.Errorf("%s: warned %q", c.name, warned)
+		}
+		if held := strings.Join(held, "\n"); (c.ahead > 0 || c.lapOff > 0) != (held != "") ||
+			held != "" && (!strings.Contains(held, bound) || !strings.Contains(held, now.Local().Format("2006-01-02 15:04")) || !strings.Contains(held, "LAP-2")) {
+			t.Errorf("%s: logged %q, want one line naming %s, LAP-2 and this clock's time only when it holds back", c.name, held, bound)
 		}
 	}
 }

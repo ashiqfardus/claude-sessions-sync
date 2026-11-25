@@ -20,11 +20,13 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   kept once its folder is gone or its remote changes. `config keep-days <N>` (90 or
   more, off by default) deletes conversations older than N days by itself, at most once
   a day on each computer, in the sweep or a `push` from a terminal, never in the hooks;
-  it counts days by no later than 25 hours after another computer's last push, so a
-  clock running ahead deletes nothing young. A computer's first run of it only notes
-  the time, so it starts a day later, and setting it shows the keep list and the
-  `prune --older-than <N>d` that previews it. It deletes nothing while a sync app's
-  conflict copy of `retention.json` sits beside it. Nothing on any computer is touched.
+  it counts days by no later than 25 hours after the newest other computer's last push,
+  so a clock running ahead deletes nothing young, and a computer off for a long time
+  pauses deletion of conversations newly due (`machines --forget` one no longer used).
+  A computer's first run of it only notes the time, so it starts a day later, and
+  setting it shows the keep list and the `prune --older-than <N>d` that previews it. It
+  deletes nothing while a sync app's conflict copy of `retention.json` sits beside it.
+  Nothing on any computer is touched.
   Deleting waits until every computer runs this version and has pushed once; the older
   PowerShell scripts are not supported alongside pruning and do not hold it back, so a
   computer still running them uploads its own copies of pruned conversations again.

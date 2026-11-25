@@ -814,11 +814,12 @@ func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget 
 		return 0, fmt.Errorf("nothing deleted: %s", holdoutRefusal(waits))
 	}
 	// Dated by no later than a day after another computer's last push: a clock here
-	// running ahead must not make young conversations look old to every computer.
+	// running ahead must not make young conversations look old to every computer. The
+	// others being switched off holds it back too, so this is said as a fact, not a WARN.
 	at := now
 	if bound, machine, pushed := othersClock(dest); !bound.IsZero() && now.After(bound) {
-		logf("WARN: keep-days: the clock here says %s, more than 25 hours after %s last pushed (%s); dating by %s instead",
-			now.Local().Format("2006-01-02 15:04"), machine, pushed.Local().Format("2006-01-02 15:04"), bound.Local().Format("2006-01-02 15:04"))
+		logf("KEEP-DAYS: counting age up to %s (%s's last backup, %s, + 25 h), not %s",
+			bound.Local().Format("2006-01-02 15:04"), machine, pushed.Local().Format("2006-01-02 15:04"), now.Local().Format("2006-01-02 15:04"))
 		at = bound
 	}
 	plan, err := planWith(root, dest, pruneSel{OlderThan: ret.KeepDays}, ret, at, &ageScan{budget: budget, from: last.Next})
