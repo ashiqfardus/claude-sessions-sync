@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -277,7 +278,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		ClaudeRoot:    root,
 		Home:          userHome(),
 		ToolVersion:   version,
-		FormerNames:   formerMachines,
+		FormerNames:   savedFormer(),
 		Projects:      map[string]archive.Project{},
 	}
 	var sessions []archive.Session
@@ -1902,15 +1903,31 @@ var safeMachine = strings.NewReplacer("/", "-", `\`, "-", ":", "-", " ", "-", "*
 
 // savedMachine is the name saved in session-sync.json, and formerMachines the names
 // this machine went by before it, loaded by resolveRoot: every command finds its
-// profile through it before it names anything.
+// profile through it before it names anything. machineMu guards both: the panel runs
+// commands from concurrent requests. Write them with setSavedMachine, read the names
+// with savedFormer.
 var (
 	savedMachine   string
 	formerMachines []string
+	machineMu      sync.RWMutex
 )
+
+func setSavedMachine(name string, former []string) {
+	machineMu.Lock()
+	defer machineMu.Unlock()
+	savedMachine, formerMachines = name, former
+}
+
+// savedFormer is a copy of the names this machine went by before.
+func savedFormer() []string {
+	machineMu.RLock()
+	defer machineMu.RUnlock()
+	return slices.Clone(formerMachines)
+}
 
 // isMe reports whether name is this machine's, now or under a name it went by before.
 func isMe(name string) bool {
-	for _, n := range append([]string{machineName()}, formerMachines...) {
+	for _, n := range append([]string{machineName()}, savedFormer()...) {
 		if strings.EqualFold(name, n) {
 			return true
 		}
@@ -1922,7 +1939,10 @@ func isMe(name string) bool {
 // changed with the hostname - macOS renames itself after a clash on the network -
 // and the machine then took its own files in the archive for another machine's.
 func pinMachineName(root string) {
-	if savedMachine != "" || strings.TrimSpace(os.Getenv("CLAUDE_SESSIONS_MACHINE")) != "" {
+	machineMu.RLock()
+	pinned := savedMachine != ""
+	machineMu.RUnlock()
+	if pinned || strings.TrimSpace(os.Getenv("CLAUDE_SESSIONS_MACHINE")) != "" {
 		return
 	}
 	cfg, err := archive.LoadConfig(root)
@@ -1931,7 +1951,7 @@ func pinMachineName(root string) {
 	}
 	cfg.Machine = machineName()
 	if archive.SaveConfig(root, cfg) == nil {
-		savedMachine = cfg.Machine
+		setSavedMachine(cfg.Machine, savedFormer())
 	}
 }
 
@@ -1982,8 +2002,11 @@ func machineName() string {
 	if v := strings.TrimSpace(os.Getenv("CLAUDE_SESSIONS_MACHINE")); v != "" {
 		return safe.Replace(v)
 	}
-	if savedMachine != "" {
-		return safe.Replace(savedMachine)
+	machineMu.RLock()
+	saved := savedMachine
+	machineMu.RUnlock()
+	if saved != "" {
+		return safe.Replace(saved)
 	}
 
 	host := "unknown-machine"

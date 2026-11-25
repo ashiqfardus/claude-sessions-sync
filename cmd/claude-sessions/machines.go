@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -25,52 +24,84 @@ func cmdMachines(args []string) error {
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
-
-	root, _, err := resolveRoot(*claudeDir)
-	if err != nil {
+	o := machinesOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, Forget: *forget}
+	s := stdStreams()
+	if *asJSON {
+		s = jsonStreams()
+	}
+	var res any
+	var err error
+	if o.Forget != "" {
+		res, err = runForget(s, o)
+	} else {
+		res, err = runMachines(s, o)
+	}
+	if err != nil || !*asJSON {
 		return err
 	}
-	dest, _, err := archive.ResolveDestination(root, *archiveDir)
+	return encodeJSON(os.Stdout, res)
+}
+
+type machinesOpts struct{ ClaudeDir, ArchiveDir, Forget string }
+
+type forgetResult struct {
+	Forgot string `json:"forgot"`
+}
+
+// machinesArchive is the archive folder machines and --forget work on; there must be one.
+func machinesArchive(o machinesOpts) (string, error) {
+	root, _, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return "", err
+	}
+	dest, _, err := archive.ResolveDestination(root, o.ArchiveDir)
+	if err != nil {
+		return "", err
 	}
 	if dest == "" {
-		return fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
+		return "", fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
 	}
+	return dest, nil
+}
 
-	if *forget != "" {
-		if err := archive.ForgetMachine(dest, *forget); err != nil {
-			return err
-		}
-		fmt.Printf("Forgot %q: its manifest and index entries are removed.\n", *forget)
-		fmt.Println("Its transcripts, and their pages, stay in the archive: they are the")
-		fmt.Println("irreplaceable part. To stop publishing a project's pages, add it to")
-		fmt.Println("render-exclude.txt (or `claude-sessions render --exclude <project>`).")
-		fmt.Println("If that machine is still in use, its next push adds it back.")
-		fmt.Println("Run `claude-sessions push` to rebuild INDEX.md without it.")
-		return nil
+// runForget removes o.Forget's manifest and index entries, and says what that leaves.
+func runForget(s streams, o machinesOpts) (forgetResult, error) {
+	dest, err := machinesArchive(o)
+	if err != nil {
+		return forgetResult{}, err
 	}
+	if err := archive.ForgetMachine(dest, o.Forget); err != nil {
+		return forgetResult{}, err
+	}
+	fmt.Fprintf(s.Out, "Forgot %q: its manifest and index entries are removed.\n", o.Forget)
+	fmt.Fprintln(s.Out, "Its transcripts, and their pages, stay in the archive: they are the")
+	fmt.Fprintln(s.Out, "irreplaceable part. To stop publishing a project's pages, add it to")
+	fmt.Fprintln(s.Out, "render-exclude.txt (or `claude-sessions render --exclude <project>`).")
+	fmt.Fprintln(s.Out, "If that machine is still in use, its next push adds it back.")
+	fmt.Fprintln(s.Out, "Run `claude-sessions push` to rebuild INDEX.md without it.")
+	return forgetResult{Forgot: o.Forget}, nil
+}
 
+// runMachines lists the archive's machines on s.Out and returns them.
+func runMachines(s streams, o machinesOpts) ([]archive.MachineInfo, error) {
+	dest, err := machinesArchive(o)
+	if err != nil {
+		return nil, err
+	}
 	machines, err := archive.Machines(dest)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if machines == nil {
-			machines = []archive.MachineInfo{}
-		}
-		return enc.Encode(machines)
+	if machines == nil {
+		machines = []archive.MachineInfo{}
 	}
 
 	if len(machines) == 0 {
-		fmt.Println("No machines have pushed to this archive yet.")
-		return nil
+		fmt.Fprintln(s.Out, "No machines have pushed to this archive yet.")
+		return machines, nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(s.Out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "MACHINE\tPROJECTS\tSESSIONS\tLAST BACKUP\tLAST SESSION")
 	for _, m := range machines {
 		last := "-" // a build older than the field
@@ -80,13 +111,13 @@ func cmdMachines(args []string) error {
 		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\n", printable(m.Name), m.Projects, m.Sessions, last, localDate(m.LastSeen))
 	}
 	if err := w.Flush(); err != nil {
-		return err
+		return machines, err
 	}
-	fmt.Println("\nLAST BACKUP is the hour of that machine's last full push (\"-\" for an older version);")
-	fmt.Println("LAST SESSION is the newest session archived from it.")
-	fmt.Println("\nRemove a machine you no longer use with --forget <name>.")
-	fmt.Println("Its transcripts are kept; only its manifest and index entries go.")
-	return nil
+	fmt.Fprintln(s.Out, "\nLAST BACKUP is the hour of that machine's last full push (\"-\" for an older version);")
+	fmt.Fprintln(s.Out, "LAST SESSION is the newest session archived from it.")
+	fmt.Fprintln(s.Out, "\nRemove a machine you no longer use with --forget <name>.")
+	fmt.Fprintln(s.Out, "Its transcripts are kept; only its manifest and index entries go.")
+	return machines, nil
 }
 
 // localDate shows a manifest "seen" value - RFC 3339 UTC, or a bare date written by

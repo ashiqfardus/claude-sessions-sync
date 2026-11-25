@@ -1,0 +1,7 @@
+$ claude-sessions machines --claude-dir <CLAUDE> --forget LAP-2 --json
+exit 0
+--- stdout
+{
+  "forgot": "LAP-2"
+}
+--- stderr

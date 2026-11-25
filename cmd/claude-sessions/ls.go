@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -42,33 +41,53 @@ func cmdLs(args []string) error {
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
-
-	sinceT, err := parseDate(*since, "since")
+	o := lsOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, Project: *project,
+		Since: *since, Until: *until, Archived: *archived, Limit: *limit}
+	if !*asJSON {
+		_, err := runLs(stdStreams(), o)
+		return err
+	}
+	rows, err := runLs(jsonStreams(), o)
 	if err != nil {
 		return err
 	}
-	untilT, err := parseDate(*until, "until")
+	return encodeJSON(os.Stdout, rows)
+}
+
+type lsOpts struct {
+	ClaudeDir, ArchiveDir, Project, Since, Until string
+	Archived                                     bool
+	Limit                                        int
+}
+
+// runLs lists the sessions on s.Out and returns them.
+func runLs(s streams, o lsOpts) ([]sessionRow, error) {
+	sinceT, err := parseDate(o.Since, "since")
 	if err != nil {
-		return err
+		return nil, err
+	}
+	untilT, err := parseDate(o.Until, "until")
+	if err != nil {
+		return nil, err
 	}
 	if !untilT.IsZero() {
 		untilT = untilT.Add(24*time.Hour - time.Nanosecond) // --until is inclusive
 	}
 
-	root, _, err := resolveRoot(*claudeDir)
+	root, _, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	dir, err := sessionsDir(root, *archived, *archiveDir)
+	dir, err := sessionsDir(root, o.Archived, o.ArchiveDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	buckets, err := claude.ListBuckets(dir)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", dir, err)
+		return nil, fmt.Errorf("reading %s: %w", dir, err)
 	}
-	if *archived || *archiveDir != "" {
+	if o.Archived || o.ArchiveDir != "" {
 		buckets = withZipped(buckets)
 	}
 
@@ -93,19 +112,19 @@ func cmdLs(args []string) error {
 
 	// A project filter can only be applied after reading each transcript's cwd, so the
 	// limit cannot be applied up front in that case.
-	if *limit > 0 && *project == "" && len(candidates) > *limit {
-		candidates = candidates[:*limit]
+	if o.Limit > 0 && o.Project == "" && len(candidates) > o.Limit {
+		candidates = candidates[:o.Limit]
 	}
 
 	var rows []sessionRow
 	for _, c := range candidates {
-		if *limit > 0 && len(rows) >= *limit {
+		if o.Limit > 0 && len(rows) >= o.Limit {
 			break
 		}
-		s, err := scanHead(c.t.Path, headScanLines)
+		sum, err := scanHead(s.Err, c.t.Path, headScanLines)
 		if err != nil {
 			if isZip(c.t.Path) {
-				continue // noted on stderr by openTranscript
+				continue // noted on s.Err by scanHead
 			}
 			// An unreadable transcript still deserves a row: knowing a session exists
 			// matters more than knowing what it was about.
@@ -116,39 +135,33 @@ func cmdLs(args []string) error {
 			})
 			continue
 		}
-		path := s.Cwd
+		path := sum.Cwd
 		if path == "" {
 			path = c.bucket
 		}
-		if *project != "" &&
-			!strings.Contains(strings.ToLower(path), strings.ToLower(*project)) &&
-			!strings.Contains(strings.ToLower(c.bucket), strings.ToLower(*project)) {
+		if o.Project != "" &&
+			!strings.Contains(strings.ToLower(path), strings.ToLower(o.Project)) &&
+			!strings.Contains(strings.ToLower(c.bucket), strings.ToLower(o.Project)) {
 			continue
 		}
 		rows = append(rows, sessionRow{
 			Bucket: c.bucket, Project: path, SessionID: c.t.ID,
 			Updated: c.t.ModTime, SizeBytes: c.t.Size,
-			FirstPrompt: s.FirstPrompt, Skipped: s.Skipped,
+			FirstPrompt: sum.FirstPrompt, Skipped: sum.Skipped,
 		})
 	}
-
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if rows == nil {
-			rows = []sessionRow{} // an empty result is [], never null
-		}
-		return enc.Encode(rows)
+	if rows == nil {
+		rows = []sessionRow{} // an empty result is [], never null
 	}
 
 	if len(rows) == 0 {
-		fmt.Println("No sessions found under", dir)
-		return nil
+		fmt.Fprintln(s.Out, "No sessions found under", dir)
+		return rows, nil
 	}
 
 	// The full session ID: `claude --resume` needs all of it, and a shortened one
 	// could only be copied to find it does not work.
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(s.Out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "UPDATED\tSIZE\tPROJECT\tSESSION\tFIRST PROMPT")
 	for _, r := range rows {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
@@ -160,10 +173,10 @@ func cmdLs(args []string) error {
 		)
 	}
 	if err := w.Flush(); err != nil {
-		return err
+		return rows, err
 	}
-	fmt.Printf("\n%d session(s).\n", len(rows))
-	return nil
+	fmt.Fprintf(s.Out, "\n%d session(s).\n", len(rows))
+	return rows, nil
 }
 
 func parseDate(v, flagName string) (time.Time, error) {

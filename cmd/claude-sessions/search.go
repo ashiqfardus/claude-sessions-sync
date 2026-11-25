@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -40,44 +39,73 @@ func cmdSearch(args []string) error {
 	if err := parseFlags(fs, args, true); err != nil {
 		return err
 	}
+	o := searchOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, Query: strings.Join(fs.Args(), " "),
+		Project: *project, Role: *role, Archived: *archived, Regexp: *useRegexp,
+		CaseSensitive: *caseSensitive, All: *all, Limit: *limit}
+	if !*asJSON {
+		_, err := runSearch(stdStreams(), o)
+		return err
+	}
+	res, err := runSearch(jsonStreams(), o)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(os.Stdout, res.Hits)
+}
 
-	query := strings.Join(fs.Args(), " ")
+type searchOpts struct {
+	ClaudeDir, ArchiveDir, Query, Project, Role string
+	Archived, Regexp, CaseSensitive, All        bool
+	Limit                                       int
+}
+
+// searchResult is what a search found: its hits, how many sessions it read and could
+// not read, and whether it stopped at the limit.
+type searchResult struct {
+	Hits                []hit
+	Scanned, Unreadable int
+	Stopped             bool
+}
+
+// runSearch prints the hits on s.Out and returns them.
+func runSearch(s streams, o searchOpts) (searchResult, error) {
+	query := o.Query
 	if strings.TrimSpace(query) == "" {
-		return fmt.Errorf("usage: claude-sessions search [flags] <text>")
+		return searchResult{}, fmt.Errorf("usage: claude-sessions search [flags] <text>")
 	}
 
 	pattern := query
-	if !*useRegexp {
+	if !o.Regexp {
 		pattern = regexp.QuoteMeta(query)
 	}
-	if !*caseSensitive {
+	if !o.CaseSensitive {
 		pattern = "(?i)" + pattern
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return fmt.Errorf("bad pattern: %w", err)
+		return searchResult{}, fmt.Errorf("bad pattern: %w", err)
 	}
 
-	root, _, err := resolveRoot(*claudeDir)
+	root, _, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return searchResult{}, err
 	}
-	dir, err := sessionsDir(root, *archived, *archiveDir)
+	dir, err := sessionsDir(root, o.Archived, o.ArchiveDir)
 	if err != nil {
-		return err
+		return searchResult{}, err
 	}
 	buckets, err := claude.ListBuckets(dir)
 	if err != nil {
-		return err
+		return searchResult{}, err
 	}
-	if *archived || *archiveDir != "" {
+	if o.Archived || o.ArchiveDir != "" {
 		buckets = withZipped(buckets)
 	}
 
 	var hits []hit
 	var scanned, unreadable int
 
-	paths := newResolver()
+	paths := newResolver(s.Err)
 
 	// Newest sessions first, across every project. --limit used to keep the first
 	// matches in alphabetical bucket order, which cut off exactly the recent sessions
@@ -86,10 +114,10 @@ func cmdSearch(args []string) error {
 	for _, b := range buckets {
 		// A project filter is decided per bucket, so a filtered search never opens the
 		// transcripts it is about to discard.
-		if *project != "" {
+		if o.Project != "" {
 			path := paths.Path(b)
-			if !strings.Contains(strings.ToLower(path), strings.ToLower(*project)) &&
-				!strings.Contains(strings.ToLower(b.Name), strings.ToLower(*project)) {
+			if !strings.Contains(strings.ToLower(path), strings.ToLower(o.Project)) &&
+				!strings.Contains(strings.ToLower(b.Name), strings.ToLower(o.Project)) {
 				continue
 			}
 		}
@@ -102,16 +130,16 @@ func cmdSearch(args []string) error {
 	})
 
 	for _, c := range candidates {
-		if *limit > 0 && len(hits) >= *limit {
+		if o.Limit > 0 && len(hits) >= o.Limit {
 			break
 		}
 		tr := c.t
 
 		// One pass. The cwd is picked up from the same walk that does the matching,
 		// rather than paying for a separate head scan over every file.
-		tpath, cleanup, err := openTranscript(tr.Path)
+		tpath, cleanup, err := openTranscript(s.Err, tr.Path)
 		if err != nil {
-			continue // a zip that cannot be read: noted on stderr, skipped
+			continue // a zip that cannot be read: noted on s.Err, skipped
 		}
 		scanned++
 		var found []hit
@@ -120,13 +148,13 @@ func cmdSearch(args []string) error {
 			if cwd == "" && r.Cwd != "" {
 				cwd = r.Cwd
 			}
-			if *role != "" && !strings.EqualFold(r.Role, *role) && !strings.EqualFold(r.Type, *role) {
+			if o.Role != "" && !strings.EqualFold(r.Role, o.Role) && !strings.EqualFold(r.Type, o.Role) {
 				return true
 			}
 			// The message text by default; with --all also tool input, tool output and
 			// thinking, which is where "which command did I run" is answered.
 			texts := []string{r.Text}
-			if *all {
+			if o.All {
 				for _, blk := range r.Blocks {
 					if blk.Kind != "text" {
 						texts = append(texts, blk.Text)
@@ -143,7 +171,7 @@ func cmdSearch(args []string) error {
 					break
 				}
 			}
-			return *limit <= 0 || len(hits)+len(found) < *limit
+			return o.Limit <= 0 || len(hits)+len(found) < o.Limit
 		})
 		cleanup()
 		if err != nil {
@@ -165,46 +193,42 @@ func cmdSearch(args []string) error {
 		hits = append(hits, found...)
 	}
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if hits == nil {
-			hits = []hit{} // an empty result is [], never null
-		}
-		return enc.Encode(hits)
+	if hits == nil {
+		hits = []hit{} // an empty result is [], never null
 	}
+	res := searchResult{Hits: hits, Scanned: scanned, Unreadable: unreadable, Stopped: o.Limit > 0 && len(hits) >= o.Limit}
 
 	if len(hits) == 0 {
-		fmt.Printf("No matches for %q in %d session(s).\n", query, scanned)
-		return nil
+		fmt.Fprintf(s.Out, "No matches for %q in %d session(s).\n", query, scanned)
+		return res, nil
 	}
 
 	lastSession := ""
 	for _, h := range hits {
 		if h.SessionID != lastSession {
-			fmt.Printf("\n%s  %s\n", printable(h.Project), h.SessionID)
+			fmt.Fprintf(s.Out, "\n%s  %s\n", printable(h.Project), h.SessionID)
 			lastSession = h.SessionID
 		}
 		when := ""
 		if !h.When.IsZero() {
 			when = h.When.Local().Format("2006-01-02 15:04")
 		}
-		fmt.Printf("  %-16s %-9s %s\n", when, h.Role, printable(h.Snippet))
+		fmt.Fprintf(s.Out, "  %-16s %-9s %s\n", when, h.Role, printable(h.Snippet))
 	}
 
-	fmt.Printf("\n%d match(es); %d session(s) searched, newest first.\n", len(hits), scanned)
-	if *limit > 0 && len(hits) >= *limit {
-		fmt.Printf("Stopped at --limit %d; older sessions were not searched.\n", *limit)
+	fmt.Fprintf(s.Out, "\n%d match(es); %d session(s) searched, newest first.\n", len(hits), scanned)
+	if res.Stopped {
+		fmt.Fprintf(s.Out, "Stopped at --limit %d; older sessions were not searched.\n", o.Limit)
 	}
 	if unreadable > 0 {
-		fmt.Printf("%d transcript(s) could not be read.\n", unreadable)
+		fmt.Fprintf(s.Out, "%d transcript(s) could not be read.\n", unreadable)
 	}
-	if *archived {
-		fmt.Println("Archived sessions are resumable once filed here: claude-sessions import")
+	if o.Archived {
+		fmt.Fprintln(s.Out, "Archived sessions are resumable once filed here: claude-sessions import")
 	}
 	// Two steps rather than `&&`, which Windows PowerShell 5.1 does not parse.
-	fmt.Printf("Resume one with:  cd %s  then  claude --resume %s\n", shellPath(printable(hits[0].Project)), hits[0].SessionID)
-	return nil
+	fmt.Fprintf(s.Out, "Resume one with:  cd %s  then  claude --resume %s\n", shellPath(printable(hits[0].Project)), hits[0].SessionID)
+	return res, nil
 }
 
 // shellPath quotes a path for a cd the user will type. Go's %q escapes backslashes,

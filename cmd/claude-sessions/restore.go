@@ -239,7 +239,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		// may be this machine's too. Only a copy that adds nothing is skipped, so
 		// counting it is safe.
 		var tags []string
-		for _, n := range append([]string{machineName(), ""}, formerMachines...) {
+		for _, n := range append([]string{machineName(), ""}, savedFormer()...) {
 			tags = append(tags, forkTag(filepath.Base(res.Bucket), n))
 		}
 		for _, e := range locals {

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -50,9 +51,12 @@ const headScanLines = 200
 // copies of the same rule and, in search's case, reading every transcript twice.
 type resolver struct {
 	cache map[string]string
+	errw  io.Writer // where a zip that cannot be read is noted
 }
 
-func newResolver() *resolver { return &resolver{cache: map[string]string{}} }
+func newResolver(errw io.Writer) *resolver {
+	return &resolver{cache: map[string]string{}, errw: errw}
+}
 
 // Path returns the project's absolute path for a bucket, falling back to the bucket
 // name when no transcript records a cwd.
@@ -66,7 +70,7 @@ func (r *resolver) Path(b claude.Bucket) string {
 
 	path := b.Name
 	if newest, ok := b.Newest(); ok {
-		if s, err := scanHead(newest.Path, headScanLines); err == nil && s.Cwd != "" {
+		if s, err := scanHead(r.errw, newest.Path, headScanLines); err == nil && s.Cwd != "" {
 			path = s.Cwd
 		}
 	}
@@ -129,8 +133,8 @@ var materialize = convzip.Materialize
 
 // openTranscript returns a readable transcript path: a loose one as it is, a zipped
 // one extracted under a temp dir that cleanup removes, even on error. A zip that cannot
-// be read costs one note on stderr, unless a loose copy beside it is read instead.
-func openTranscript(path string) (string, func(), error) {
+// be read costs one note on errw, unless a loose copy beside it is read instead.
+func openTranscript(errw io.Writer, path string) (string, func(), error) {
 	if !isZip(path) {
 		return path, func() {}, nil
 	}
@@ -145,7 +149,7 @@ func openTranscript(path string) (string, func(), error) {
 		if lt := looseBeside(path); lt != "" {
 			return lt, func() {}, nil
 		}
-		fmt.Fprintf(os.Stderr, "skipped %s: %v\n", path, err)
+		fmt.Fprintf(errw, "skipped %s: %v\n", path, err)
 		return "", nil, err
 	}
 	return p, func() { cleanup(); os.RemoveAll(tmp) }, nil
@@ -162,8 +166,9 @@ func looseBeside(zp string) string {
 
 // scanHead is claude.ScanHead for a loose or zipped transcript. Only the opening lines
 // are read, so only a zip's transcript is extracted, not its folder; a loose copy beside
-// the zip, the same conversation from its start, is read without opening the zip.
-func scanHead(path string, maxLines int) (claude.Summary, error) {
+// the zip, the same conversation from its start, is read without opening the zip. A zip
+// that cannot be read is noted on errw.
+func scanHead(errw io.Writer, path string, maxLines int) (claude.Summary, error) {
 	if !isZip(path) {
 		return claude.ScanHead(path, maxLines)
 	}
@@ -175,7 +180,7 @@ func scanHead(path string, maxLines int) (claude.Summary, error) {
 	id := strings.TrimSuffix(filepath.Base(path), convzip.Suffix)
 	p, cleanup, err := convzip.TranscriptOnly(filepath.Dir(path), id, "")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "skipped %s: %v\n", path, err)
+		fmt.Fprintf(errw, "skipped %s: %v\n", path, err)
 		return claude.Summary{}, err
 	}
 	defer cleanup()

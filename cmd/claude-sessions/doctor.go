@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/zip"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -54,17 +53,35 @@ func cmdDoctor(args []string) error {
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
-
-	// Each check prints as it finishes: on a slow archive a silent doctor reads as hung.
+	o := doctorOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, Exclude: *exclude, NoProbe: *noProbe}
 	if !*asJSON {
-		fmt.Printf("claude-sessions %s doctor\n\n", version)
+		_, err := runDoctor(stdStreams(), o)
+		return err
 	}
+	rep, err := runDoctor(jsonStreams(), o)
+	if err != nil && !errors.Is(err, errChecksFailed) {
+		return err
+	}
+	if jerr := encodeJSON(os.Stdout, rep); jerr != nil {
+		return jerr
+	}
+	return err
+}
+
+type doctorOpts struct {
+	ClaudeDir, ArchiveDir, Exclude string
+	NoProbe                        bool
+}
+
+// runDoctor runs the checks, printing each on s.Out as it finishes, and returns the
+// report: with errChecksFailed when a check fails.
+func runDoctor(s streams, o doctorOpts) (doctorReport, error) {
+	// Each check prints as it finishes: on a slow archive a silent doctor reads as hung.
+	fmt.Fprintf(s.Out, "claude-sessions %s doctor\n\n", version)
 	var checks []check
 	add := func(c check) {
 		checks = append(checks, c)
-		if !*asJSON {
-			printCheck(c)
-		}
+		printCheck(s.Out, c)
 	}
 	hinted, stuck := false, false
 	hint := func(advice string) {
@@ -96,14 +113,14 @@ func cmdDoctor(args []string) error {
 	}
 
 	// --- Claude's own state ---------------------------------------------------
-	root, rootSrc, err := resolveRoot(*claudeDir)
+	root, rootSrc, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return doctorReport{}, err
 	}
 	if st, err := os.Stat(root); err != nil || !st.IsDir() {
 		add(check{"claude root", levelFail, root + " does not exist",
 			"Is Claude Code installed for this account? Set CLAUDE_CONFIG_DIR if it lives elsewhere."})
-		return report(checks, *asJSON)
+		return report(s, checks)
 	}
 	add(check{"claude root", levelOK, fmt.Sprintf("%s (%s)", root, rootSrc), ""})
 
@@ -118,7 +135,7 @@ func cmdDoctor(args []string) error {
 	buckets, err := claude.ListBuckets(claude.ProjectsDir(root))
 	if err != nil {
 		add(check{"projects", levelFail, err.Error(), ""})
-		return report(checks, *asJSON)
+		return report(s, checks)
 	}
 	var transcripts, memoryOnly int
 	for _, b := range buckets {
@@ -153,14 +170,14 @@ func cmdDoctor(args []string) error {
 	}
 
 	// --- the archive ----------------------------------------------------------
-	dest, src, err := archive.ResolveDestination(root, *archiveDir)
+	dest, src, err := archive.ResolveDestination(root, o.ArchiveDir)
 	if err != nil {
 		add(check{"archive", levelWarn, err.Error(), ""})
 	}
 	if dest == "" {
 		add(check{"archive", levelFail, "no destination configured and none auto-detected",
 			"Run `claude-sessions config set-destination <folder>` to choose one."})
-		return report(checks, *asJSON)
+		return report(s, checks)
 	}
 	// It fails or passes; a warning is the time limit.
 	reach := timed("archive", archiveLimit, func() check {
@@ -177,7 +194,7 @@ func cmdDoctor(args []string) error {
 	add(reach)
 	switch {
 	case reach.Level == levelFail:
-		return report(checks, *asJSON)
+		return report(s, checks)
 	case reach.Level == levelWarn:
 		giveUp()
 	case streamingHint(dest):
@@ -186,7 +203,7 @@ func cmdDoctor(args []string) error {
 
 	// A read-only mount, an exhausted quota or a permissions problem passes every
 	// other check while backing up precisely nothing.
-	if *noProbe {
+	if o.NoProbe {
 		add(check{"archive writable", levelInfo, "not tested (--no-write-probe)", ""})
 	} else {
 		slow("archive writable", func(add func(check)) {
@@ -290,7 +307,7 @@ func cmdDoctor(args []string) error {
 		}
 
 		// Rendering is a user-visible feature that can quietly fall behind.
-		excludePatterns := archive.RenderExcludes(root, dest, splitList(*exclude), false)
+		excludePatterns := archive.RenderExcludes(root, dest, splitList(o.Exclude), false)
 		if len(excludePatterns) > 0 {
 			// A pattern that matches nothing publishes what the user believed was
 			// withheld, so show what is configured and what it actually caught.
@@ -456,7 +473,7 @@ func cmdDoctor(args []string) error {
 		}
 	})
 
-	return report(checks, *asJSON)
+	return report(s, checks)
 }
 
 // Test hooks: the time limits, the one read streamingHint makes, how doctor reads a
@@ -814,7 +831,8 @@ type doctorReport struct {
 	OK       bool    `json:"ok"`
 }
 
-func report(checks []check, asJSON bool) error {
+// report counts the checks, and prints each one's advice and the totals on s.Out.
+func report(s streams, checks []check) (doctorReport, error) {
 	var warns, fails int
 	for _, c := range checks {
 		switch c.Level {
@@ -825,47 +843,31 @@ func report(checks []check, asJSON bool) error {
 		}
 	}
 
-	if asJSON {
-		if checks == nil {
-			checks = []check{}
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(doctorReport{
-			Version:  version,
-			Checks:   checks,
-			Warnings: warns,
-			Failures: fails,
-			OK:       fails == 0,
-		}); err != nil {
-			return err
-		}
-		if fails > 0 {
-			return errChecksFailed
-		}
-		return nil
+	if checks == nil {
+		checks = []check{}
 	}
+	rep := doctorReport{Version: version, Checks: checks, Warnings: warns, Failures: fails, OK: fails == 0}
 
 	// The check lines are already printed, each as it finished.
-	fmt.Println()
+	fmt.Fprintln(s.Out)
 	for _, c := range checks {
 		if c.Advice != "" {
-			fmt.Printf("  %s: %s\n", c.Name, c.Advice)
+			fmt.Fprintf(s.Out, "  %s: %s\n", c.Name, c.Advice)
 		}
 	}
 	if warns > 0 || fails > 0 {
-		fmt.Printf("\n%d warning(s), %d failure(s).\n", warns, fails)
+		fmt.Fprintf(s.Out, "\n%d warning(s), %d failure(s).\n", warns, fails)
 	} else {
-		fmt.Println("\nAll checks passed.")
+		fmt.Fprintln(s.Out, "\nAll checks passed.")
 	}
 
 	if fails > 0 {
-		return errChecksFailed
+		return rep, errChecksFailed
 	}
-	return nil
+	return rep, nil
 }
 
-func printCheck(c check) {
+func printCheck(w io.Writer, c check) {
 	mark := " "
 	switch c.Level {
 	case levelOK:
@@ -875,7 +877,7 @@ func printCheck(c check) {
 	case levelFail:
 		mark = "x"
 	}
-	fmt.Printf("  %s %-16s %s\n", mark, c.Name, c.Detail)
+	fmt.Fprintf(w, "  %s %-16s %s\n", mark, c.Name, c.Detail)
 }
 
 // resolveRoot finds the Claude profile, always as an absolute path. A relative
@@ -892,7 +894,7 @@ func resolveRoot(override string) (string, claude.RootSource, error) {
 	// its profile, so every name it writes agrees.
 	if err == nil {
 		if cfg, cerr := archive.LoadConfig(root); cerr == nil {
-			savedMachine, formerMachines = cfg.Machine, cfg.FormerMachines
+			setSavedMachine(cfg.Machine, cfg.FormerMachines)
 		}
 	}
 	return root, src, err

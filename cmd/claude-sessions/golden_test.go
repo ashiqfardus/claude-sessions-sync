@@ -342,6 +342,14 @@ func TestGoldenChanging(t *testing.T) {
 			return runGolden(t, e, append([]string{"pull"}, args...)...)
 		}
 	}
+	// forgets runs machines with args after a second computer, LAP-2, pushed.
+	forgets := func(args ...string) func(*testing.T) string {
+		return func(t *testing.T) string {
+			e := goldenFixture(t)
+			mustWrite(t, filepath.Join(e.m.archive, "manifest", "LAP-2.json"), `{"schemaVersion": 1, "machine": "LAP-2", "projects": {}}`+"\n")
+			return runGolden(t, e, append([]string{"machines"}, args...)...)
+		}
+	}
 	for _, c := range []struct {
 		name  string
 		run   func(t *testing.T) string
@@ -402,11 +410,8 @@ func TestGoldenChanging(t *testing.T) {
 			return runGolden(t, e, "backup", "--out", filepath.Join(e.home, "backups"))
 		}, backupMasks},
 
-		{"machines-forget", func(t *testing.T) string {
-			e := goldenFixture(t)
-			mustWrite(t, filepath.Join(e.m.archive, "manifest", "LAP-2.json"), `{"schemaVersion": 1, "machine": "LAP-2", "projects": {}}`+"\n")
-			return runGolden(t, e, "machines", "--forget", "LAP-2")
-		}, nil},
+		{"machines-forget", forgets("--forget", "LAP-2"), nil},
+		{"machines-forget-json", forgets("--forget", "LAP-2", "--json"), nil},
 
 		{"config-set-destination", func(t *testing.T) string {
 			e := goldenFixture(t)

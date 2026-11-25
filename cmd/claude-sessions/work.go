@@ -768,7 +768,7 @@ func purgeWork(root, dest, machine, folder string) ([]string, error) {
 		}
 		changed = true
 	}
-	for _, m := range append([]string{machine}, formerMachines...) {
+	for _, m := range append([]string{machine}, savedFormer()...) {
 		if err := drop(m, folder); err != nil {
 			return removed, err
 		}
