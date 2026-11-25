@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -600,7 +601,7 @@ func TestPruneWaitsForOlderShard(t *testing.T) {
 	honour(t, dest, "LAP-2", false)
 	before := tree(t, dest)
 	out, err := prune(t, claudeDir, "--older-than", "100d", "--yes")
-	if err == nil || !strings.Contains(out+err.Error(), "LAP-2") || strings.Contains(out+err.Error(), "you-mac") {
+	if err == nil || !strings.Contains(out+err.Error(), "LAP-2 runs a claude-sessions too old") || strings.Contains(out+err.Error(), "you-mac") {
 		t.Errorf("an older build's shard did not stop prune, by name: %v\n%s", err, out)
 	}
 	if !reflect.DeepEqual(tree(t, dest), before) {
@@ -748,4 +749,228 @@ func mustReadFile(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+// An undo from a computer whose clock is behind the deletion's still takes it off the
+// list, and so does a deletion again over an undo from a clock ahead.
+func TestPruneUndoBeatsAClockAhead(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	ahead := time.Now().Add(10 * time.Minute)
+	if err := archive.RecordDeleted(dest, "LAP-2", []archive.DeletedEntry{{ID: oldAPI, DeletedAt: ahead}, {ID: oldWeb, DeletedAt: ahead, Undone: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := prune(t, claudeDir, "--undo", oldAPI); err != nil || !strings.Contains(out, "Off the deleted list") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if out, err := prune(t, claudeDir, oldWeb, "--yes"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	d, err := archive.LoadDeleted(dest)
+	if err != nil || !d[oldAPI].Undone || d[oldWeb].Undone {
+		t.Errorf("undo %+v, delete again %+v (%v): the clock ahead won", d[oldAPI], d[oldWeb], err)
+	}
+}
+
+// A conversation continued after it was pruned is archived again, and listed again.
+func TestIndexListsAConversationContinuedAfterPruning(t *testing.T) {
+	_, dest := pruneFixture(t)
+	pruned := time.Now().Add(-time.Hour)
+	if err := archive.RecordDeleted(dest, "you-mac", []archive.DeletedEntry{{ID: oldWeb, DeletedAt: pruned}, {ID: oldAPI, DeletedAt: pruned}, {ID: newWeb, DeletedAt: pruned}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.RecordDeleted(dest, "LAP-2", []archive.DeletedEntry{{ID: newWeb, DeletedAt: pruned.Add(time.Minute), Undone: true}}); err != nil {
+		t.Fatal(err)
+	}
+	rows := withoutPruned(dest, []archive.Session{
+		{ID: oldWeb, Updated: pruned.Add(-time.Minute)},                 // as pruned
+		{ID: strings.ToUpper(oldAPI), Updated: pruned.Add(time.Minute)}, // continued since
+		{ID: newWeb, Updated: pruned.Add(-time.Hour)},                   // undone
+		{ID: keptID, Updated: pruned},                                   // never pruned
+	})
+	var got []string
+	for _, r := range rows {
+		got = append(got, strings.ToLower(r.ID))
+	}
+	if want := []string{oldAPI, newWeb, keptID}; !reflect.DeepEqual(got, want) {
+		t.Errorf("rows %v, want %v", got, want)
+	}
+}
+
+// symlink makes link point at target, or skips the test where links cannot be made.
+func symlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot make a link here: %v", err)
+	}
+}
+
+// forks/<bucket> and html/<bucket> planted as links to folders outside the archive:
+// those conversations are refused and not recorded, nothing outside is touched, and
+// the rest are deleted.
+func TestPruneRefusesLinkedForksAndPages(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "forks", oldWeb, "LAP-2.jsonl"), turns(time.Now().AddDate(0, 0, -1), "w1"))
+	writeFile(t, filepath.Join(outside, "html", newWeb+".html"), "<html>outside</html>")
+	symlink(t, filepath.Join(outside, "forks"), filepath.Join(dest, "forks", "-Users-you-dev-web-app"))
+	symlink(t, filepath.Join(outside, "html"), filepath.Join(dest, "html", "e--web-app"))
+	before := tree(t, outside)
+	// A fork read through the link would date it a day old.
+	if got := planned(t, claudeDir, dest, pruneSel{OlderThan: 100}, archive.Retention{}); !reflect.DeepEqual(got, []string{oldWeb, oldAPI}) {
+		t.Errorf("dated through a link: %v", got)
+	}
+
+	out, err := prune(t, claudeDir, oldWeb, newWeb, oldAPI, "--yes")
+	if err == nil || !strings.Contains(out, "a link stands on the way") {
+		t.Errorf("links were not refused: %v\n%s", err, out)
+	}
+	if !reflect.DeepEqual(tree(t, outside), before) {
+		t.Error("a file outside the archive changed")
+	}
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" || archivedCopy(dest, "e--web-app", newWeb) == "" {
+		t.Error("a refused conversation was deleted")
+	}
+	if archivedCopy(dest, "-Users-you-dev-api", oldAPI) != "" {
+		t.Error("the conversation with no link on its way was not deleted")
+	}
+	d, _ := archive.LoadDeleted(dest)
+	if _, ok := d[oldWeb]; ok || d[newWeb].ID != "" || d[oldAPI].ID == "" {
+		t.Errorf("recorded %+v: want only %s", d, oldAPI)
+	}
+}
+
+// This machine's deleted list cannot be read: nothing is deleted, and it is not
+// written over.
+func TestPruneUnreadableDeletedList(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	writeFile(t, filepath.Join(archive.DeletedDir(dest), "you-mac.json"), `{"entries": [`)
+	before := tree(t, dest)
+	out, err := prune(t, claudeDir, "--older-than", "100d", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "nothing deleted: the deleted list cannot be read") {
+		t.Errorf("%v\n%s", err, out)
+	}
+	if !reflect.DeepEqual(tree(t, dest), before) {
+		t.Error("prune changed the archive with a deleted list it cannot read")
+	}
+}
+
+// The deleted list holds the entry before the first path is deleted.
+func TestPruneRecordsBeforeDeleting(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	calls, recorded := 0, false
+	removePath = func(string) error {
+		calls++
+		d, _ := archive.LoadDeleted(dest)
+		recorded = d[oldAPI].ID == oldAPI && !d[oldAPI].Undone
+		return errors.New("refused by the test")
+	}
+	defer func() { removePath = os.RemoveAll }()
+	out, err := prune(t, claudeDir, oldAPI, "--yes")
+	if err == nil || calls != 1 || !recorded || !strings.Contains(out, "refused by the test") || strings.Contains(out, "Deleted") {
+		t.Errorf("calls %d, recorded first %v, %v\n%s", calls, recorded, err, out)
+	}
+	if archivedCopy(dest, "-Users-you-dev-api", oldAPI) == "" {
+		t.Error("the transcript went although its delete failed")
+	}
+}
+
+// A conversation gone by the time it is deleted - or named in a case this file system
+// does not find - is reported, not counted and not recorded.
+func TestPruneReportsAConversationGone(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	var failed []string
+	plan, err := planPrune(claudeDir, dest, pruneSel{IDs: []string{oldAPI}}, archive.Retention{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Remove = append(plan.Remove, pruneItem{ID: "aaaaaaaa-1111-4111-8111-0000000000ff", Buckets: []string{"-Users-you-dev-api"}})
+	n, _, err := applyPrune(dest, plan, time.Now(), func(it pruneItem, err error) { failed = append(failed, it.ID+": "+err.Error()) })
+	if n != 1 || err == nil || len(failed) != 1 || !strings.Contains(failed[0], "no copy of it is in the archive") {
+		t.Errorf("deleted %d, %v, failed %v", n, err, failed)
+	}
+	if d, _ := archive.LoadDeleted(dest); len(d) != 1 || d[oldAPI].ID == "" {
+		t.Errorf("recorded %+v", d)
+	}
+}
+
+// A conversation given a newer turn between the listing and the deletion is skipped.
+func TestPruneSkipsAConversationContinuedSinceListed(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	plan, err := planPrune(claudeDir, dest, pruneSel{OlderThan: 100}, archive.Retention{}, time.Now())
+	if err != nil || len(plan.Remove) != 2 {
+		t.Fatalf("%+v %v", plan.Remove, err)
+	}
+	p := archivedCopy(dest, "-Users-you-dev-web-app", oldWeb)
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(turns(time.Now().AddDate(0, 0, -1), "w3"))
+	f.Close()
+	var failed []string
+	n, _, err := applyPrune(dest, plan, time.Now(), func(it pruneItem, err error) { failed = append(failed, it.ID+": "+err.Error()) })
+	if n != 1 || err == nil || len(failed) != 1 || !strings.Contains(failed[0], oldWeb+": it changed since it was listed") {
+		t.Errorf("deleted %d, %v, failed %v", n, err, failed)
+	}
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
+		t.Error("the continued conversation was deleted")
+	}
+	if d, _ := archive.LoadDeleted(dest); d[oldWeb].ID != "" {
+		t.Errorf("the continued conversation was recorded: %+v", d[oldWeb])
+	}
+
+	// Named by id, any turn newer than was listed stops it too, however old.
+	plan, err = planPrune(claudeDir, dest, pruneSel{IDs: []string{oldWeb}}, archive.Retention{}, time.Now())
+	if err != nil || len(plan.Remove) != 1 {
+		t.Fatalf("%+v %v", plan.Remove, err)
+	}
+	f, err = os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(turns(time.Now(), "w4"))
+	f.Close()
+	if n, _, err := applyPrune(dest, plan, time.Now().Add(time.Minute), func(pruneItem, error) {}); n != 0 || err == nil {
+		t.Errorf("by id: deleted %d, %v", n, err)
+	}
+	// ...and so does a turn from a clock ahead, which cannot be dated...
+	if plan, err = planPrune(claudeDir, dest, pruneSel{IDs: []string{newWeb}}, archive.Retention{}, time.Now()); err != nil || len(plan.Remove) != 1 {
+		t.Fatalf("%+v %v", plan.Remove, err)
+	}
+	q := archivedCopy(dest, "e--web-app", newWeb)
+	writeFile(t, q, mustReadFile(t, q)+turns(time.Now().Add(time.Hour), "n9"))
+	if n, _, err := applyPrune(dest, plan, time.Now(), func(pruneItem, error) {}); n != 0 || err == nil {
+		t.Errorf("a turn from a clock ahead: deleted %d, %v", n, err)
+	}
+	// ...and a copy arriving in a bucket that was not listed, however old.
+	if plan, err = planPrune(claudeDir, dest, pruneSel{IDs: []string{oldWeb}}, archive.Retention{}, time.Now()); err != nil || len(plan.Remove) != 1 {
+		t.Fatalf("%+v %v", plan.Remove, err)
+	}
+	conv(t, dest, "-Users-you-dev-api", oldWeb, time.Now().AddDate(0, 0, -300), "w1")
+	if n, _, err := applyPrune(dest, plan, time.Now(), func(pruneItem, error) {}); n != 0 || err == nil {
+		t.Errorf("a copy in a new bucket: deleted %d, %v", n, err)
+	}
+}
+
+func TestPruneRefusalMessages(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	before := tree(t, dest)
+	for args, want := range map[string]string{
+		"web-app":                        `"web-app" is not a conversation id (a project goes with --project)`,
+		"--older-than 100":               "--older-than takes a number of days from 1 to 36500, such as 365d",
+		"--older-than 0d":                "--older-than takes a number of days from 1 to 36500, such as 365d",
+		"--older-than 36501d":            "--older-than takes a number of days from 1 to 36500, such as 365d",
+		"--undo":                         "usage: claude-sessions prune --undo <conversation id>...",
+		"--undo --project api " + oldAPI: "usage: claude-sessions prune --undo <conversation id>...",
+	} {
+		if _, err := prune(t, claudeDir, strings.Fields(args)...); err == nil || err.Error() != want {
+			t.Errorf("prune %s: %v, want %q", args, err, want)
+		}
+	}
+	if !reflect.DeepEqual(tree(t, dest), before) {
+		t.Error("a refused prune changed the archive")
+	}
 }
