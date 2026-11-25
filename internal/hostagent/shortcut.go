@@ -9,8 +9,8 @@ import (
 // no build tag and no system calls, so every platform's content is tested everywhere
 // (see spec.go). Writing and removing the shortcut is in shortcut_<os>.go.
 
-// ShortcutMarker tags a shortcut as this tool's: uninstall removes only what carries
-// it (on macOS, the exact applet bundle), never a shortcut the user made.
+// ShortcutMarker tags a shortcut as this tool's: install replaces and uninstall removes
+// only what carries it, never a shortcut the user made.
 const ShortcutMarker = "claude-sessions-sync panel"
 
 // ShortcutName is the name the app menu shows. A non-default profile gets its sweep's
@@ -64,8 +64,13 @@ func desktopQuote(s string) string {
 // AppleScript is the script of the macOS applet. Every argument goes through `quoted
 // form of`, so the shell sees each as one word. With every stream redirected and a
 // trailing &, `do shell script` returns at once instead of waiting for the panel.
+//
+// The first line is the marker as a comment. The compiled main.scpt keeps it, and
+// that is how uninstall tells our applet from one the user saved under the same
+// name. It sits in the source because osacompile signs the bundle: an edit to
+// Info.plist after compiling would break the signature.
 func AppleScript(j Job) string {
-	s := "do shell script quoted form of " + appleString(j.Binary)
+	s := "-- " + ShortcutMarker + "\ndo shell script quoted form of " + appleString(j.Binary)
 	for _, a := range j.ShortcutArgs() {
 		s += ` & " " & quoted form of ` + appleString(a)
 	}

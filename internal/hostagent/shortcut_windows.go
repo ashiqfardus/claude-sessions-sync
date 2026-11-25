@@ -51,6 +51,10 @@ func InstallShortcut(j Job) (string, error) {
 	if _, err := os.Lstat(path); err == nil && !ownsShortcut(path) {
 		return "", foreignShortcut(path)
 	}
+	target := filepath.Join(filepath.Dir(j.Binary), WindowlessName)
+	if _, err := os.Stat(target); err != nil {
+		return "", fmt.Errorf("the shortcut's program %s cannot be found (install puts it there first): %w", target, err)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
@@ -59,7 +63,7 @@ func InstallShortcut(j Job) (string, error) {
 		"-NoProfile", "-NonInteractive", "-Command", linkScript)
 	cmd.Env = append(os.Environ(),
 		"CS_LNK="+path,
-		"CS_TARGET="+filepath.Join(filepath.Dir(j.Binary), WindowlessName),
+		"CS_TARGET="+target,
 		"CS_ARGS="+windowsArgs(j.ShortcutArgs()),
 		"CS_DESC="+ShortcutMarker)
 	if out, err := cmd.CombinedOutput(); err != nil {

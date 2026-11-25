@@ -110,7 +110,8 @@ func appleLiterals(t *testing.T, src string) []string {
 
 func TestAppleScriptEscapes(t *testing.T) {
 	plain := AppleScript(Job{Binary: "/Users/you/.claude/bin/claude-sessions"})
-	want := `do shell script quoted form of "/Users/you/.claude/bin/claude-sessions"` +
+	want := "-- " + ShortcutMarker + "\n" +
+		`do shell script quoted form of "/Users/you/.claude/bin/claude-sessions"` +
 		` & " " & quoted form of "ui" & " " & quoted form of "--from-shortcut" & " > /dev/null 2>&1 &"`
 	if plain != want {
 		t.Errorf("got:\n%s\nwant:\n%s", plain, want)
@@ -269,39 +270,74 @@ func TestShortcutInstallAndUninstall(t *testing.T) {
 }
 
 // A file at our path that this tool did not write is someone else's: uninstall leaves
-// it and says nothing was removed, and install refuses to replace it.
+// it and says nothing was removed, and install refuses to replace it. On macOS that
+// includes an AppleScript applet the user saved under our name: it has a main.scpt,
+// but not our marker.
 func TestUninstallLeavesForeignShortcuts(t *testing.T) {
+	type foreign struct {
+		name, probe string // probe is relative to the shortcut path; "" is the path itself
+		content     string
+	}
+	cases := []foreign{{"no marker", "", "[Desktop Entry]\nType=Application\nName=mine\nExec=/usr/bin/true\n"}}
+	if runtime.GOOS == "darwin" {
+		cases = []foreign{
+			{"bundle without a script", filepath.Join("Contents", "Info.plist"), "<plist/>"},
+			{"applet without the marker", filepath.Join("Contents", "Resources", "Scripts", "main.scpt"), "FasdUAS 1.101.10 do shell script \"true\""},
+		}
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			home := tempHome(t)
+			j := Job{Binary: filepath.Join(home, ".claude", "bin", "claude-sessions"), Profile: filepath.Join(home, "scratch")}
+			path, err := shortcutPath(j)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if path != wantShortcutPath(home, j) {
+				t.Fatalf("shortcutPath = %s, want %s", path, wantShortcutPath(home, j))
+			}
+			probe := filepath.Join(path, c.probe) // the file whose survival proves nothing was touched
+			if err := os.MkdirAll(filepath.Dir(probe), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(probe, []byte(c.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			removed, err := UninstallShortcut(j)
+			if err != nil || removed {
+				t.Errorf("uninstall = %v, %v; want false, nil", removed, err)
+			}
+			if got, err := InstallShortcut(j); err == nil {
+				t.Errorf("install replaced a foreign shortcut at %s", got)
+			}
+			if data, err := os.ReadFile(probe); err != nil || string(data) != c.content {
+				t.Errorf("the foreign shortcut changed: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+// A shortcut to a program that is not there opens nothing, so install says so instead.
+func TestWindowsShortcutNeedsTheWindowlessCopy(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the windowless copy is Windows only")
+	}
 	home := tempHome(t)
-	j := Job{Binary: filepath.Join(home, ".claude", "bin", "claude-sessions"), Profile: filepath.Join(home, "scratch")}
-	path, err := shortcutPath(j)
-	if err != nil {
+	bin := filepath.Join(home, ".claude", "bin", "claude-sessions.exe")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if path != wantShortcutPath(home, j) {
-		t.Fatalf("shortcutPath = %s, want %s", path, wantShortcutPath(home, j))
-	}
-
-	probe := path // the file whose survival proves nothing was touched
-	content := []byte("[Desktop Entry]\nType=Application\nName=mine\nExec=/usr/bin/true\n")
-	if runtime.GOOS == "darwin" { // an app bundle without an AppleScript applet's main.scpt
-		probe = filepath.Join(path, "Contents", "Info.plist")
-		content = []byte("<plist/>")
-	}
-	if err := os.MkdirAll(filepath.Dir(probe), 0o755); err != nil {
+	if err := os.WriteFile(bin, []byte("MZ"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(probe, content, 0o644); err != nil {
-		t.Fatal(err)
+	j := Job{Binary: bin}
+	_, err := InstallShortcut(j)
+	if err == nil || !strings.Contains(err.Error(), WindowlessName) {
+		t.Fatalf("install = %v, want an error naming %s", err, WindowlessName)
 	}
-
-	removed, err := UninstallShortcut(j)
-	if err != nil || removed {
-		t.Errorf("uninstall = %v, %v; want false, nil", removed, err)
-	}
-	if got, err := InstallShortcut(j); err == nil {
-		t.Errorf("install replaced a foreign shortcut at %s", got)
-	}
-	if data, err := os.ReadFile(probe); err != nil || string(data) != string(content) {
-		t.Errorf("the foreign shortcut changed: %q, %v", data, err)
+	if _, err := os.Lstat(wantShortcutPath(home, j)); !os.IsNotExist(err) {
+		t.Errorf("a shortcut was written anyway: %v", err)
 	}
 }
