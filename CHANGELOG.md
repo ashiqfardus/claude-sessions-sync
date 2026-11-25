@@ -21,8 +21,13 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   more, off by default) deletes conversations older than N days by itself, at most once
   a day on each computer, in the sweep or a `push` from a terminal, never in the hooks;
   it counts days by no later than 25 hours after another computer's last push, so a
-  clock running ahead deletes nothing young. Nothing on any computer is touched.
-  Deleting waits until every computer runs this version and has pushed once.
+  clock running ahead deletes nothing young. A computer's first run of it only notes
+  the time, so it starts a day later, and setting it shows the keep list and the
+  `prune --older-than <N>d` that previews it. It deletes nothing while a sync app's
+  conflict copy of `retention.json` sits beside it. Nothing on any computer is touched.
+  Deleting waits until every computer runs this version and has pushed once; the older
+  PowerShell scripts are not supported alongside pruning and do not hold it back, so a
+  computer still running them uploads its own copies of pruned conversations again.
 - **Idle conversations are zipped.** An archived conversation unchanged for 30 days, and
   on this computer too, becomes one file, `projects/<project>/<session-id>.conv.zip`,
   with its subagent and tool-output files: usually about a third of the space, and one

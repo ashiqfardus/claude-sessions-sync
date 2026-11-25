@@ -1352,7 +1352,8 @@ func TestPruneSkipsAnUndatedConversationGivenATurn(t *testing.T) {
 }
 
 // ageFixture is pruneFixture with keep-days 90: oldWeb 120 days old, newWeb 10, and no
-// oldAPI.
+// oldAPI. The age rule last ran here 25 hours ago, so its next run is due: a computer's
+// first run only records its time.
 func ageFixture(t *testing.T) (claudeDir, dest string) {
 	t.Helper()
 	claudeDir, dest = pruneFixture(t)
@@ -1363,7 +1364,92 @@ func ageFixture(t *testing.T) (claudeDir, dest string) {
 	if out, err := captured(t, func() error { return cmdConfig([]string{"--claude-dir", claudeDir, "keep-days", "90"}) }); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
+	ranYesterday(t, claudeDir)
 	return claudeDir, dest
+}
+
+// M7: a computer's first age-rule run, with no prune-last.json, only records its time:
+// the rule starts the next day, leaving a day to undo a wrong keep-days, and for the sync
+// app to finish filling a new computer's view of the archive.
+func TestAgeRuleFirstRunOnlyRecords(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	if err := os.Remove(pruneLastPath(claudeDir)); err != nil {
+		t.Fatal(err)
+	}
+	read := tailReads(t)
+	if n, err := ageRule(t, claudeDir, dest, func(string, ...any) {}); n != 0 || err != nil || len(read) > 0 {
+		t.Errorf("the first run deleted %d, %v, reading %v", n, err, read)
+	}
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
+		t.Fatal("the first run deleted the 120-day-old conversation")
+	}
+	if r, ok := pruneLast(claudeDir); !ok || time.Since(r.LastRun) > time.Minute {
+		t.Fatalf("the first run did not record its time: %+v %v", r, ok)
+	}
+	ret, _ := archive.LoadRetention(dest)
+	if n, err := runAgeRule(claudeDir, dest, ret, time.Now().Add(25*time.Hour), 0, func(string, ...any) {}); n != 1 || err != nil {
+		t.Errorf("the next day's run deleted %d, %v", n, err)
+	}
+}
+
+// M5: while a computer holds out, the age rule refuses before it plans: it reads no
+// transcript, and still waits a day.
+func TestAgeRuleReadsNothingWhileAComputerHoldsOut(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	honour(t, dest, "LAP-2", false)
+	read := tailReads(t)
+	if n, err := ageRule(t, claudeDir, dest, func(string, ...any) {}); n != 0 || err == nil || !strings.Contains(err.Error(), "LAP-2 runs a claude-sessions too old") {
+		t.Errorf("deleted %d, %v: want a refusal naming LAP-2", n, err)
+	}
+	if len(read) > 0 {
+		t.Errorf("tails read while LAP-2 holds out: %v", read)
+	}
+	if r, ok := pruneLast(claudeDir); !ok || time.Since(r.LastRun) > time.Minute {
+		t.Errorf("prune-last.json not saved: %+v %v", r, ok)
+	}
+}
+
+// M3: while a sync app's conflict copy of retention.json sits beside it, it may hold a
+// keep entry the real file lost: the age rule skips its run, saying so. A temp file of
+// an atomic write is no conflict copy.
+func TestAgeRuleSkipsWhileRetentionHasAConflictCopy(t *testing.T) {
+	for _, name := range []string{"retention (1).json", "Retention (conflicted copy 2026-11-26).json",
+		"retention.sync-conflict-20261126-101500-ABCDEFG.json", "retention-LAP-2.json", ".tmp-retention.json-123"} {
+		claudeDir, dest := ageFixture(t)
+		writeFile(t, filepath.Join(dest, name), `{"keepDays": 90, "keep": [{"leaf": "web-app"}]}`)
+		n, err := ageRule(t, claudeDir, dest, func(string, ...any) {})
+		if name == ".tmp-retention.json-123" {
+			if n != 1 || err != nil {
+				t.Errorf("%s: deleted %d, %v: want the rule to run", name, n, err)
+			}
+			continue
+		}
+		if n != 0 || err == nil || !strings.Contains(err.Error(), name) || archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
+			t.Errorf("%s: deleted %d, %v: want a refusal naming it", name, n, err)
+		}
+	}
+}
+
+// M3, M7: config keep-days N shows the keep list it saved, as another computer's edit
+// in the same sync window may have dropped an entry, and how to preview the rule.
+func TestConfigKeepDaysShowsTheKeepListAndAPreview(t *testing.T) {
+	claudeDir, _ := keepFixture(t)
+	config := func(args ...string) string {
+		t.Helper()
+		out, err := captured(t, func() error { return cmdConfig(append([]string{"--claude-dir", claudeDir}, args...)) })
+		if err != nil {
+			t.Fatalf("config %v: %v\n%s", args, err, out)
+		}
+		return out
+	}
+	if out := config("keep-days", "120"); !strings.Contains(out, "nothing is kept") ||
+		!strings.Contains(out, "run `claude-sessions prune --older-than 120d` to see what it deletes") {
+		t.Errorf("keep-days 120 with nothing kept:\n%s", out)
+	}
+	config("keep", "web-app")
+	if out := config("keep-days", "365"); !strings.Contains(out, "project folder web-app\n") || strings.Contains(out, "nothing is kept") {
+		t.Errorf("keep-days 365 does not list web-app:\n%s", out)
+	}
 }
 
 func pruneLines(t *testing.T, claudeDir string) []string {
@@ -1655,7 +1741,7 @@ func TestHookPushRunsNoAgeRule(t *testing.T) {
 			t.Fatalf("push %+v ran the age rule", opts)
 		}
 	}
-	if _, err := os.Stat(pruneLastPath(claudeDir)); err == nil {
+	if r, _ := pruneLast(claudeDir); time.Since(r.LastRun) < time.Hour {
 		t.Error("a hook or a dry run recorded an age-rule run")
 	}
 	pushHere(t, claudeDir, pushOpts{Quiet: true, Sweep: true})
@@ -1868,7 +1954,7 @@ func TestAgeRuleLeavesAKeptConversation(t *testing.T) {
 }
 
 // A retention.json that cannot be read deletes nothing; a prune-last.json that cannot
-// be read is a rule never run, and is written again.
+// be read is a rule never run: written again, the rule starting the next day.
 func TestAgeRuleBadSettingsFiles(t *testing.T) {
 	claudeDir, dest := ageFixture(t)
 	writeFile(t, archive.RetentionPath(dest), `{"keepDays": 90, "keep": [`)
@@ -1883,11 +1969,36 @@ func TestAgeRuleBadSettingsFiles(t *testing.T) {
 	writeJSON(t, archive.RetentionPath(dest), archive.Retention{KeepDays: 90})
 	writeFile(t, pruneLastPath(claudeDir), "not json")
 	pushHere(t, claudeDir, pushOpts{})
-	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
-		t.Error("a prune-last.json it cannot read stopped the age rule")
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
+		t.Error("a prune-last.json it cannot read ran the rule as one due")
 	}
 	if r, ok := pruneLast(claudeDir); !ok || time.Since(r.LastRun) > time.Minute {
 		t.Errorf("prune-last.json not written again: %+v %v", r, ok)
+	}
+}
+
+// M4: a bucket that cannot be listed may hold a newer copy of a conversation whose copy
+// elsewhere is old: prune deletes nothing on that partial view.
+func TestPruneDeletesNothingWhileABucketCannotBeListed(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a folder this user cannot list")
+	}
+	claudeDir, dest := pruneFixture(t)
+	old := conv(t, dest, "-Users-you-dev-web-app", newWeb, time.Now().AddDate(0, 0, -200), "n0") // its newest is 10 days old, in e--web-app
+	hidden := filepath.Join(archive.ProjectsDir(dest), "e--web-app")
+	if err := os.Chmod(hidden, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(hidden, 0o755) })
+	plan, err := planPrune(claudeDir, dest, pruneSel{OlderThan: 90}, archive.Retention{}, time.Now())
+	if err != nil || !strings.Contains(plan.Unread, "e--web-app") {
+		t.Errorf("planned %+v, %v: want it unread, naming e--web-app", plan, err)
+	}
+	if out, err := prune(t, claudeDir, "--older-than", "90d", "--yes"); err == nil {
+		t.Errorf("prune --yes deleted on a partial view:\n%s", out)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Errorf("the old copy of a young conversation was deleted: %v", err)
 	}
 }
 

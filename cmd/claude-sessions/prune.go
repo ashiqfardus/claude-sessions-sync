@@ -248,7 +248,10 @@ func planWith(root, dest string, sel pruneSel, ret archive.Retention, now time.T
 		plan.cutoff = cutoff
 	}
 
-	holders := sessionHolders(dest)
+	holders, err := holdersOf(dest)
+	if err != nil && plan.Unread == "" {
+		plan.Unread = err.Error() // a bucket left out may hold the newest copy
+	}
 	ids := make([]string, 0, len(holders))
 	for id := range holders {
 		ids = append(ids, id)
@@ -516,7 +519,10 @@ func applyPrune(dest string, plan prunePlan, now time.Time, fail func(pruneItem,
 	if err != nil {
 		return 0, 0, fmt.Errorf("nothing deleted: the deleted list cannot be read: %w", err)
 	}
-	holders := sessionHolders(dest)
+	holders, err := holdersOf(dest)
+	if err != nil {
+		return 0, 0, fmt.Errorf("nothing deleted: %w", err)
+	}
 	var ready []pruneItem
 	var checked [][]prunePath
 	var entries []archive.DeletedEntry
@@ -775,6 +781,7 @@ func savePruneLast(root string, r pruneRun) error {
 // conversation deleted is logged.
 func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget time.Duration, logf func(string, ...any)) (deleted int, err error) {
 	if ret.KeepDays < archive.MinKeepDays {
+		_ = os.Remove(pruneLastPath(root)) // so turning it on again also waits a day
 		return 0, nil
 	}
 	last, ok := pruneLast(root)
@@ -785,6 +792,26 @@ func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget 
 	// Recorded first, so a run refused or killed part way also waits a day.
 	if err := savePruneLast(root, pruneRun{LastRun: now, Next: last.Next}); err != nil {
 		return 0, err
+	}
+	// The first run here only records its time: a day to undo a wrong keep-days, and
+	// for the sync app to finish filling a new computer's view of the archive.
+	if !ok {
+		logf("KEEP-DAYS: the first run here deletes nothing; deleting starts with the next, a day on")
+		return 0, nil
+	}
+	// A conflict copy may hold a keep entry the file read lost.
+	if copies, err := archive.RetentionConflicts(dest); err != nil || len(copies) > 0 {
+		if err != nil {
+			return 0, fmt.Errorf("nothing deleted: %w", err)
+		}
+		return 0, fmt.Errorf("nothing deleted: %s beside retention.json is a sync app's conflict copy, and may keep what retention.json does not. "+
+			"Keep what it keeps with `claude-sessions config keep`, then delete it", strings.Join(copies, ", "))
+	}
+	// Before planning, which reads transcripts: refused every day otherwise, after reading.
+	if waits, err := archive.Holdouts(dest, func(s archive.Shard) bool { return s.HonorsDeleted }); err != nil {
+		return 0, fmt.Errorf("nothing deleted: %v. The computer it belongs to may upload them again", err)
+	} else if len(waits) > 0 {
+		return 0, fmt.Errorf("nothing deleted: %s", holdoutRefusal(waits))
 	}
 	// Dated by no later than a day after another computer's last push: a clock here
 	// running ahead must not make young conversations look old to every computer.

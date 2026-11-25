@@ -1301,12 +1301,22 @@ func zipHolds(zp, id, path string, src os.FileInfo) bool {
 }
 
 // sessionHolders lists, by lower-cased session id, the archive buckets holding a
-// transcript of it, loose or zipped.
+// transcript of it, loose or zipped. A bucket it cannot list is left out.
 func sessionHolders(dest string) map[string][]string {
+	out, _ := holdersOf(dest)
+	return out
+}
+
+// holdersOf is sessionHolders, and the first error listing the archive or a bucket in
+// it: prune must not delete on a view that may leave out a copy.
+func holdersOf(dest string) (map[string][]string, error) {
 	out := map[string][]string{}
-	names, _ := archive.BucketNames(dest)
+	names, failed := archive.BucketNames(dest)
 	for _, b := range names {
-		entries, _ := os.ReadDir(filepath.Join(archive.ProjectsDir(dest), b))
+		entries, err := os.ReadDir(filepath.Join(archive.ProjectsDir(dest), b))
+		if err != nil && failed == nil {
+			failed = fmt.Errorf("a folder in the archive cannot be listed, and may hold a newer copy: %w", err)
+		}
 		loose, zipped := map[string]bool{}, []string{}
 		for _, e := range entries {
 			if !e.Type().IsRegular() {
@@ -1326,7 +1336,7 @@ func sessionHolders(dest string) map[string][]string {
 			}
 		}
 	}
-	return out
+	return out, failed
 }
 
 // othersHolding is the buckets other than bucket that hold session id.

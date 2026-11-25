@@ -419,9 +419,18 @@ flags:
 		}
 		if days == 0 {
 			fmt.Println("keep-days is off: nothing is deleted for its age.")
-		} else {
-			fmt.Printf("keep-days is %d: every computer deletes archived conversations idle longer, except those on the keep list.\n", days)
+			return nil
 		}
+		// The list as saved: another computer's edit in the same sync window may have
+		// dropped an entry from it.
+		fmt.Printf("keep-days is %d: every computer deletes archived conversations idle longer, except those on the keep list:\n", days)
+		if len(r.Keep) == 0 {
+			fmt.Println("  nothing is kept")
+		}
+		for _, e := range r.Keep {
+			fmt.Println("  " + keepLabel(e))
+		}
+		fmt.Printf("Each computer starts a day after its first run of it; run `claude-sessions prune --older-than %dd` to see what it deletes.\n", days)
 		return nil
 
 	case "zip-sessions":

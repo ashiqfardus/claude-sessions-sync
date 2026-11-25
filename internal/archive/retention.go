@@ -70,6 +70,24 @@ func LoadRetention(dest string) (Retention, error) {
 	return r, nil
 }
 
+// RetentionConflicts are the files beside retention.json a sync app makes of it when two
+// computers change it at once - "retention (1).json", "retention-LAP-2.json",
+// "retention.sync-conflict-<time>-<id>.json" - by the one rule they share: a name that
+// starts with retention and ends with .json. Either may hold what the other lost.
+func RetentionConflicts(dest string) ([]string, error) {
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if n := strings.ToLower(e.Name()); n != "retention.json" && strings.HasPrefix(n, "retention") && strings.HasSuffix(n, ".json") {
+			out = append(out, e.Name())
+		}
+	}
+	return out, nil
+}
+
 // SaveRetention writes retention.json atomically.
 func SaveRetention(dest string, r Retention) error {
 	data, err := json.MarshalIndent(r, "", "  ")

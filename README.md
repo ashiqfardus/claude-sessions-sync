@@ -592,7 +592,8 @@ claude-sessions prune <conversation id> --yes
 ```
 
 - **Choose what to delete** with `--older-than <N>d` (days since the last message, in
-  the newest copy on any computer), `--project <name or path>`, or conversation IDs.
+  the newest copy in the archive, or on this computer), `--project <name or path>`, or
+  conversation IDs.
   Different kinds combine: `--project web-app --older-than 180d` is web-app's
   conversations older than 180 days. With none it refuses; it never means "everything".
 - **Without `--yes` it only lists** each conversation's project, last message, first
@@ -611,7 +612,10 @@ claude-sessions prune <conversation id> --yes
   no date, so a computer that still has it uploads it again. A computer whose sync app
   delivers the deleted files before the deleted list may upload a pruned conversation
   once more; once the list arrives it is left out of the index, and the age rule, or the
-  same `prune` run again, deletes it.
+  same `prune` run again, deletes it. A computer that cannot read the deleted list (a
+  file under `deleted/` damaged, or not downloaded yet) uploads the pruned conversations
+  it still has again, until it can; they stay hidden from the index, and the next
+  `prune` or age-rule run deletes them again.
 - **Undo:** `claude-sessions prune --undo <conversation id>` takes it off that list, and
   any computer that still has it uploads it on its next push. With `keep-days` on, also
   `config keep` it, or the age rule deletes it again.
@@ -625,8 +629,14 @@ claude-sessions prune <conversation id> --yes
   remote and its folder names off together.
 - **Age rule:** `claude-sessions config keep-days 365` deletes, by itself, what
   `prune --older-than 365d --yes` would. It is off until you set it, refuses fewer than
-  90 days, and `config keep-days off` stops it. The setting is in the archive
-  (`retention.json`), so every computer follows the same one. Each computer runs it at
+  90 days, and `config keep-days off` stops it. Setting it shows the keep list it saved:
+  run `claude-sessions prune --older-than 365d` to see what it deletes. A computer's
+  first run of it only notes the time and deletes nothing, so it starts a day later:
+  time to undo a wrong setting, and for a new computer's sync app to finish downloading
+  the archive. The setting is in the archive (`retention.json`), so every computer
+  follows the same one. While a sync app's conflict copy of it, such as
+  `retention (1).json`, sits beside it, the age rule deletes nothing and logs a `WARN`:
+  keep what the copy keeps with `config keep`, then delete it. Each computer runs it at
   most once a day, in the sweep or a `push` from a terminal, never in the hooks, and
   logs `PRUNE: <id> (<project>, last message <date>, <size>)` for each conversation it
   deletes. So as not to fetch the whole archive from a folder that downloads files on
@@ -648,7 +658,10 @@ claude-sessions prune <conversation id> --yes
   conversation again, so `prune --yes` and the age rule delete nothing until every
   computer that has pushed to the archive runs this version and has pushed once with
   it. They name the computers they wait for: update them, or retire one no longer in
-  use with `claude-sessions machines --forget <name>`.
+  use with `claude-sessions machines --forget <name>`. The older PowerShell scripts are
+  not supported alongside pruning and do not hold it back: a computer still running
+  them would only upload its own copies of pruned conversations again, and never loses
+  a turn.
 - **The space comes back after the trash.** Google Drive keeps deleted files in its
   trash for 30 days, and they count toward your storage until then: empty the trash to
   get the space back now. Until it is emptied, the trash is another way back.
