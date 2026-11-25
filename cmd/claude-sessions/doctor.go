@@ -672,7 +672,7 @@ func pruneCheck(root, dest string) check {
 	}
 	detail := fmt.Sprintf("keep-days %d", ret.KeepDays)
 	if last, ok := pruneLast(root); ok {
-		detail += ", last run here " + last.Local().Format("2006-01-02 15:04")
+		detail += ", last run here " + last.LastRun.Local().Format("2006-01-02 15:04")
 	} else {
 		detail += ", not run here yet"
 	}

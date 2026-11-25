@@ -472,9 +472,13 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		// one but the others; before the index, which then lists none it deleted.
 		// Unattended, only the sweep runs it, as only the sweep zips.
 		if !quiet || opts.Sweep {
+			budget := time.Duration(0)
+			if quiet { // the sweep
+				budget = quietRenderBudget
+			}
 			if ret, err := archive.LoadRetention(dest); err != nil {
 				logf("WARN: keep-days: %v", err)
-			} else if _, err := runAgeRule(root, dest, ret, time.Now(), logf); err != nil {
+			} else if _, err := runAgeRule(root, dest, ret, time.Now(), budget, logf); err != nil {
 				logf("WARN: keep-days: %s", strings.ReplaceAll(err.Error(), "\n", " "))
 			}
 		}

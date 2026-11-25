@@ -16,6 +16,7 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
 const (
@@ -1372,32 +1373,103 @@ func TestAgeRuleWaitsForOlderShard(t *testing.T) {
 	}
 }
 
-// Zipped conversations are dated by their index alone: the age rule unpacks none.
+// R21: the age rule dates a zip by its file's own time, when it was zipped, and reads
+// neither its index nor its content. prune keeps its exact dates, by the index.
 func TestAgeRuleReadsNoZipContent(t *testing.T) {
 	claudeDir, dest := ageFixture(t)
-	for _, c := range []struct{ bucket, id string }{{"-Users-you-dev-web-app", oldWeb}, {"e--web-app", newWeb}} {
+	conv(t, dest, "e--web-app", newWeb, time.Now().AddDate(0, 0, -200), "n1") // both last messages long ago
+	for _, c := range []struct {
+		bucket, id string
+		zipped     int // days ago
+	}{{"-Users-you-dev-web-app", oldWeb, 120}, {"e--web-app", newWeb, 10}} {
 		dir := filepath.Join(archive.ProjectsDir(dest), c.bucket)
 		writeFile(t, filepath.Join(dir, c.id, "tool-results", "r1.txt"), "output\n")
 		if _, err := convzip.Zip(dir, c.id); err != nil {
 			t.Fatal(err)
 		}
+		at := time.Now().AddDate(0, 0, -c.zipped)
+		if err := os.Chtimes(convzip.Path(dir, c.id), at, at); err != nil {
+			t.Fatal(err)
+		}
 	}
-	calls, real := 0, materialize
+	if got := planned(t, claudeDir, dest, pruneSel{OlderThan: 90}, archive.Retention{}); !reflect.DeepEqual(got, []string{oldWeb, newWeb}) {
+		t.Errorf("prune --older-than 90d by the zips' index: %v, want both", got)
+	}
+
+	unpacked, indexes, realM, realI := 0, 0, materialize, readZipIndex
 	materialize = func(bucketDir, id, tmp string) (string, func(), error) {
-		calls++
-		return real(bucketDir, id, tmp)
+		unpacked++
+		return realM(bucketDir, id, tmp)
 	}
-	defer func() { materialize = real }()
+	readZipIndex = func(zp string) (map[string]work.PackEntry, error) {
+		indexes++
+		return realI(zp)
+	}
+	defer func() { materialize, readZipIndex = realM, realI }()
 	ret, err := archive.LoadRetention(dest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := runAgeRule(claudeDir, dest, ret, time.Now(), func(string, ...any) {})
-	if n != 1 || err != nil || calls != 0 {
-		t.Errorf("deleted %d, %v, %d zip(s) unpacked", n, err, calls)
+	n, err := runAgeRule(claudeDir, dest, ret, time.Now(), 0, func(string, ...any) {})
+	if n != 1 || err != nil || unpacked != 0 || indexes != 0 {
+		t.Errorf("deleted %d, %v; %d zip(s) unpacked, %d index(es) read", n, err, unpacked, indexes)
 	}
-	if zippedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" || zippedCopy(dest, "e--web-app", newWeb) == "" {
-		t.Error("the age rule did not date the zipped copies by their index")
+	if zippedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
+		t.Error("the conversation zipped 120 days ago was not deleted")
+	}
+	if zippedCopy(dest, "e--web-app", newWeb) == "" {
+		t.Error("the conversation zipped 10 days ago was deleted")
+	}
+}
+
+// R21: a transcript whose file changed after the cutoff is too young to select, and its
+// tail is not read; an old one's is.
+func TestAgeRuleReadsNoTailOfAYoungCopy(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	read := map[string]int{}
+	realT, realU := lastTurnTime, lastUUID
+	lastTurnTime = func(p string) (time.Time, bool) { read[filepath.Base(p)]++; return realT(p) }
+	lastUUID = func(p string) string { read[filepath.Base(p)]++; return realU(p) }
+	defer func() { lastTurnTime, lastUUID = realT, realU }()
+	ret, err := archive.LoadRetention(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := runAgeRule(claudeDir, dest, ret, time.Now(), 0, func(string, ...any) {}); n != 1 || err != nil {
+		t.Fatalf("deleted %d, %v", n, err)
+	}
+	if read[newWeb+".jsonl"] != 0 || read[oldWeb+".jsonl"] == 0 {
+		t.Errorf("tail reads %v: want none of the 10-day-old copy, and the 120-day-old one's", read)
+	}
+}
+
+// R21: in the sweep the age rule stops at its budget, and the next day's run starts
+// where it stopped.
+func TestAgeRuleBudgetLeavesTheRestForTheNextRun(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	const young = "aaaaaaaa-1111-4111-8111-000000000000" // read first, and never deleted
+	conv(t, dest, "e--web-app", young, time.Now().AddDate(0, 0, -5), "y1")
+	ret, err := archive.LoadRetention(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	if n, err := runAgeRule(claudeDir, dest, ret, time.Now(), time.Nanosecond, logf); n != 0 || err != nil {
+		t.Fatalf("deleted %d, %v: want only the first conversation read", n, err)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "KEEP-DAYS: stopped after 1ns with 2 conversation(s) left for the next run") {
+		t.Errorf("logged %q", logged)
+	}
+	if r, _ := pruneLast(claudeDir); r.Next != oldWeb || archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
+		t.Fatalf("prune-last.json %+v: the rest is not left for the next run", r)
+	}
+	// The next day: it starts at oldWeb, and deletes it.
+	if n, err := runAgeRule(claudeDir, dest, ret, time.Now().Add(25*time.Hour), time.Nanosecond, logf); n != 1 || err != nil {
+		t.Errorf("the next run deleted %d, %v", n, err)
+	}
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
+		t.Error("the conversation left for the next run was not deleted by it")
 	}
 }
 

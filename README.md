@@ -582,7 +582,9 @@ claude-sessions prune <conversation id> --yes
   repositories share is refused: give the path.
 - **Pruned stays pruned.** Each deletion is recorded in the archive's
   `deleted/<computer>.json`, and no computer uploads that conversation again. Continue
-  it on a computer that still has it, and the new turns bring it back.
+  it on a computer that still has it, and the new turns bring it back. One named by ID
+  that cannot be dated (no turn times, and a file time still to come) is recorded with
+  no date, so a computer that still has it uploads it again.
 - **Undo:** `claude-sessions prune --undo <conversation id>` takes it off that list, and
   any computer that still has it uploads it on its next push. With `keep-days` on, also
   `config keep` it, or the age rule deletes it again.
@@ -596,7 +598,12 @@ claude-sessions prune <conversation id> --yes
   (`retention.json`), so every computer follows the same one. Each computer runs it at
   most once a day, in the sweep or a `push` from a terminal, never in the hooks, and
   logs `PRUNE: <id> (<project>, last message <date>, <size>)` for each conversation it
-  deletes. `doctor`'s `prune` line shows the setting and when it last ran there.
+  deletes. So as not to fetch the whole archive from a folder that downloads files on
+  demand, it dates a zipped conversation by when it was zipped, and reads a transcript
+  only when its file is old enough: it may delete a conversation a little later than
+  `prune --older-than` would, never sooner. The sweep's run stops after 45 seconds and
+  the next day's carries on from there. `doctor`'s `prune` line shows the setting and
+  when it last ran there.
 - **Every computer must be updated first.** An older version would upload a pruned
   conversation again, so `prune --yes` and the age rule delete nothing until every
   computer that has pushed to the archive runs this version and has pushed once with
