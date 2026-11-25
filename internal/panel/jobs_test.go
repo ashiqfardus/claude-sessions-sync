@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type jobEvent struct{ Event, ID, Data string }
@@ -113,8 +114,9 @@ func TestRunnerOneAtATime(t *testing.T) {
 	if !r.Busy() || r.Current() != a {
 		t.Fatalf("Busy %v, Current %v: want the running job", r.Busy(), r.Current())
 	}
-	if _, err := r.Start("render", "Rebuild pages", func(io.Writer) (any, error) { return nil, nil }); !errors.Is(err, ErrBusy) {
-		t.Fatalf("second Start: %v, want ErrBusy", err)
+	busy, err := r.Start("render", "Rebuild pages", func(io.Writer) (any, error) { return nil, nil })
+	if !errors.Is(err, ErrBusy) || busy != a || busy.Label() != "Back up now" {
+		t.Fatalf("second Start: %v, %v: want ErrBusy and the running job", busy, err)
 	}
 	close(block)
 	if st := a.Wait(); st.Running || !st.OK {
@@ -379,5 +381,213 @@ func TestRunnerSurvivesADisconnectedBrowser(t *testing.T) {
 	r.ServeEvents(w, httptest.NewRequest("GET", "/?id=nope", nil))
 	if w.Code != 404 {
 		t.Fatalf("unknown job: %d, want 404", w.Code)
+	}
+}
+
+func TestRunnerConcurrentStartsRunOneJob(t *testing.T) {
+	r, _ := newJobRunner()
+	block := make(chan struct{})
+	ready := make(chan struct{})
+	type started struct {
+		j   *Job
+		err error
+	}
+	results := make(chan started, 16)
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-ready
+			j, err := r.Start("push", "Back up now", func(io.Writer) (any, error) { <-block; return nil, nil })
+			results <- started{j, err}
+		}()
+	}
+	close(ready)
+	wg.Wait()
+	close(results)
+	var won *Job
+	var busy []*Job
+	for s := range results {
+		switch {
+		case s.err == nil && won == nil:
+			won = s.j
+		case errors.Is(s.err, ErrBusy):
+			busy = append(busy, s.j)
+		default:
+			t.Fatalf("Start: %v, %v (a second job started, or an unexpected error)", s.j, s.err)
+		}
+	}
+	if won == nil || len(busy) != 15 {
+		t.Fatalf("won %v, %d busy: want one job and 15 ErrBusy", won, len(busy))
+	}
+	for _, j := range busy {
+		if j != won {
+			t.Fatal("ErrBusy did not return the running job")
+		}
+	}
+	close(block)
+	won.Wait()
+}
+
+func TestRunnerBoundsLongText(t *testing.T) {
+	r, _ := newJobRunner()
+	wrote, release := make(chan struct{}), make(chan struct{})
+	long := strings.Repeat("é", 1<<19) // 1 MiB, two bytes a rune
+	j, err := r.Start("push", "Back up now", func(log io.Writer) (any, error) {
+		io.WriteString(log, long[:1<<19])
+		io.WriteString(log, long[1<<19:])
+		close(wrote)
+		<-release
+		io.WriteString(log, long+"\r"+long+"\n")
+		io.WriteString(log, long) // no newline: becomes the last line when the job ends
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-wrote
+	j.mu.Lock()
+	held := len(j.partial)
+	j.mu.Unlock()
+	if held > jobTextMax+1 {
+		t.Fatalf("a 1 MiB partial line holds %d bytes, want at most %d", held, jobTextMax+1)
+	}
+	close(release)
+	st := j.Wait()
+	if len(st.Lines) != 2 {
+		t.Fatalf("%d lines, want 2", len(st.Lines))
+	}
+	for i, l := range st.Lines {
+		if len(l) > jobTextMax || !strings.HasSuffix(l, "…") || !utf8.ValidString(l) {
+			t.Fatalf("line %d: %d bytes, ends %q, valid UTF-8 %v", i, len(l), l[len(l)-8:], utf8.ValidString(l))
+		}
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if p := j.progress[len(j.progress)-1].text; len(p) > jobTextMax || !strings.HasSuffix(p, "…") {
+		t.Fatalf("progress text: %d bytes", len(p))
+	}
+}
+
+func TestRunnerSkipsEmptyProgress(t *testing.T) {
+	r, _ := newJobRunner()
+	srv := httptest.NewServer(http.HandlerFunc(r.ServeEvents))
+	defer srv.Close()
+	release := make(chan struct{})
+	j, err := r.Start("clean", "Remove copies", func(log io.Writer) (any, error) {
+		<-release
+		// clean's counter puts \r first
+		io.WriteString(log, "\rcomparing copies: 1/2")
+		io.WriteString(log, "\rcomparing copies: 2/2\n")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	br := subscribeJob(t, srv, j, "")
+	close(release)
+	var got []string
+	for _, e := range readJobEvents(t, br) {
+		got = append(got, e.Event+" "+e.Data)
+	}
+	want := `progress "comparing copies: 1/2"|line "comparing copies: 2/2"|done {"ok":true,"result":null,"error":""}`
+	if strings.Join(got, "|") != want {
+		t.Fatalf("events:\n got %s\nwant %s", strings.Join(got, "|"), want)
+	}
+}
+
+func TestRunnerLogsThePanicStack(t *testing.T) {
+	r, rec := newJobRunner()
+	j, err := r.Start("prune", "Delete", func(io.Writer) (any, error) { panic("boom") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := j.Wait()
+	if !strings.Contains(rec.text(), "goroutine ") || !strings.Contains(rec.text(), "jobs_test.go") {
+		t.Fatalf("the log has no stack: %q", rec.text())
+	}
+	if st.Error != jobPlainText {
+		t.Fatalf("the page got %q", st.Error)
+	}
+}
+
+func TestRunnerPingsAnIdleStream(t *testing.T) {
+	old := jobPingEvery
+	jobPingEvery = 20 * time.Millisecond
+	t.Cleanup(func() { jobPingEvery = old })
+	r, _ := newJobRunner()
+	srv := httptest.NewServer(http.HandlerFunc(r.ServeEvents))
+	defer srv.Close()
+	release := make(chan struct{})
+	j, err := r.Start("push", "Back up now", func(io.Writer) (any, error) { <-release; return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	br := subscribeJob(t, srv, j, "")
+	for {
+		l, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("stream ended before a ping: %v", err)
+		}
+		if l == ": ping\n" {
+			break
+		}
+	}
+	close(release)
+	if got := readJobEvents(t, br); got[len(got)-1].Event != "done" {
+		t.Fatalf("after the ping: %v", got)
+	}
+}
+
+func TestRunnerFlushFailureIsLoggedOnce(t *testing.T) {
+	r, rec := newJobRunner()
+	j, err := r.Start("push", "Back up now", func(io.Writer) (any, error) { return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Wait()
+	for i := 0; i < 2; i++ {
+		r.ServeEvents(noFlushWriter{httptest.NewRecorder()}, httptest.NewRequest("GET", "/?id="+j.State().ID, nil))
+	}
+	if n := strings.Count(rec.text(), "cannot stream"); n != 1 {
+		t.Fatalf("logged %d times: %q", n, rec.text())
+	}
+}
+
+// noFlushWriter hides the recorder's Flush, as a wrapping ResponseWriter would.
+type noFlushWriter struct{ w *httptest.ResponseRecorder }
+
+func (n noFlushWriter) Header() http.Header         { return n.w.Header() }
+func (n noFlushWriter) Write(b []byte) (int, error) { return n.w.Write(b) }
+func (n noFlushWriter) WriteHeader(code int)        { n.w.WriteHeader(code) }
+
+func TestRunnerCloseRefusesNewJobs(t *testing.T) {
+	r, _ := newJobRunner()
+	if r.Close() != nil {
+		t.Fatal("Close on an idle runner gave a job")
+	}
+	if j, err := r.Start("push", "Back up now", func(io.Writer) (any, error) { return nil, nil }); !errors.Is(err, ErrClosed) || j != nil {
+		t.Fatalf("Start after Close: %v, %v, want ErrClosed", j, err)
+	}
+
+	r, _ = newJobRunner()
+	block := make(chan struct{})
+	a, err := r.Start("import", "Bring in work", func(io.Writer) (any, error) { <-block; return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Close(); got != a {
+		t.Fatalf("Close gave %v, want the running job", got)
+	}
+	if _, err := r.Start("push", "Back up now", func(io.Writer) (any, error) { return nil, nil }); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Start after Close during a job: %v, want ErrClosed", err)
+	}
+	close(block)
+	if st := a.Wait(); !st.OK {
+		t.Fatalf("the running job did not finish: %+v", st)
+	}
+	if _, err := r.Start("push", "Back up now", func(io.Writer) (any, error) { return nil, nil }); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Start after the job ended: %v, want ErrClosed", err)
 	}
 }

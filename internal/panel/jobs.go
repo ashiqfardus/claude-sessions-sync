@@ -7,20 +7,28 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
-// ErrBusy is Start's answer while a job runs.
-var ErrBusy = errors.New("another action is running")
+var (
+	// ErrBusy is Start's answer while a job runs.
+	ErrBusy = errors.New("another action is running")
+	// ErrClosed is Start's answer after Close.
+	ErrClosed = errors.New("the panel is stopping")
+)
 
 const (
 	jobsKept        = 20
 	jobLinesKept    = 10000
-	jobProgressKept = 16 // progress texts a slow stream can still catch up on
-	jobPingEvery    = 15 * time.Second
+	jobProgressKept = 16       // progress texts a slow stream can still catch up on
+	jobTextMax      = 64 << 10 // bytes in one line or progress text, "…" included
 )
+
+var jobPingEvery = 15 * time.Second // a var so a test can shorten it
 
 // State is a job as the page sees it.
 type State struct {
@@ -39,10 +47,13 @@ type Runner struct {
 	plain func(error) string
 	logf  func(string, ...any)
 
-	mu   sync.Mutex
-	seq  int
-	cur  *Job
-	jobs []*Job // oldest first
+	mu     sync.Mutex
+	seq    int
+	cur    *Job
+	jobs   []*Job // oldest first
+	closed bool
+
+	flushFailed sync.Once // a writer that cannot flush fails every request alike
 }
 
 // NewRunner makes a runner. plain turns a job's error into the sentence the page
@@ -79,12 +90,16 @@ type jobLog struct{ j *Job }
 
 func (l jobLog) Write(p []byte) (int, error) { return l.j.write(p) }
 
-// Start runs fn as a job, or returns ErrBusy while another job runs.
+// Start runs fn as a job. While another job runs it returns ErrBusy, and the job
+// returned is the running one. After Close it returns nil and ErrClosed.
 func (r *Runner) Start(action, label string, fn func(log io.Writer) (any, error)) (*Job, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return nil, ErrClosed
+	}
 	if r.cur != nil {
-		return nil, ErrBusy
+		return r.cur, ErrBusy
 	}
 	r.seq++
 	j := &Job{id: strconv.Itoa(r.seq), action: action, label: label, running: true,
@@ -101,17 +116,22 @@ func (r *Runner) Start(action, label string, fn func(log io.Writer) (any, error)
 func (r *Runner) run(j *Job, fn func(io.Writer) (any, error)) {
 	var res any
 	var err error
+	var stack []byte
 	func() {
 		defer func() {
 			if p := recover(); p != nil {
-				err = fmt.Errorf("panicked: %v", p)
+				err, stack = fmt.Errorf("panicked: %v", p), debug.Stack()
 			}
 		}()
 		res, err = fn(jobLog{j})
 	}()
 	text := ""
-	if err != nil {
+	if stack != nil {
+		r.logf("ERROR: %s: %v\n%s", j.action, err, stack) // the stack goes to the log only
+	} else if err != nil {
 		r.logf("ERROR: %s: %v", j.action, err)
+	}
+	if err != nil {
 		text = r.plain(err)
 	}
 
@@ -122,12 +142,21 @@ func (r *Runner) run(j *Job, fn func(io.Writer) (any, error)) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if len(j.partial) > 0 {
-		j.addLine(string(j.partial))
+		j.addLine(clipText(j.partial))
 		j.partial = nil
 	}
 	j.running, j.ok, j.result, j.errText = false, err == nil, res, text
 	j.notify()
 	close(j.done)
+}
+
+// Close refuses every later Start and gives the running job, or nil, so the
+// panel can stop now or after that job.
+func (r *Runner) Close() *Job {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	return r.cur
 }
 
 func (r *Runner) Busy() bool { return r.Current() != nil }
@@ -159,6 +188,9 @@ func (j *Job) State() State {
 		OK: j.ok, Result: j.result, Error: j.errText, Lines: lines}
 }
 
+// Label needs no lock: it never changes.
+func (j *Job) Label() string { return j.label }
+
 // Wait blocks until the job ends and gives its final state.
 func (j *Job) Wait() State {
 	<-j.done
@@ -175,14 +207,14 @@ func (j *Job) write(p []byte) (int, error) {
 	for rest := p; ; {
 		i := bytes.IndexAny(rest, "\r\n")
 		if i < 0 {
-			j.partial = append(j.partial, rest...)
+			j.partial = appendText(j.partial, rest)
 			break
 		}
-		text := string(append(j.partial, rest[:i]...))
+		text := clipText(appendText(j.partial, rest[:i]))
 		j.partial = j.partial[:0]
 		if rest[i] == '\n' {
 			j.addLine(text)
-		} else {
+		} else if text != "" { // clean's counter starts with \r; an empty one would blank the page's
 			j.progress = append(j.progress, progressText{j.total, text})
 			if len(j.progress) > jobProgressKept {
 				j.progress = j.progress[1:]
@@ -193,6 +225,27 @@ func (j *Job) write(p []byte) (int, error) {
 	}
 	j.notify()
 	return len(p), nil
+}
+
+// appendText adds b to an unfinished text, keeping at most one byte past
+// jobTextMax: enough for clipText to know the text is too long.
+func appendText(buf, b []byte) []byte {
+	if room := jobTextMax + 1 - len(buf); len(b) > room {
+		b = b[:max(room, 0)]
+	}
+	return append(buf, b...)
+}
+
+// clipText cuts a text longer than jobTextMax at a rune boundary and ends it with "…".
+func clipText(b []byte) string {
+	if len(b) <= jobTextMax {
+		return string(b)
+	}
+	cut := jobTextMax - len("…")
+	for cut > 0 && !utf8.RuneStart(b[cut]) {
+		cut--
+	}
+	return string(b[:cut]) + "…"
 }
 
 func (j *Job) addLine(s string) {
@@ -245,7 +298,8 @@ func (r *Runner) ServeEvents(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	if rc.Flush() != nil {
+	if err := rc.Flush(); err != nil {
+		r.flushFailed.Do(func() { r.logf("ERROR: job events: cannot stream: %v", err) })
 		return
 	}
 	ping := time.NewTicker(jobPingEvery)
