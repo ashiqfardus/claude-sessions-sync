@@ -478,19 +478,23 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 
 	// Conversations idle for zipIdle become one zip each, in the buckets this machine
 	// pushes to, once every machine reads zips. Not from the per-reply hook: it returned
-	// above. A config that cannot be read may have lost `zip-sessions off`.
-	if waits, err := zipHoldouts(dest); err == nil && len(waits) == 0 && cerr == nil && cfg.ZipOn() {
-		mine := make([]string, 0, len(shard.Projects))
-		for b := range shard.Projects {
-			mine = append(mine, b)
-		}
-		sort.Strings(mine)
-		zipBudget := time.Duration(0)
-		if quiet {
-			zipBudget = quietRenderBudget
-		}
-		if n, raw, packed := zipIdleCopies(root, dest, mine, time.Now(), zipBudget, dryRun, logf); n > 0 {
-			logf("ZIP: %d conversation(s), %s -> %s", n, humanSize(raw), humanSize(packed))
+	// above. Unattended, only the sweep zips: the SessionEnd hook is killed after 120
+	// seconds, already shared by work folders and pages. A config that cannot be read
+	// may have lost `zip-sessions off`.
+	if (!quiet || opts.Sweep) && cerr == nil && cfg.ZipOn() {
+		if waits, err := zipHoldouts(dest); err == nil && len(waits) == 0 {
+			mine := make([]string, 0, len(shard.Projects))
+			for b := range shard.Projects {
+				mine = append(mine, b)
+			}
+			sort.Strings(mine)
+			zipBudget := time.Duration(0)
+			if quiet { // the sweep
+				zipBudget = quietRenderBudget
+			}
+			if n, raw, packed := zipIdleCopies(root, dest, mine, time.Now(), zipBudget, dryRun, logf); n > 0 {
+				logf("ZIP: %d conversation(s), %s -> %s", n, humanSize(raw), humanSize(packed))
+			}
 		}
 	}
 

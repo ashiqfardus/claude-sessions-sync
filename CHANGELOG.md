@@ -12,8 +12,8 @@ All notable changes to this project are documented here. This project follows
   file for the sync app instead of dozens. Push reads the zip back and checks every turn
   before it deletes the loose files. A conversation over 250 MB stays loose, and
   `session-sync-base/zip-skipped.json` remembers it so the log says so once. Pages stay
-  as they are. `push --dry-run` lists what it would zip, and `config zip-sessions off`
-  stops it. Zipping waits until every computer that pushes to the archive runs this
+  as they are. The sweep and `push` from a terminal zip; the hooks never do.
+  `push --dry-run` lists what it would zip, and `config zip-sessions off` stops it. Zipping waits until every computer that pushes to the archive runs this
   version and has pushed once, as an older one would upload the conversation loose
   again; `doctor` names the computers it waits for. Update them, or
   `machines --forget` one no longer in use.

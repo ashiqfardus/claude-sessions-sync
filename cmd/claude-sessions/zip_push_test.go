@@ -263,3 +263,15 @@ func TestPushLeavesADivergedLeftoverOnce(t *testing.T) {
 		t.Error("the zip or the loose transcript beside it was not kept")
 	}
 }
+
+// Unattended, only the sweep zips: the SessionEnd hook's quiet push has a 120-second
+// limit to keep.
+func TestQuietPushZipsOnlyInTheSweep(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	ageSession(t, mac, repo, 31*day)
+	mac.run(t, "push", "--no-html", "--quiet")
+	stillLoose(t, archive, repo)
+
+	mac.run(t, "push", "--no-html", "--quiet", "--sweep")
+	onlyZip(t, archiveBucket(archive, repo))
+}

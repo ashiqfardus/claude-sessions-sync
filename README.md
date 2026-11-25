@@ -1000,9 +1000,10 @@ A conversation nobody has touched for 30 days is stored as one file,
 space. Push zips it once every archived file of it, and this computer's own transcript
 of it if there is one, has gone unchanged for 30 days, in the projects this computer
 pushes to. It reads the zip back and checks that it holds every turn before it deletes
-the loose files. A conversation over 250 MB stays loose. The per-reply hook never zips;
-the session-end hook and the sweep zip for at most 45 seconds a run and leave the rest
-for the next. `push --dry-run` lists what it would zip.
+the loose files. A conversation over 250 MB stays loose. The hooks never zip, so the
+end of a session is never held up; the sweep zips for at most 45 seconds a run and leaves
+the rest for the next, and `push` from a terminal zips everything due.
+`push --dry-run` lists what it would zip.
 
 Every command reads a zipped conversation as if it were loose. Continue one, on any
 computer, and the next push unzips it and archives the new turns; it is zipped again
