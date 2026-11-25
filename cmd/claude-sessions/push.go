@@ -809,6 +809,9 @@ func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushe
 	// content before it replaces it - every time, not only when it changed here: a
 	// fork kept by the last push is still a fork - and when it changed here since the
 	// last push, in case this is the copy that forked.
+	// shortcut: a branch of the same size, its mtime within 2 s of the archived copy's, is
+	// taken for that copy, and its turns stay local until the conversation next changes;
+	// compare content when it changed since the last push if this proves real.
 	if dstInfo != nil && !sameStat(srcInfo, dstInfo) && (copyIt || changedSincePush(pushed, bucket, id, srcInfo)) {
 		// Already kept as a fork, and nothing new here since: not worth reading two
 		// whole transcripts - from a cloud drive, perhaps - on every push.

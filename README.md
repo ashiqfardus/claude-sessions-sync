@@ -535,17 +535,22 @@ its projects at its own paths. Set each one up as in Step 8.
   so its files in the archive are still its own, and other computers keep the forks
   they filed under it. Then run `claude-sessions push`, and
   `claude-sessions machines --forget <old name>` so the list stops showing it.
-- **Names must differ.** Two computers under one name, such as a cloned laptop, would
-  overwrite each other's manifest. Each install makes a random ID on its first push and
-  writes it there, so when another computer has pushed under the same name, `push`
-  logs a warning and `doctor` fails:
+- **Names must differ.** Two computers under one name would overwrite each other's
+  manifest. Each install makes a random ID on its first push, keeps it in
+  `session-sync.json` and writes it into its manifest, so when another computer has
+  pushed under the same name, `push` logs a warning and `doctor` fails:
 
   ```
   Another computer also uses the name LAP-2. Give one of them its own name with `claude-sessions config set-machine`.
   ```
 
-  Pushing goes on regardless, and the warning stops once the names differ. A computer
-  set up again from scratch makes a new ID, and warns once.
+  Pushing goes on regardless, and the warning stops once the names differ.
+  - **A copy of another computer's `~/.claude`** (a cloned disk, Migration Assistant)
+    carries that computer's name and ID, so it is not noticed. Run
+    `claude-sessions config set-machine <name>` on the copy before it pushes.
+  - `backup` leaves the ID out, so a backup restored on another computer makes its
+    own. Restored on the same computer, it makes a new one too: its next push warns
+    once about this computer's old ID, then the warning stops.
 - `claude-sessions machines` lists every computer that has pushed, with the hour of
   its last backup and its newest session. **Retire a computer** you no longer use with
   `machines --forget <name>`: it removes its manifest and index, and its sessions stay.

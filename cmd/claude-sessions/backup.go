@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -201,7 +202,32 @@ func addToZip(zw *zip.Writer, root, rel string) error {
 	if err != nil {
 		return err
 	}
+	if rel == "session-sync.json" {
+		return writeConfigCopy(w, f)
+	}
 	_, err = io.Copy(w, f)
+	return err
+}
+
+// writeConfigCopy writes session-sync.json without its install ID: a backup restored on
+// another computer must make its own, or the two would pass for one. A file that does
+// not parse carries no ID push could read, and is copied as it is.
+func writeConfigCopy(w io.Writer, f io.Reader) error {
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		return err
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) == nil {
+		if _, ok := m["installId"]; ok {
+			delete(m, "installId")
+			if raw, err = json.MarshalIndent(m, "", "  "); err != nil {
+				return err
+			}
+			raw = append(raw, '\n')
+		}
+	}
+	_, err = w.Write(raw)
 	return err
 }
 

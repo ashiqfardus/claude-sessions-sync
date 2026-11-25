@@ -234,7 +234,7 @@ func TestDoctorTimesOutASlowCheck(t *testing.T) {
 		strings.Count(out, notRespondingText) != 1 || strings.Count(out, skipLine) != 1 || strings.Contains(out, streamingText) {
 		t.Errorf("want the conditional hint once, then the skip line once:\n%s", out)
 	}
-	if got := strings.Join(started(), ","); got != "archive,versions,name,zips,prune,profile,manifest" {
+	if got := strings.Join(started(), ","); got != "archive,versions,name,last backup,zips,prune,profile,manifest" {
 		t.Errorf("archive steps started: %s; want none after manifest", got)
 	}
 	for _, later := range []string{"session hook", "sweep", "last push", "warning(s),"} {

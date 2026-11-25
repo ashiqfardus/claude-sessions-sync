@@ -217,6 +217,23 @@ func cmdDoctor(args []string) error {
 		}
 	})
 
+	// From the shards alone: archive.Machines also reads every index for its counts.
+	slow("last backup", func(add func(check)) {
+		shards, _, _ := archive.ReadShards(dest)
+		names := make([]string, 0, len(shards))
+		for n := range shards {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			when := "-" // a build older than the field
+			if at := shards[n].LastPush; !at.IsZero() {
+				when = at.Local().Format("2006-01-02 15:04")
+			}
+			add(check{"last backup", levelInfo, printable(n) + " " + when, ""})
+		}
+	})
+
 	slow("zips", func(add func(check)) { add(zipCheck(root, dest)) })
 	slow("prune", func(add func(check)) { add(pruneCheck(root, dest)) })
 
