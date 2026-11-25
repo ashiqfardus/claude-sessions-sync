@@ -496,6 +496,54 @@
 
 ---
 
+### Task 10: several computers (matrix test and same-name warning)
+
+Added 2026-11-25 with the owner's approval. See the spec addendum "several computers".
+
+**Files:**
+- Create: `cmd/claude-sessions/multi_test.go`
+- Modify:
+  - `internal/archive/config.go`: `Config` gains `InstallID string \`json:"installId,omitempty"\``;
+  - `internal/archive/manifest.go`: `Shard` gains `InstallID string \`json:"installId,omitempty"\``;
+  - `cmd/claude-sessions/push.go`: create the ID on the first push, write it into the shard, warn on a mismatch;
+  - `cmd/claude-sessions/doctor.go`: a failure on a mismatch;
+  - `README.md`: a "Several computers" note;
+  - `CHANGELOG.md`.
+
+**Interfaces:**
+- Consumes: the test helpers in `clean_test.go` (`machine`, `archived`, `later`) and everything Tasks 1-9 built.
+- Produces:
+  - `func installID(root string) string`: reads `Config.InstallID`, or creates 16 random hex bytes (`crypto/rand`) and saves them.
+  - `func nameClash(dest, machine, id string) bool`: true when `manifest/<machine>.json` exists with a non-empty `InstallID` other than `id`.
+  - The message, exactly: `Another computer also uses the name %s. Give one of them its own name with ` + "`claude-sessions config set-machine`."
+
+- [ ] **Step 1: Write the failing tests** in `multi_test.go`, using four simulated machines as in the spec addendum (`CLAUDE_SESSIONS_MACHINE`, separate claude roots, transcripts whose cwd is each machine's own path):
+  - `TestFourComputersFileEachOthersWork`: every machine's conversation lands in every other machine's own bucket, with the cwd rewritten (assert one per pair: Windows A to B across drives, Windows to Linux, Linux to Windows, Mac to Linux).
+  - `TestFourComputersArchiveEachConversationOnce`: after every machine imports and pushes twice, each session ID has exactly one archived copy, except real forks.
+  - `TestConversationContinuedOnThreeComputers`: no turn is lost, and the forks are kept.
+  - `TestTwoWindowsShareABucket`: `E:\api` on A and B are one bucket. Distinct conversations coexist, and one continued on both becomes a fork.
+  - `TestTwoWindowsSameWorkFolder`: `E:\reports` is archived under each machine. An import never replaces a newer local file.
+  - `TestFourComputersGateAndForget`: one machine without `readsZips` means nothing is zipped. After `machines forget` it zips. The same holds for `honorsDeleted` and prune.
+  - `TestKeepByRemoteCoversFourBuckets` and `TestPruneRemovesEveryBucketsCopy`.
+  - `TestCleanWithFourShards`: only true duplicates are deleted.
+  - `TestSameNameWarns`: two roots with the same `CLAUDE_SESSIONS_MACHINE` and different install IDs. The second push logs the WARN and doctor fails with the exact message. With one root pushing twice, there is no warning.
+
+- [ ] **Step 2: Run and see them fail.** `go test ./cmd/claude-sessions/ -run 'FourComputers|ThreeComputers|TwoWindows|KeepByRemoteCoversFour|PruneRemovesEvery|CleanWithFour|SameNameWarns' -v`. Expected: the name-clash test fails (no install ID yet). Any other failure is a real multi-computer bug: fix it in the code that owns it, and say so in the report.
+
+- [ ] **Step 3: Implement** the install ID and the warning as in Produces. Then the README note covering:
+  - every computer uses the same archive folder;
+  - names must differ, and `config set-machine` sets one;
+  - retire a computer with `machines forget`;
+  - Linux uses a systemd user timer or cron.
+
+  Add a CHANGELOG entry.
+
+- [ ] **Step 4: Run the tests.** `go test ./... && GOTOOLCHAIN=go1.21.13 go test ./...`. Expected: PASS.
+
+- [ ] **Step 5: Commit.** `git commit -am "Several computers: a four-machine test, and a warning when two use the same name"`
+
+---
+
 ## Calls this plan makes (beyond the spec)
 
 - **Zip naming:** `<id>.conv.zip`.

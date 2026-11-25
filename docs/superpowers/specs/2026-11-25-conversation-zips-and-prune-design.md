@@ -285,3 +285,50 @@ it, and name the machines. With a manifest that cannot be read, nothing is delet
   - the age-rule minimum;
   - a crafted zip;
   - Windows paths.
+
+## Addendum (2026-11-25): several computers
+
+The owner uses three computers (a Mac and two Windows laptops) and may add a Linux
+one. Only one Mac and one Windows laptop have been tested together. Added with the
+owner's approval:
+
+**1. A test with several computers.** One test file simulates four computers on one
+archive:
+- a Mac at `~/dev/web-app`;
+- Windows A at `E:\web-app`;
+- Windows B at `D:\work\web-app`, with the same git remote;
+- Linux at `/home/you/src/web-app`, with the same git remote.
+
+Windows A and B also share one identical path, a project `E:\api` and a work folder
+`E:\reports`, so both push into the same archive bucket. The test checks:
+- Each computer files every other computer's conversations under its own path for the
+  project, with paths rewritten across drives, from Windows to POSIX and back, and from
+  Mac to Linux.
+- No computer archives an imported conversation again: the archive holds each
+  conversation once.
+- A conversation continued on two or three computers keeps every turn, as forks.
+- In the shared bucket, different conversations sit side by side. One continued on both
+  Windows laptops becomes a fork, not an overwrite.
+- Each Windows laptop's `E:\reports` is archived separately. Bringing one into the other
+  never replaces a newer local file (this pins today's rule).
+- Zips and pruning wait for any one of the four that lacks the flag, and resume after
+  `machines forget`. A project kept by remote is kept on all four. Pruning removes the
+  copies in every bucket, and no computer uploads them again.
+- `clean` with four shards deletes only true duplicates.
+
+**2. A warning when two computers use the same name.** A computer's name defaults to
+hostname-user. Two computers with the same name, such as cloned laptops, would overwrite
+each other's manifest shard.
+- **Install ID:** each install creates a random install ID on its first push and keeps it
+  in `session-sync.json`. Push writes it into its shard.
+- **The check:** when the archive's shard for this name carries a different install ID,
+  push logs a WARN and `doctor` fails with this message: "Another computer also uses the
+  name <name>. Give one of them its own name with `claude-sessions config set-machine`."
+- **No refusal (my call):** push still writes. A reinstall on the same computer loses
+  its ID, and that must not block backups. The warning clears once the names differ.
+
+**3. A real run** on the second Windows laptop during rollout: install, the same archive
+folder, `import`, and `install`.
+
+Linux is already a supported platform. CI runs on ubuntu, and `install` uses a systemd
+user timer or cron there. The test above covers its paths.
