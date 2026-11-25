@@ -21,6 +21,7 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/render"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
 type pushResult struct {
@@ -292,6 +293,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	zips.tmp = held.tmp
 	defer os.RemoveAll(held.tmp)
 	shard.SkipsHeld = true
+	shard.ReadsZips = true
 	// Transcripts to look for work folders in: those changed since the last full push
 	// - not only those copied now, as the per-reply hook has usually copied them.
 	var workScan []string
@@ -473,6 +475,24 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	}
 	logf(verb+", %d unchanged, %d session(s), %d project(s) -> %s",
 		res.Copied, res.Unchanged, res.Sessions, res.Projects, dest)
+
+	// Conversations idle for zipIdle become one zip each, in the buckets this machine
+	// pushes to, once every machine reads zips. Not from the per-reply hook: it returned
+	// above. A config that cannot be read may have lost `zip-sessions off`.
+	if waits, err := zipHoldouts(dest); err == nil && len(waits) == 0 && cerr == nil && cfg.ZipOn() {
+		mine := make([]string, 0, len(shard.Projects))
+		for b := range shard.Projects {
+			mine = append(mine, b)
+		}
+		sort.Strings(mine)
+		zipBudget := time.Duration(0)
+		if quiet {
+			zipBudget = quietRenderBudget
+		}
+		if n, raw, packed := zipIdleCopies(root, dest, mine, time.Now(), zipBudget, dryRun, logf); n > 0 {
+			logf("ZIP: %d conversation(s), %s -> %s", n, humanSize(raw), humanSize(packed))
+		}
+	}
 
 	// Readable pages for phones and tablets. Best-effort by design: a rendering
 	// problem must never fail a sync that has already succeeded, so this is wrapped
@@ -905,6 +925,146 @@ func (z *zipRecord) judge(bucket, id, zp, path string, src os.FileInfo, dryRun b
 	}
 	z.m[key], z.dirty = now, true
 	return keptZipped, true
+}
+
+// zipIdle is how long every archived file of a conversation, and this machine's
+// transcript of it, must have gone unchanged before push zips it.
+const zipIdle = 30 * 24 * time.Hour
+
+// zipHoldouts names the other machines whose shard does not say they read zips; push
+// zips nothing until there are none. This machine's own shard is left out: it predates
+// this build until the push in progress writes it.
+func zipHoldouts(dest string) ([]string, error) {
+	out, err := archive.Holdouts(dest, func(s archive.Shard) bool { return s.ReadsZips })
+	return slices.DeleteFunc(out, func(n string) bool { return strings.EqualFold(n, machineName()) }), err
+}
+
+// zipSkippedPath remembers, by "bucket/id", the size of each archived copy push could
+// not zip as it was: over the cap, or a leftover beside its zip that diverged from it.
+// Each is said once, and tried again only once that size changes.
+func zipSkippedPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "zip-skipped.json")
+}
+
+// zipIdleCopies zips each conversation archived in buckets whose loose files, and this
+// machine's transcript of it, are all unchanged since now-zipIdle, until budget (0 for
+// none) runs out: the rest wait for the next run. Loose files left beside a zip by a run
+// killed half way are unzipped into it first, then zipped again. A dry run lists them.
+func zipIdleCopies(root, dest string, buckets []string, now time.Time, budget time.Duration, dryRun bool, logf func(string, ...any)) (zipped int, raw, packed int64) {
+	skipped := map[string]int64{}
+	if data, err := os.ReadFile(zipSkippedPath(root)); err == nil {
+		_ = json.Unmarshal(data, &skipped) // unreadable is empty: each is tried, and said, again
+	}
+	dirty, start, cutoff := false, time.Now(), now.Add(-zipIdle)
+each:
+	for _, bucket := range buckets {
+		dir := filepath.Join(archive.ProjectsDir(dest), bucket)
+		if !archive.ValidName(bucket) || !archive.IsRealDir(dir) {
+			continue
+		}
+		zips := convzip.Find(dir)
+		ents, _ := os.ReadDir(dir)
+		for _, e := range ents {
+			if budget > 0 && time.Since(start) >= budget {
+				break each
+			}
+			id, isTranscript := strings.CutSuffix(e.Name(), ".jsonl")
+			zp := zips[strings.ToLower(id)]
+			switch {
+			case !claude.IsSessionID(id), isTranscript && !e.Type().IsRegular():
+				continue
+			// A folder with no transcript counts only beside its zip: what a killed Zip leaves.
+			case !isTranscript && (!e.IsDir() || zp == "" || archive.StatOrNil(filepath.Join(dir, id+".jsonl")) != nil):
+				continue
+			}
+			if st, err := os.Stat(filepath.Join(claude.ProjectsDir(root), bucket, id+".jsonl")); err == nil && st.ModTime().After(cutoff) {
+				continue // still in use here
+			}
+			size, idle := looseSize(dir, id, cutoff)
+			if !idle {
+				continue
+			}
+			if st, err := os.Lstat(zp); zp != "" && err == nil {
+				size += st.Size()
+			}
+			key := bucket + "/" + id
+			if s, ok := skipped[key]; ok && s == size {
+				continue
+			}
+			if dryRun {
+				if zp != "" || size <= work.MaxFolderBytes {
+					logf("would zip %s", key)
+				}
+				continue
+			}
+			if zp != "" {
+				switch err := convzip.Unzip(dir, id); {
+				case errors.Is(err, convzip.ErrDiverged):
+					logf("WARN: %s: %v; the zip and the loose copy beside it are both kept", id, err)
+					skipped[key], dirty = size, true
+					continue
+				case err != nil:
+					logf("WARN: %s: not zipped: %v", id, err)
+					continue
+				}
+				size, _ = looseSize(dir, id, cutoff) // as Zip now finds it
+			}
+			res, err := convzip.Zip(dir, id)
+			switch {
+			case errors.Is(err, convzip.ErrTooLarge):
+				logf("ZIP: %s is over %d MB; it stays loose", key, work.MaxFolderBytes>>20)
+				skipped[key], dirty = size, true
+			case errors.Is(err, convzip.ErrZipExists): // zipped elsewhere since the listing: next run
+			case err != nil:
+				logf("WARN: %s: not zipped: %v", id, err)
+			default:
+				zipped, raw, packed = zipped+1, raw+res.Raw, packed+res.Packed
+				if _, ok := skipped[key]; ok {
+					delete(skipped, key)
+					dirty = true
+				}
+			}
+		}
+	}
+	if dirty {
+		data, _ := json.MarshalIndent(skipped, "", "  ")
+		if err := archive.WriteFileAtomic(zipSkippedPath(root), append(data, '\n'), 0o644); err != nil {
+			logf("WARN: %s: %v", zipSkippedPath(root), err)
+		}
+	}
+	return zipped, raw, packed
+}
+
+// looseSize totals the regular files of id's loose copy in dir, its transcript and
+// folder, and reports whether none changed after cutoff; a time in the future is after
+// it. One it cannot read is not idle.
+func looseSize(dir, id string, cutoff time.Time) (size int64, idle bool) {
+	idle = true
+	for _, top := range []string{filepath.Join(dir, id+".jsonl"), filepath.Join(dir, id)} {
+		filepath.WalkDir(top, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				if p != top || !errors.Is(err, os.ErrNotExist) {
+					idle = false
+				}
+				return nil
+			}
+			if !d.Type().IsRegular() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				idle = false
+				return nil
+			}
+			size += info.Size()
+			idle = idle && !info.ModTime().After(cutoff)
+			return nil
+		})
+		if !idle { // a conversation in use is told by its transcript, without walking its folder
+			return size, false
+		}
+	}
+	return size, idle
 }
 
 // heldStat is a local transcript as push found it, held in whole by the archived

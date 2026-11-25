@@ -42,6 +42,7 @@ func cmdConfig(args []string) error {
   claude-sessions config keep <id|path|name>       never delete a conversation, or a project on every computer
   claude-sessions config unkeep <id|path|name>     take it off the keep list
   claude-sessions config keep-days <N|off>         delete archived conversations idle N days (N >= 90; off by default)
+  claude-sessions config zip-sessions on|off       zip archived conversations idle for 30 days
 
 flags:
 `)
@@ -422,6 +423,13 @@ flags:
 			fmt.Printf("keep-days is %d: every computer deletes archived conversations idle longer, except those on the keep list.\n", days)
 		}
 		return nil
+
+	case "zip-sessions":
+		if len(rest) != 2 || (rest[1] != "on" && rest[1] != "off") {
+			return fmt.Errorf("usage: claude-sessions config zip-sessions on|off")
+		}
+		on := rest[1] == "on"
+		return saveWork(root, func(c *archive.Config) { c.ZipSessions = &on }, "Zipping idle conversations is "+rest[1]+"; zips already made stay readable")
 
 	default:
 		return fmt.Errorf("unknown config action %q (try: show, set-destination, map, unmap, set-machine, work, work-placement, map-folder, unmap-folder, exclude-folder, unexclude-folder, keep, unkeep, keep-days)", action)

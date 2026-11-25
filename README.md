@@ -616,6 +616,10 @@ After upgrading from an older version:
 - **The first push after upgrading packs** every work subfolder whose files have not
   changed for 7 days, and deletes the archive's loose copies of them. On a large archive
   that can be thousands of deletions, all going to Google Drive's trash.
+- **Conversations are zipped** only once every computer has updated and pushed. The
+  first push after that zips every conversation idle for 30 days, and deletes the
+  archive's loose copies of them: on a large archive, thousands of deletions, all going
+  to Google Drive's trash.
 - **Buckets an earlier `import` made for projects that are not here stay.** A repository
   inside another computer's container work folder got a bucket of its own, named for a
   folder that does not exist on this computer. This version makes no new ones; delete
@@ -869,7 +873,7 @@ remotes are read by parsing `.git/config`; git itself is never run (see
 | Command | What it does |
 |---|---|
 | `doctor` | Check everything; exits non-zero on a real problem |
-| `config` | `show` (default), `set-destination <folder>`, `map [<project> <folder>]`, `unmap <project>`, `set-machine <name>`, `work on\|off`, `work-placement home\|machine`, `map-folder <path> <folder>`, `unmap-folder <path>`, `exclude-folder <folder>`, `unexclude-folder <folder>` |
+| `config` | `show` (default), `set-destination <folder>`, `map [<project> <folder>]`, `unmap <project>`, `set-machine <name>`, `work on\|off`, `work-placement home\|machine`, `map-folder <path> <folder>`, `unmap-folder <path>`, `exclude-folder <folder>`, `unexclude-folder <folder>`, `zip-sessions on\|off` |
 | `push` | Copy new and changed sessions, memory, rules, skills and the plugin list to the archive, then write the pages |
 | `install` / `uninstall` | Turn automatic archiving on or off |
 | `import` | Bring an archive onto this computer, matching projects by identity |
@@ -942,6 +946,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `versions` | Other computers run a different version |
 | `profile` | Rule and skill files that differ between computers, or are not archived |
 | `work folders` | Off, or how many folders and files are archived; warns over 500 MB, or when a folder is too large to back up |
+| `zips` | Whether idle conversations are zipped: off, or waiting for the computers it names to update |
 | `secrets` | `.credentials.json` or `.claude.json` anywhere in the archive outside the pages |
 
 It exits non-zero when any check fails, so it can be monitored. `doctor --json` prints
@@ -964,6 +969,7 @@ claude-sessions completion powershell | Out-String | Add-Content $PROFILE
 ```
 <archive>/
   projects/<project>/<session-id>.jsonl     sessions, with <session-id>/ for subagents and tool output
+  projects/<project>/<session-id>.conv.zip  a session idle for 30 days, as one zip
   projects/<project>/memory/                the project's memory, newest file from any computer
   memory/<computer>/<project>/              each computer's own copy of its memory
   forks/<project>/<session-id>/<computer>.jsonl
@@ -985,6 +991,35 @@ claude-sessions completion powershell | Out-String | Add-Content $PROFILE
 Each computer writes only its own files under `memory/<computer>/`, `profile/machines/`,
 `manifest/`, `index/`, `work/<computer>/` and `forks/…/<computer>.jsonl`, so two computers pushing at once
 cannot overwrite each other's.
+
+#### Zipped conversations
+
+A conversation nobody has touched for 30 days is stored as one file,
+`projects/<project>/<session-id>.conv.zip`: its transcript and everything in its
+`<session-id>/` folder, with their names and times, usually in about a third of the
+space. Push zips it once every archived file of it, and this computer's own transcript
+of it if there is one, has gone unchanged for 30 days, in the projects this computer
+pushes to. It reads the zip back and checks that it holds every turn before it deletes
+the loose files. A conversation over 250 MB stays loose. The per-reply hook never zips;
+the session-end hook and the sweep zip for at most 45 seconds a run and leave the rest
+for the next. `push --dry-run` lists what it would zip.
+
+Every command reads a zipped conversation as if it were loose. Continue one, on any
+computer, and the next push unzips it and archives the new turns; it is zipped again
+after 30 more quiet days. Its page under `html/` stays, so it can still be read in the
+sync app or a browser.
+
+To open one by hand, use any unzip tool (Finder, Explorer, or `unzip`). It holds
+`<session-id>.jsonl` and the `<session-id>/` folder.
+
+`claude-sessions config zip-sessions off` stops zipping on this computer; zips already
+made stay readable, and `on` starts it again.
+
+**Every computer must read zips first.** An older version does not see a zipped
+conversation and would upload it loose again, so push zips nothing until every computer
+that has pushed to the archive runs this version and has pushed once with it. `doctor`
+names the computers it waits for: update them, or retire one no longer in use with
+`claude-sessions machines --forget <name>`.
 
 ---
 

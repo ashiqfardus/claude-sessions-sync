@@ -135,6 +135,11 @@ type Shard struct {
 	// an older build would upload them again.
 	SkipsHeld bool `json:"skipsHeld,omitempty"`
 
+	// ReadsZips records that the writer reads zipped conversations, <id>.conv.zip, and
+	// does not archive a zipped copy again as missing. Push zips only once every shard
+	// has it: an older build would upload the conversation loose again.
+	ReadsZips bool `json:"readsZips,omitempty"`
+
 	// Sessions is only read from shards written before the index was split out into
 	// its own file. New pushes write index/<machine>.json instead: session rows grow
 	// without bound, and the manifest is read by every import and every doctor run,
@@ -349,6 +354,27 @@ func ReadShards(dest string) (map[string]Shard, []string, error) {
 		shards[s.Machine] = s
 	}
 	return shards, bad, nil
+}
+
+// Holdouts names, sorted, the machines whose shard lacks what has looks for. A manifest
+// that cannot be read, or a shard in it that cannot, is an error: that machine may be
+// one, so the caller must take it as "not every machine".
+func Holdouts(dest string, has func(Shard) bool) ([]string, error) {
+	shards, bad, err := ReadShards(dest)
+	if err != nil {
+		return nil, err
+	}
+	if len(bad) > 0 {
+		return nil, fmt.Errorf("cannot read manifest/%s", strings.Join(bad, ", manifest/"))
+	}
+	var out []string
+	for name, s := range shards {
+		if !has(s) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // ownFile reports whether a manifest or index file is the one its machine writes:

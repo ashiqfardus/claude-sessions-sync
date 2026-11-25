@@ -49,7 +49,13 @@ type Config struct {
 
 	// WorkExclude lists folders that are never archived.
 	WorkExclude []string `json:"workExclude,omitempty"`
+
+	// ZipSessions false stops push zipping idle conversations; nil means on.
+	ZipSessions *bool `json:"zipSessions,omitempty"`
 }
+
+// ZipOn reports whether push zips idle conversations.
+func (c Config) ZipOn() bool { return c.ZipSessions == nil || *c.ZipSessions }
 
 // WorkOn reports whether work folders are archived.
 func (c Config) WorkOn() bool { return c.WorkBackup != "off" }
@@ -163,6 +169,9 @@ func SaveConfig(claudeRoot string, c Config) error {
 	}
 	if c.WorkExclude != nil {
 		merged["workExclude"] = c.WorkExclude
+	}
+	if c.ZipSessions != nil {
+		merged["zipSessions"] = *c.ZipSessions
 	}
 
 	data, err := json.MarshalIndent(merged, "", "  ")

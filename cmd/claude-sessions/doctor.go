@@ -156,6 +156,8 @@ func cmdDoctor(args []string) error {
 			"Mixed versions skip features without saying so - an older build pushes no rules or skills. Install the same release everywhere, or `claude-sessions machines --forget <name>` for a machine no longer in use."})
 	}
 
+	add(zipCheck(root, dest))
+
 	if diffs := profileDiffs(dest); len(diffs) > 0 {
 		add(check{"profile", levelInfo,
 			fmt.Sprintf("%d rule/skill file(s) differ between machines: %s", len(diffs), profileSummary(diffs)),
@@ -489,6 +491,23 @@ func otherVersions(dest string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// zipCheck says whether push zips idle conversations, and if it waits, for whom.
+func zipCheck(root, dest string) check {
+	if cfg, err := archive.LoadConfig(root); err == nil && !cfg.ZipOn() {
+		return check{"zips", levelInfo, "off: idle conversations stay loose", "`claude-sessions config zip-sessions on` zips them again; existing zips stay readable either way."}
+	}
+	waits, err := zipHoldouts(dest)
+	switch {
+	case err != nil:
+		return check{"zips", levelWarn, "idle conversations are not zipped: " + err.Error(),
+			"Zipping waits until every machine's manifest can be read; see the manifest check."}
+	case len(waits) > 0:
+		return check{"zips", levelWarn, "idle conversations are not zipped until these machines read zips: " + strings.Join(waits, ", "),
+			"Update claude-sessions on each and let it push once, or `claude-sessions machines --forget <name>` for a machine no longer in use."}
+	}
+	return check{"zips", levelOK, "conversations idle for 30 days are zipped", ""}
 }
 
 // deniedSincePush returns the newest "operation not permitted" line logged after the
