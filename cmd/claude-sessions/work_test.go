@@ -188,10 +188,12 @@ func workSession(t *testing.T, m machine, cwd string, writes []string, commands 
 		b.Write(append(l, '\n'))
 	}
 	n := 0
+	// Turn ids of this conversation's own, as real ones are: push takes a transcript
+	// whose last turn another holds for a copy of that one.
 	msg := func(role string, content any) map[string]any {
 		n++
 		return map[string]any{"type": role, "cwd": cwd, "sessionId": forkSession, "timestamp": "2026-11-21T05:00:00.000Z",
-			"uuid": fmt.Sprintf("w%d", n), "message": map[string]any{"role": role, "content": content}}
+			"uuid": fmt.Sprintf("w%d-%s", n, claude.Slug(cwd)), "message": map[string]any{"role": role, "content": content}}
 	}
 	use := func(name string, input map[string]string) {
 		add(msg("assistant", []any{map[string]any{"type": "tool_use", "name": name, "input": input}}))

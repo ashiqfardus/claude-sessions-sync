@@ -52,6 +52,8 @@ func main() {
 		err = cmdBackup(os.Args[2:])
 	case "machines":
 		err = cmdMachines(os.Args[2:])
+	case "clean":
+		err = cmdClean(os.Args[2:])
 	case "ls":
 		err = cmdLs(os.Args[2:])
 	case "search", "grep":
@@ -107,6 +109,7 @@ commands:
   pull        copy archived sessions into buckets of the same name
   restore     file one folder of transcripts, rewriting an old project path
   machines    list machines that have pushed here, or forget one
+  clean       delete archived copies of a session that another copy holds in whole
   render      write mobile-readable HTML pages of every archived session
   install     archive automatically: a session-end hook, a per-reply hook and a sweep
   uninstall   remove the hook and the sweep (your archive is kept)

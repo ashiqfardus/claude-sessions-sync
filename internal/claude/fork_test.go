@@ -196,3 +196,27 @@ func TestCompareCountsAnUnrunQueuedPromptAsATurn(t *testing.T) {
 		t.Errorf("Compare(new turns, queued prompt) = %v, want Forked", got)
 	}
 }
+
+// A copy holding only the other's last turn passes Compare, never HoldsAll.
+func TestHoldsAllWantsEveryTurn(t *testing.T) {
+	full := writeTranscript(t, "full.jsonl", "u1", "u2", "u3")
+	moved := writeTranscriptAt(t, "moved.jsonl", `C:\\work\\app`, "u1", "u2", "u3", "u4")
+	planted := writeTranscript(t, "planted.jsonl", "u3", "u9")
+	if !HoldsAll(moved, full) {
+		t.Error("a continuation with other paths does not hold the original")
+	}
+	if HoldsAll(full, moved) {
+		t.Error("the original holds a turn it lacks")
+	}
+	if Compare(planted, full) != Extends {
+		t.Fatal("setup: Compare should be fooled by the last uuid")
+	}
+	if HoldsAll(planted, full) {
+		t.Error("a file holding only the last turn holds them all")
+	}
+	broken := filepath.Join(t.TempDir(), "broken.jsonl")
+	os.WriteFile(broken, []byte(entryLine("u1", "/w")+"\n{not json\n"), 0o644)
+	if HoldsAll(full, broken) {
+		t.Error("an unreadable line was taken as nothing lost")
+	}
+}

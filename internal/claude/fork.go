@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -204,4 +205,61 @@ func ForkID(id, source string) string {
 	b[8] = b[8]&0x3f | 0x80 // RFC 4122 variant
 	h := hex.EncodeToString(b)
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// HoldsAll reports whether transcript a has every turn transcript b has, matched by
+// uuid: the proof wanted before b is deleted for a. Compare judges by b's last turn
+// alone, which a file holding just that one uuid also passes. A line that is not JSON,
+// in either, is a no.
+func HoldsAll(a, b string) bool {
+	want, ok := turnUUIDs(b)
+	if !ok {
+		return false
+	}
+	if len(want) == 0 {
+		return true // nothing of b's to lose
+	}
+	have, ok := turnUUIDs(a)
+	if !ok {
+		return false
+	}
+	for u := range want {
+		if !have[u] {
+			return false
+		}
+	}
+	return true
+}
+
+// turnUUIDs reads every turn's uuid in a transcript, a line at a time.
+func turnUUIDs(path string) (map[string]bool, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	out := map[string]bool{}
+	r := bufio.NewReaderSize(f, 1<<20)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(bytes.TrimSpace(line)) > 0 {
+			var e struct {
+				Type       string          `json:"type"`
+				UUID       string          `json:"uuid"`
+				Attachment json.RawMessage `json:"attachment"`
+			}
+			if json.Unmarshal(line, &e) != nil {
+				return nil, false
+			}
+			if e.UUID != "" && (turnTypes[e.Type] || e.Type == "attachment" && queuedPrompt(e.Attachment)) {
+				out[e.UUID] = true
+			}
+		}
+		if err == io.EOF {
+			return out, true
+		}
+		if err != nil {
+			return nil, false
+		}
+	}
 }

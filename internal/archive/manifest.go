@@ -130,6 +130,11 @@ type Shard struct {
 	// shard without it was written by a build older than the field.
 	ToolVersion string `json:"toolVersion,omitempty"`
 
+	// SkipsHeld records that the writer no longer archives a session that another
+	// bucket's copy already holds in whole, so clean may delete such copies of its own:
+	// an older build would upload them again.
+	SkipsHeld bool `json:"skipsHeld,omitempty"`
+
 	// Sessions is only read from shards written before the index was split out into
 	// its own file. New pushes write index/<machine>.json instead: session rows grow
 	// without bound, and the manifest is read by every import and every doctor run,

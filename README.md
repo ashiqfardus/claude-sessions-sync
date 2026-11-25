@@ -316,8 +316,10 @@ rather than half an hour. To keep it light:
   full push;
 - it never waits for another push that is running;
 - it gives up after 5 seconds if the drive is slow;
-- it copies a transcript over 5 MB at most every 5 minutes, because the sync app
-  re-uploads the whole file each time.
+- it copies a transcript over 5 MB at most every 30 minutes, because the sync app
+  re-uploads the whole file each time, and Google Drive can keep each upload as an old
+  version that counts toward your storage. The session-end hook and the sweep still
+  copy it.
 
 Only one push runs at a time. A session ending while another push runs waits up to
 45 seconds (`--lock-wait`), then leaves it to the sweep.
@@ -529,6 +531,25 @@ queued that never ran is a turn, so a copy ending in one is kept as a fork.
 - `claude-sessions machines` lists every computer that has pushed, with its newest
   session. `machines --forget <name>` removes a retired one's manifest and index; its
   sessions stay.
+- **Each conversation is archived once.** A session imported from another computer is
+  not archived again under this computer's folder for the project; the other
+  computer's copy is the one kept. Once you continue it here, this computer's copy
+  holds more and is archived too.
+- **Freeing space.** Versions up to 0.4.0 archived every imported session a second
+  time. After updating every computer and letting each push once, run:
+
+  ```sh
+  claude-sessions clean          # lists the duplicate copies and their size
+  claude-sessions clean --yes    # deletes them
+  ```
+
+  It deletes a copy only when another copy holds every turn of it, and every turn of its
+  subagents and its tool-output files too; it reads both in full before deleting, so
+  `--yes` on a big archive takes a while. It keeps both copies of a session continued
+  on two computers, and any copy whose computer still runs an older version, which
+  would upload it again. Run it on one computer at a time, once the other has synced.
+  Google Drive keeps deleted files in its trash for 30 days, and they still count toward
+  your storage until then: empty the trash to get the space back now.
 
 ---
 
@@ -858,13 +879,14 @@ remotes are read by parsing `.git/config`; git itself is never run (see
 | `render` | Rebuild the HTML pages |
 | `ls`, `search`, `stats` | List, search and count sessions |
 | `machines` | List the computers that pushed here; `--forget` one |
+| `clean` | List archived copies of a session that another copy holds in whole; `--yes` deletes them |
 | `completion` | Print a shell completion script: `bash`, `zsh`, `fish` or `powershell` |
 | `version` | Print the version |
 
 Every command except `completion` and `version` takes `--claude-dir <path>`, for a
 profile other than `~/.claude` (the tool already follows `CLAUDE_CONFIG_DIR`).
 `--archive <path>` reads or writes another archive than the saved one on `push`,
-`pull`, `import`, `render`, `doctor`, `machines`, `install`, `ls`, `search` and
+`pull`, `import`, `render`, `doctor`, `machines`, `clean`, `install`, `ls`, `search` and
 `stats` (on the last three it implies `--archived`). `--json` gives machine-readable
 output on `push`, `import`, `render`, `doctor`, `machines`, `ls`, `search` and
 `stats`. Flags can go before or after other arguments; `--help` on any command lists

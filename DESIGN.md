@@ -171,7 +171,9 @@ the overlay on a tie (within 2 s).
   list of this machine's work folders and is the only thing push trusts for it (the
   shard merely publishes it); `work-held.json` records each restored file, with earlier
   placements under `prev`, so `--update` can tell a file it wrote from one you changed;
-  `repointed.json` records what `import --repoint` rewrote. Repoint backups go to
+  `repointed.json` records what `import --repoint` rewrote; `held.json` records the
+  sessions push leaves to another bucket's archived copy, which holds every turn of
+  them, so it compares them again only once they change. Repoint backups go to
   `<claude-root>/repoint-backup/<yyyymmdd-hhmm>[-n]/`. Config adds `workBackup`,
   `workPlacement`, `workMap` and `workExclude`.
 - Tools/binary: `<claude-root>/bin/claude-sessions` (+`.exe`), and on Windows

@@ -5,7 +5,33 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+Upgrading: update every computer, let each push once, then run `claude-sessions clean`
+to see the space duplicate copies take, and `clean --yes` to free it.
+
+### Fixed
+- **Imported sessions were archived twice.** A session imported from another computer
+  was archived again by this computer's next push, under its own folder for the
+  project, so a conversation used on two computers was stored twice: about half of one
+  real archive. Push now leaves a session alone when another folder's copy already
+  holds every turn of it, and archives it here only once it is continued here.
+  `session-sync-base/held.json` remembers those, so they are compared again only when
+  they change.
+
+### Changed
+- **The per-reply hook copies a transcript over 5 MB at most every 30 minutes**, not
+  every 5. The sync app uploads the whole file each time, and Google Drive can keep
+  every upload as a version that counts toward storage. The session-end hook and the
+  sweep still copy it.
+
 ### Added
+- **`claude-sessions clean`** lists the archived copies of a session that another copy
+  holds in whole, with the space they take; `--yes` deletes them, with their subagent
+  and tool-output files and their page. Before each deletion it reads both copies in
+  full. It never deletes a copy that holds a turn, a subagent turn or a larger
+  tool-output file the kept copy lacks, a copy with a fork filed beside it, a copy for
+  one in a folder no computer pushes to, or a copy that a computer on an older version
+  would upload again: those wait until that computer has updated and pushed. With a
+  manifest it cannot read, `--yes` deletes nothing.
 - **Let Claude set it up.** `docs/setup-with-claude.md` is a page Claude Code can follow:
   it installs the tool, picks the synced folder, shows what would be backed up before
   anything is uploaded, and sets up a second computer, asking before each step that

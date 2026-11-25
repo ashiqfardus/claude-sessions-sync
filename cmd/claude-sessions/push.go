@@ -284,6 +284,8 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	pushed := pushedBefore(dest, shard.Machine)
 	repointed := loadRepointed(root)
 	repointedWas := len(repointed)
+	held, holders := loadHeld(root), sessionHolders(dest)
+	shard.SkipsHeld = true
 	// Transcripts to look for work folders in: those changed since the last full push
 	// - not only those copied now, as the per-reply hook has usually copied them.
 	var workScan []string
@@ -305,7 +307,12 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 				res.Skipped = append(res.Skipped, t.ID)
 				continue
 			}
-			if scanAllWork || changedSincePush(pushed, b.Name, t.ID, srcInfo) {
+			wasHeld := held.known(b.Name, t.ID, srcInfo)
+			outcome := archiveTranscript(dest, b.Name, t.ID, t.Path, srcInfo, pushed, repointed, held, othersHolding(holders, b.Name, t.ID), dryRun, logf)
+			// A transcript held, and unchanged, since a push that looked through it has
+			// nothing new to look for work folders in; one held from now on is looked
+			// through this once, as the per-reply hook may have archived lines of it.
+			if scanAllWork || !(outcome == heldOther && wasHeld) && changedSincePush(pushed, b.Name, t.ID, srcInfo) {
 				workScan = append(workScan, t.Path)
 				for _, rel := range t.Extras {
 					if claude.IsSubagentTranscript(rel) {
@@ -313,7 +320,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 					}
 				}
 			}
-			switch archiveTranscript(dest, b.Name, t.ID, t.Path, srcInfo, pushed, repointed, dryRun, logf) {
+			switch outcome {
 			case copyFailed:
 				// One unreadable transcript must not abandon the rest.
 				res.Skipped = append(res.Skipped, t.ID)
@@ -330,19 +337,25 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 			}
 			res.Sessions++
 
-			c, u := archiveExtras(b.Dir, destBucket, t.ID, t.Extras, dryRun, logf)
-			res.Copied += c
-			res.Unchanged += u
-
 			summary, _ := claude.ScanHead(t.Path, headScanLines)
-			sessions = append(sessions, archive.Session{
-				Bucket: b.Name, Project: summary.Cwd, ID: t.ID,
-				Updated: t.ModTime, Size: t.Size, Prompt: indexPrompt(summary.FirstPrompt, summary.Cwd, b.Name, excludes),
-			})
 			if summary.Cwd != "" && t.ModTime.After(newestAt) {
 				newestAt = t.ModTime
 				newestCwd = summary.Cwd
 			}
+			if outcome == heldOther {
+				// Another bucket's copy is the archived one, and is listed there: neither
+				// this one's own files nor an index row are added here.
+				continue
+			}
+
+			c, u := archiveExtras(b.Dir, destBucket, t.ID, t.Extras, dryRun, logf)
+			res.Copied += c
+			res.Unchanged += u
+
+			sessions = append(sessions, archive.Session{
+				Bucket: b.Name, Project: summary.Cwd, ID: t.ID,
+				Updated: t.ModTime, Size: t.Size, Prompt: indexPrompt(summary.FirstPrompt, summary.Cwd, b.Name, excludes),
+			})
 		}
 
 		// Memory travels with the sessions; it is small and equally unrecoverable.
@@ -394,6 +407,11 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	if len(repointed) != repointedWas && !dryRun {
 		if err := saveRepointed(root, repointed); err != nil {
 			logf("WARN: %s: %v", repointedPath(root), err)
+		}
+	}
+	if !dryRun {
+		if err := held.save(root); err != nil {
+			logf("WARN: %s: %v", heldPath(root), err)
 		}
 	}
 
@@ -659,15 +677,25 @@ const (
 	keptFork
 	keptShorter
 	copyFailed
+	heldOther // another bucket's copy holds all of it: nothing written
 )
 
 // archiveTranscript brings the archived copy of one local transcript up to date. The
 // archived copy is replaced only by one that holds more; when each holds turns the
 // other lacks, this machine's is kept beside it as a fork. A transcript in repointed
 // is the exception, and its entry is used up here: the caller saves the change.
-func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushed map[string]archive.Session, repointed map[string]repointedStat, dryRun bool, logf func(string, ...any)) archiveOutcome {
+//
+// Nothing is written when one of others - archive buckets holding a transcript of the
+// same session - already holds every turn of this one: a conversation imported from
+// another machine, and not continued here, is not archived a second time under this
+// machine's folder for it. held, nil in the per-reply hook, remembers those.
+func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushed map[string]archive.Session, repointed map[string]repointedStat, held *heldRecord, others []string, dryRun bool, logf func(string, ...any)) archiveOutcome {
 	target := filepath.Join(archive.ProjectsDir(dest), bucket, filepath.Base(path))
 	dstInfo := archive.StatOrNil(target)
+	if held.hit(dest, bucket, id, srcInfo) {
+		delete(repointed, bucket+"/"+id)
+		return heldOther
+	}
 
 	// Rewritten by import --repoint and unchanged since: this machine's paths, so it
 	// replaces the archived copy once, shorter or not - but only over the same turns or
@@ -679,6 +707,9 @@ func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushe
 		if srcInfo.Size() == r.Size && archive.SameMTime(srcInfo.ModTime(), r.MTime) &&
 			(dstInfo == nil || !srcInfo.ModTime().Before(dstInfo.ModTime().Add(-archive.MTimeToleranceSeconds*time.Second)) &&
 				slices.Contains([]claude.Relation{claude.Same, claude.Extends}, claude.Compare(path, target))) {
+			if held.covers(dest, bucket, id, path, srcInfo, others) {
+				return heldOther
+			}
 			if !dryRun {
 				if err := archive.CopyFile(path, target); err != nil {
 					repointed[bucket+"/"+id] = r // tried again next time
@@ -710,6 +741,9 @@ func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushe
 		case claude.Same, claude.Behind:
 			return notCopied
 		case claude.Forked:
+			if held.covers(dest, bucket, id, path, srcInfo, others) {
+				return heldOther
+			}
 			if keepFork(dest, bucket, id, path, srcInfo, dryRun, logf) {
 				return keptFork
 			}
@@ -727,6 +761,8 @@ func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushe
 		return keptShorter
 	case !copyIt:
 		return notCopied
+	case held.covers(dest, bucket, id, path, srcInfo, others):
+		return heldOther
 	}
 	if !dryRun {
 		if err := archive.CopyFile(path, target); err != nil {
@@ -735,6 +771,137 @@ func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushe
 		}
 	}
 	return copiedOver
+}
+
+// heldStat is a local transcript as push found it, held in whole by the archived
+// copy in another bucket, In, as that copy then was.
+type heldStat struct {
+	Size    int64     `json:"size"`
+	MTime   time.Time `json:"mtime"`
+	In      string    `json:"in"`
+	InSize  int64     `json:"inSize"`
+	InMTime time.Time `json:"inMtime"`
+}
+
+// heldRecord remembers, by "bucket/id", the transcripts push leaves to another
+// bucket's copy, so each is compared again only once it changes: comparing reads both
+// copies, one of them on a cloud drive. Nothing in it comes from the archive.
+type heldRecord struct {
+	m     map[string]heldStat
+	dirty bool
+}
+
+func heldPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "held.json")
+}
+
+// loadHeld reads the record. Missing or unreadable is empty: push then compares again.
+func loadHeld(root string) *heldRecord {
+	h := &heldRecord{}
+	if raw, err := os.ReadFile(heldPath(root)); err == nil {
+		_ = json.Unmarshal(raw, &h.m)
+	}
+	if h.m == nil {
+		h.m = map[string]heldStat{}
+	}
+	return h
+}
+
+func (h *heldRecord) save(root string) error {
+	if !h.dirty {
+		return nil
+	}
+	data, err := json.MarshalIndent(h.m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return archive.WriteFileAtomic(heldPath(root), append(data, '\n'), 0o644)
+}
+
+// hit reports whether the transcript and the copy that held it are both unchanged
+// since push found it held. A copy that changed - replaced by a fork, say - is compared
+// again.
+func (h *heldRecord) hit(dest, bucket, id string, src os.FileInfo) bool {
+	if !h.known(bucket, id, src) {
+		return false
+	}
+	s := h.m[bucket+"/"+id]
+	in := archive.StatOrNil(archivedCopy(dest, s.In, id))
+	return in != nil && in.Size() == s.InSize && archive.SameMTime(in.ModTime(), s.InMTime)
+}
+
+// known reports whether the transcript is unchanged since push found it held: its
+// lines were looked through for work folders then.
+func (h *heldRecord) known(bucket, id string, src os.FileInfo) bool {
+	if h == nil {
+		return false
+	}
+	s, ok := h.m[bucket+"/"+id]
+	return ok && s.Size == src.Size() && archive.SameMTime(s.MTime, src.ModTime())
+}
+
+// covers reports whether one of the others holds every turn of the transcript at path,
+// and records which.
+func (h *heldRecord) covers(dest, bucket, id, path string, src os.FileInfo, others []string) bool {
+	if h == nil {
+		return false
+	}
+	key := bucket + "/" + id
+	if _, ok := h.m[key]; ok {
+		delete(h.m, key)
+		h.dirty = true
+	}
+	for _, other := range others {
+		if p := archivedCopy(dest, other, id); p != "" {
+			in := archive.StatOrNil(p)
+			if r := claude.Compare(path, p); in != nil && (r == claude.Same || r == claude.Behind) {
+				h.m[key] = heldStat{Size: src.Size(), MTime: src.ModTime(), In: other, InSize: in.Size(), InMTime: in.ModTime()}
+				h.dirty = true
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// archivedCopy is the archived transcript of session id in bucket, "" unless it is a
+// plain file there: never one read through a link planted in the shared archive.
+func archivedCopy(dest, bucket, id string) string {
+	if !archive.ValidName(bucket) || !archive.ValidName(id) {
+		return ""
+	}
+	p := filepath.Join(archive.ProjectsDir(dest), bucket, id+".jsonl")
+	if st, err := os.Lstat(p); err != nil || !st.Mode().IsRegular() {
+		return ""
+	}
+	return p
+}
+
+// sessionHolders lists, by lower-cased session id, the archive buckets holding a
+// transcript of it.
+func sessionHolders(dest string) map[string][]string {
+	out := map[string][]string{}
+	names, _ := archive.BucketNames(dest)
+	for _, b := range names {
+		entries, _ := os.ReadDir(filepath.Join(archive.ProjectsDir(dest), b))
+		for _, e := range entries {
+			if id, ok := strings.CutSuffix(e.Name(), ".jsonl"); ok && e.Type().IsRegular() && claude.IsSessionID(id) {
+				out[strings.ToLower(id)] = append(out[strings.ToLower(id)], b)
+			}
+		}
+	}
+	return out
+}
+
+// othersHolding is the buckets other than bucket that hold session id.
+func othersHolding(holders map[string][]string, bucket, id string) []string {
+	var out []string
+	for _, b := range holders[strings.ToLower(id)] {
+		if !strings.EqualFold(b, bucket) {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // archiveExtras copies a session's own folder - subagent transcripts and saved tool
@@ -763,11 +930,13 @@ func archiveExtras(bucketDir, destBucket, id string, extras []string, dryRun boo
 }
 
 // quickSize and quickEvery throttle the per-reply backup. A sync client uploads a
-// whole file each time it changes, so a transcript over quickSize is copied at most
-// every quickEvery; whatever is left is caught by the next reply or the sweep.
+// whole file each time it changes, and may keep every upload as a version that counts
+// against the account's storage, so a transcript over quickSize is copied at most
+// every quickEvery - the sweep's own interval; whatever is left is caught by the next
+// reply, the sweep or the end of the session.
 const (
 	quickSize  = 5 << 20
-	quickEvery = 5 * time.Minute
+	quickEvery = 30 * time.Minute
 )
 
 // pushOne archives the one session a Stop hook names, without the manifest, index or
@@ -801,7 +970,9 @@ func pushOne(root, dest, transcript string, dryRun bool, logf func(string, ...an
 	}
 	repointed := loadRepointed(root)
 	was := len(repointed)
-	switch archiveTranscript(dest, bucket, id, abs, srcInfo, pushedBefore(dest, machineName()), repointed, dryRun, logf) {
+	// Not compared with other buckets' copies: a session still replying here holds
+	// turns no other copy has. The next full push judges one that does not.
+	switch archiveTranscript(dest, bucket, id, abs, srcInfo, pushedBefore(dest, machineName()), repointed, nil, nil, dryRun, logf) {
 	case copiedOver, keptFork:
 		archiveExtras(bucketDir, destBucket, id, claude.SessionFiles(filepath.Join(bucketDir, id)), dryRun, logf)
 	}

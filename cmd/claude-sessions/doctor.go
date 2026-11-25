@@ -380,6 +380,7 @@ func liveness(root, dest string, buckets []claude.Bucket) []check {
 
 	var pending []string
 	cutoff := time.Now().Add(-archiveLag)
+	held := loadHeld(root)
 	for _, b := range buckets {
 		for _, t := range b.Transcripts {
 			if t.ModTime.After(cutoff) {
@@ -392,9 +393,11 @@ func liveness(root, dest string, buckets []claude.Bucket) []check {
 			dst := archive.StatOrNil(filepath.Join(archive.ProjectsDir(dest), b.Name, filepath.Base(t.Path)))
 			// A shorter local copy is a session forked across machines, which push
 			// deliberately leaves alone; it is not a failure to archive. Nor is one
-			// whose copy is saved as a fork beside the archived one.
+			// whose copy is saved as a fork beside the archived one, or one another
+			// bucket's archived copy holds in whole.
 			fork := archive.StatOrNil(forkPath(dest, b.Name, t.ID, machineName()))
-			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) {
+			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) &&
+				!held.hit(dest, b.Name, t.ID, src) {
 				pending = append(pending, b.Name+"/"+t.ID)
 			}
 		}
