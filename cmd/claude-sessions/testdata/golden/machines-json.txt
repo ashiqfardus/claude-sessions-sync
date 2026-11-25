@@ -1,0 +1,13 @@
+$ claude-sessions machines --claude-dir <CLAUDE> --json
+exit 0
+--- stdout
+[
+  {
+    "Name": "LAP-1",
+    "Projects": 2,
+    "Sessions": 3,
+    "LastSeen": "2026-08-30T09:00:00Z",
+    "LastPush": "<LAST-PUSH-HOUR>"
+  }
+]
+--- stderr

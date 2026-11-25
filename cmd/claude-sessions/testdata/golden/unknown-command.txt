@@ -1,0 +1,44 @@
+$ claude-sessions bogus --claude-dir <CLAUDE>
+exit 2
+--- stdout
+--- stderr
+unknown command "bogus"
+
+claude-sessions - archive Claude Code sessions and file them by project identity
+
+usage:
+  claude-sessions <command> [flags]
+
+commands:
+  push        copy new and changed sessions to the archive
+  import      file an archive onto THIS machine, matching projects by identity
+  pull        copy archived sessions into buckets of the same name
+  restore     file one folder of transcripts, rewriting an old project path
+  machines    list machines that have pushed here, or forget one
+  clean       delete archived copies of a session that another copy holds in whole
+  prune       delete chosen conversations from the archive, every copy (--undo takes it back)
+  render      write mobile-readable HTML pages of every archived session
+  install     archive automatically: a session-end hook, a per-reply hook and a sweep
+  uninstall   remove the hook and the sweep (your archive is kept)
+  backup      zip the whole profile: sessions, subagents, memory and settings
+  ls          list sessions (--archived: the archive's)
+  search      search the text of every session (--archived: the archive's)
+  stats       session counts and sizes per project
+  doctor      check the archive, hook, retention and manifest drift
+  config      archive destination, project mappings, this machine's name
+  completion  print a shell completion script (bash|zsh|fish|powershell)
+  version     print the version
+
+common flags:
+  --claude-dir <path>   override $CLAUDE_CONFIG_DIR / ~/.claude
+  --archive <path>      override the synced destination folder
+  --json                machine-readable output
+
+examples:
+  claude-sessions doctor
+  claude-sessions config set-destination "G:/My Drive/claude-sessions"
+  claude-sessions ls --project web-app --since 2026-08-01
+  claude-sessions search "connection pool"
+  claude-sessions push --dry-run
+  claude-sessions import --search-root ~/dev --dry-run
+  claude-sessions import --search-root ~/dev --update

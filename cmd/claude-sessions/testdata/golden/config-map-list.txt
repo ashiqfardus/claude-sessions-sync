@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> map
+exit 0
+--- stdout
+no projects mapped
+--- stderr

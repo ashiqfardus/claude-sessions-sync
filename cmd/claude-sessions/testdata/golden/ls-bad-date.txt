@@ -1,0 +1,5 @@
+$ claude-sessions ls --claude-dir <CLAUDE> --since 2026-13-01
+exit 1
+--- stdout
+--- stderr
+error: --since must be YYYY-MM-DD, got "2026-13-01"

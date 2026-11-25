@@ -1,0 +1,5 @@
+$ claude-sessions search --claude-dir <CLAUDE> nothing-matches-this
+exit 0
+--- stdout
+No matches for "nothing-matches-this" in 3 session(s).
+--- stderr

@@ -1,0 +1,28 @@
+$ claude-sessions stats --claude-dir <CLAUDE> --json
+exit 0
+--- stdout
+{
+  "sessions": 3,
+  "projects": 2,
+  "bytes": 3606,
+  "oldest": "2026-08-30T09:00:00Z",
+  "newest": "2026-08-30T09:00:00Z",
+  "memoryOnlyBuckets": 0,
+  "byProject": [
+    {
+      "project": "<HOME>/Documents/GitHub/example-org/web-app",
+      "sessions": 2,
+      "bytes": 3005,
+      "oldest": "2026-08-30T09:00:00Z",
+      "newest": "2026-08-30T09:00:00Z"
+    },
+    {
+      "project": "<HOME>/Documents/planning-notes/example-org/notes",
+      "sessions": 1,
+      "bytes": 601,
+      "oldest": "2026-08-30T09:00:00Z",
+      "newest": "2026-08-30T09:00:00Z"
+    }
+  ]
+}
+--- stderr

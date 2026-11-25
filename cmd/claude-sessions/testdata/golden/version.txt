@@ -1,0 +1,5 @@
+$ claude-sessions version --claude-dir <CLAUDE>
+exit 0
+--- stdout
+claude-sessions <VERSION>
+--- stderr

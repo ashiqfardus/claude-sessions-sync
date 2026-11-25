@@ -1,0 +1,11 @@
+$ claude-sessions stats --claude-dir <CLAUDE>
+exit 0
+--- stdout
+
+3 session(s) across 2 project(s), 4K total
+spanning 2026-08-30 to 2026-08-30
+
+SESSIONS  SIZE  LAST USED   PROJECT
+2         3K    2026-08-30  ...sers/you/Documents/GitHub/example-org/web-app
+1         601B  2026-08-30  ...ou/Documents/planning-notes/example-org/notes
+--- stderr

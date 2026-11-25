@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> keep
+exit 0
+--- stdout
+nothing is kept
+--- stderr

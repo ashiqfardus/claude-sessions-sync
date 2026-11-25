@@ -1,0 +1,15 @@
+$ claude-sessions search --claude-dir <CLAUDE> --json migration
+exit 0
+--- stdout
+[
+  {
+    "project": "<HOME>/Documents/GitHub/example-org/web-app",
+    "bucket": "<HOME-SLUG>-Documents-GitHub-example-org-web-app",
+    "session": "11111111-1111-1111-1111-111111111111",
+    "role": "user",
+    "when": "2026-11-20T05:00:00Z",
+    "line": 2,
+    "snippet": "turn migration"
+  }
+]
+--- stderr

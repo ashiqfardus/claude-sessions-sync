@@ -1,0 +1,8 @@
+$ claude-sessions config --claude-dir <CLAUDE> show
+exit 0
+--- stdout
+config file  <CLAUDE>/session-sync.json
+destination  <ARCHIVE>
+work backup  on
+placement    home
+--- stderr
