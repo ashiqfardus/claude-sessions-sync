@@ -7,6 +7,9 @@ import (
 	"runtime"
 )
 
+// SystemBinary is systemBinary for other packages, such as the panel's browser opener.
+func SystemBinary(name string) string { return systemBinary(name) }
+
 // systemBinary resolves a system tool to an absolute path.
 //
 // SECURITY: exec.Command("schtasks", ...) resolves through PATH, and on Windows a
