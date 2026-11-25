@@ -140,6 +140,10 @@ type Shard struct {
 	// has it: an older build would upload the conversation loose again.
 	ReadsZips bool `json:"readsZips,omitempty"`
 
+	// HonorsDeleted records that the writer skips conversations on the deleted list, so
+	// prune may delete them: an older build would upload them again.
+	HonorsDeleted bool `json:"honorsDeleted,omitempty"`
+
 	// Sessions is only read from shards written before the index was split out into
 	// its own file. New pushes write index/<machine>.json instead: session rows grow
 	// without bound, and the manifest is read by every import and every doctor run,

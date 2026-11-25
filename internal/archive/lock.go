@@ -224,7 +224,7 @@ func RemoveOrphanTemps(dest string) int {
 		}
 	}
 	for _, sub := range []string{ProjectsDir(dest), ManifestDir(dest), IndexDir(dest), filepath.Join(dest, "html"),
-		filepath.Join(dest, "forks"), filepath.Join(dest, "profile"), filepath.Join(dest, "memory"), filepath.Join(dest, "work")} {
+		filepath.Join(dest, "forks"), filepath.Join(dest, "profile"), filepath.Join(dest, "memory"), filepath.Join(dest, "work"), DeletedDir(dest)} {
 		_ = filepath.WalkDir(sub, func(path string, d fs.DirEntry, err error) error {
 			if err == nil {
 				remove(path, d)

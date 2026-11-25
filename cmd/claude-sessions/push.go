@@ -456,7 +456,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 			logf("ERROR: manifest: %v", err)
 			return err
 		}
-		if err := archive.WriteSessionIndex(dest, shard.Machine, sessions); err != nil {
+		if err := archive.WriteSessionIndex(dest, shard.Machine, withoutPruned(dest, sessions)); err != nil {
 			logf("ERROR: index cache: %v", err)
 			return err
 		}
@@ -1539,6 +1539,7 @@ func writeIndex(dest string, excludes []string) error {
 	if err != nil {
 		return err
 	}
+	rows = withoutPruned(dest, rows)
 
 	machines := map[string]bool{}
 	byProject := map[string][]archive.Session{}

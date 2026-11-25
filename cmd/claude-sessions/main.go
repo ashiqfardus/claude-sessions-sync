@@ -54,6 +54,8 @@ func main() {
 		err = cmdMachines(os.Args[2:])
 	case "clean":
 		err = cmdClean(os.Args[2:])
+	case "prune":
+		err = cmdPrune(os.Args[2:])
 	case "ls":
 		err = cmdLs(os.Args[2:])
 	case "search", "grep":
@@ -110,6 +112,7 @@ commands:
   restore     file one folder of transcripts, rewriting an old project path
   machines    list machines that have pushed here, or forget one
   clean       delete archived copies of a session that another copy holds in whole
+  prune       delete chosen conversations from the archive, every copy (--undo takes it back)
   render      write mobile-readable HTML pages of every archived session
   install     archive automatically: a session-end hook, a per-reply hook and a sweep
   uninstall   remove the hook and the sweep (your archive is kept)

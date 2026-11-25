@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"time"
 )
 
 // Relation is how two copies of one session relate to each other.
@@ -36,8 +37,8 @@ func Compare(a, b string) Relation {
 	if appendedTo(a, b) {
 		return Extends // the common case, settled without reading all of a
 	}
-	ua, ta := lastUUID(a)
-	ub, tb := lastUUID(b)
+	ua, _, ta := lastTurn(a)
+	ub, _, tb := lastTurn(b)
 	switch {
 	case ua == "" || ub == "":
 		return Unknown
@@ -94,8 +95,16 @@ func appendedTo(a, b string) bool {
 
 // LastUUID is the uuid of a transcript's last turn, "" when it has none.
 func LastUUID(path string) string {
-	u, _ := lastUUID(path)
+	u, _, _ := lastTurn(path)
 	return u
+}
+
+// LastTurnTime is the timestamp of the turn LastUUID names. It is false when there is
+// no turn, or that turn has no timestamp that parses: an earlier turn's would make the
+// conversation look older than it is.
+func LastTurnTime(path string) (time.Time, bool) {
+	_, at, _ := lastTurn(path)
+	return at, !at.IsZero()
 }
 
 // sessionIDRe is the form of every session id Claude Code writes.
@@ -121,23 +130,23 @@ func IsTranscriptID(id string) bool { return IsSessionID(id) || legacyAgentRe.Ma
 // one not yet run holds a turn the other lacks.
 var turnTypes = map[string]bool{"user": true, "assistant": true, "system": true}
 
-// lastUUID is the uuid of the newest turn, read from the file's end, and how many
-// other entries follow it.
-func lastUUID(path string) (uuid string, trailing int) {
+// lastTurn is the uuid and time of the newest turn, read from the file's end, and how
+// many other entries follow it.
+func lastTurn(path string) (uuid string, at time.Time, trailing int) {
 	const tail = 4 << 20 // one entry can hold a large tool result
 	f, err := os.Open(path)
 	if err != nil {
-		return "", 0
+		return "", time.Time{}, 0
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return "", 0
+		return "", time.Time{}, 0
 	}
 	off := max(st.Size()-tail, 0)
 	buf := make([]byte, st.Size()-off)
 	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
-		return "", 0
+		return "", time.Time{}, 0
 	}
 	lines := bytes.Split(buf, []byte("\n"))
 	if off > 0 {
@@ -147,17 +156,18 @@ func lastUUID(path string) (uuid string, trailing int) {
 		var e struct {
 			Type       string          `json:"type"`
 			UUID       string          `json:"uuid"`
+			Timestamp  string          `json:"timestamp"`
 			Attachment json.RawMessage `json:"attachment"` // raw: any shape still parses the line
 		}
 		if json.Unmarshal(lines[i], &e) != nil {
 			continue // blank, or a truncated last line
 		}
 		if e.UUID != "" && (turnTypes[e.Type] || e.Type == "attachment" && queuedPrompt(e.Attachment)) {
-			return e.UUID, trailing
+			return e.UUID, parseTime(e.Timestamp), trailing
 		}
 		trailing++
 	}
-	return "", 0
+	return "", time.Time{}, 0
 }
 
 // queuedPrompt reports whether an attachment is a prompt the user queued.
