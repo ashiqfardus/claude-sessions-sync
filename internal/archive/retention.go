@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // MinKeepDays is the shortest age rule allowed: a typo must not empty the archive.
@@ -30,8 +31,11 @@ type KeepEntry struct {
 // Retention is the archive's shared retention settings, retention.json at its root.
 // Every machine follows the same file.
 type Retention struct {
-	KeepDays int         `json:"keepDays,omitempty"`
-	Keep     []KeepEntry `json:"keep,omitempty"`
+	KeepDays int `json:"keepDays,omitempty"`
+	// KeepDaysSetAt is when config last changed KeepDays, in UTC: every computer's
+	// first run since only records its time. nil in a file an earlier build wrote.
+	KeepDaysSetAt *time.Time  `json:"keepDaysSetAt,omitempty"`
+	Keep          []KeepEntry `json:"keep,omitempty"`
 }
 
 // RetentionPath is <archive>/retention.json.

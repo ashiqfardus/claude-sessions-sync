@@ -207,11 +207,22 @@ func TestKeepSurvivesForgettingTheMachineWithTheRemote(t *testing.T) {
 
 const remoteOnlyID = "bbbbbbbb-1111-4111-8111-0000000000b1"
 
-// ranYesterday records an age-rule run with keep-days 90 25 hours ago, so the next
-// push's is due.
-func ranYesterday(t *testing.T, claudeDir string) {
+// ranAt records an age-rule run at at, stopped before next, under the archive's
+// keep-days as it is set now.
+func ranAt(t *testing.T, claudeDir, dest string, at time.Time, next string) {
 	t.Helper()
-	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour), KeepDays: 90})
+	r, err := archive.LoadRetention(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: at, Next: next, KeepDays: r.KeepDays, KeepDaysSetAt: r.KeepDaysSetAt})
+}
+
+// ranYesterday records an age-rule run 25 hours ago, under keep-days as set now, so
+// the next push's is due.
+func ranYesterday(t *testing.T, claudeDir, dest string) {
+	t.Helper()
+	ranAt(t, claudeDir, dest, time.Now().Add(-25*time.Hour), "")
 }
 
 const (
@@ -265,7 +276,7 @@ func TestKeptByRemoteStaysKeptOnceItsFolderIsGone(t *testing.T) {
 			}
 		}
 		c.change(repo)
-		ranYesterday(t, claudeDir)
+		ranYesterday(t, claudeDir, dest)
 		pushHere(t, claudeDir, pushOpts{})
 		if got := shardRemote(t, dest, bucket); got != c.remote {
 			t.Errorf("%s: the bucket's remote is %q, want %q", c.name, got, c.remote)
@@ -354,6 +365,32 @@ func TestKeepByRemoteStoresItsFolderName(t *testing.T) {
 				t.Errorf("unkeep %s does not name %s:\n%s", c.unkeep, keepLabel(e), out)
 			}
 		}
+	}
+}
+
+// unkeep <path> that names no entry, while entries kept for a remote the bucket no
+// longer reads still keep it, names them and how to unkeep them.
+func TestUnkeepByPathNamesWhatStillKeepsIt(t *testing.T) {
+	const rA, rB = "git@github.com:example/web-app.git", "git@github.com:example/web-app-new.git"
+	with := func(r string) map[string]archive.Project {
+		return map[string]archive.Project{"-Users-you-dev-web-app": {Path: "/Users/you/dev/web-app", Leaf: "web-app", Remote: r, Machine: "you-mac"}}
+	}
+	claudeDir, dest := keepFixture(t, with(rA))
+	if out, err := captured(t, func() error { return cmdConfig([]string{"--claude-dir", claudeDir, "keep", "/Users/you/dev/web-app"}) }); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	writeJSON(t, filepath.Join(archive.ManifestDir(dest), "you-mac.json"),
+		archive.Shard{SchemaVersion: archive.SchemaVersion, Machine: "you-mac", Projects: with(rB)})
+	before, _ := archive.LoadRetention(dest)
+	_, err := captured(t, func() error {
+		return cmdConfig([]string{"--claude-dir", claudeDir, "unkeep", "/Users/you/dev/web-app"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "project folder web-app, kept with remote "+rA) ||
+		!strings.Contains(err.Error(), "claude-sessions config unkeep "+rA) || strings.Contains(err.Error(), "project with remote "+rA) {
+		t.Errorf("unkeep by path after the remote changed: %v", err)
+	}
+	if r, _ := archive.LoadRetention(dest); !reflect.DeepEqual(r, before) {
+		t.Errorf("the keep list changed: %+v", r.Keep)
 	}
 }
 
@@ -1470,7 +1507,7 @@ func ageFixture(t *testing.T) (claudeDir, dest string) {
 	if out, err := captured(t, func() error { return cmdConfig([]string{"--claude-dir", claudeDir, "keep-days", "90"}) }); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	ranYesterday(t, claudeDir)
+	ranYesterday(t, claudeDir, dest)
 	return claudeDir, dest
 }
 
@@ -1604,7 +1641,7 @@ func TestAgeRuleDeletesOldOnce(t *testing.T) {
 	// A day later it does; so it does when the last run is dated ahead, by a wrong clock.
 	for _, at := range []time.Time{time.Now().Add(-25 * time.Hour), time.Now().AddDate(1, 0, 0)} {
 		conv(t, dest, "-Users-you-dev-api", oldAPI, time.Now().AddDate(0, 0, -200), "p1")
-		writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: at, KeepDays: 90})
+		ranAt(t, claudeDir, dest, at, "")
 		pushHere(t, claudeDir, pushOpts{})
 		if archivedCopy(dest, "-Users-you-dev-api", oldAPI) != "" {
 			t.Errorf("last run %v: the age rule did not run again", at)
@@ -1830,7 +1867,7 @@ func TestSweepPushStopsTheAgeRuleAtItsBudget(t *testing.T) {
 		archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
 		t.Errorf("the sweep's age rule did not stop at its budget:\n%s", log)
 	}
-	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour), Next: oldWeb, KeepDays: 90})
+	ranAt(t, claudeDir, dest, time.Now().Add(-25*time.Hour), oldWeb)
 	pushHere(t, claudeDir, pushOpts{})
 	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
 		t.Error("the next run, from a terminal, did not delete what was left")
@@ -2080,11 +2117,13 @@ func TestAgeRuleFormerNameIsNotAnotherClock(t *testing.T) {
 	}
 }
 
-// M7: keep-days lowered while the rule is on gets a day's grace too: the next run only
-// records its time, the one after deletes what the lower setting makes due. Raised, it
-// waits for nothing.
+// M7: with a retention.json that does not say when keep-days was set (an earlier build
+// wrote it), each computer goes by the setting its last run used: lowered, the next run
+// only records its time, and the one after deletes what the lower setting makes due.
+// Raised, it waits for nothing.
 func TestAgeRuleWaitsADayAfterKeepDaysIsLowered(t *testing.T) {
 	claudeDir, dest := ageFixture(t) // oldWeb 120 days old: due at 90, not at 365
+	writeJSON(t, archive.RetentionPath(dest), archive.Retention{KeepDays: 90})
 	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour), KeepDays: 365})
 	var logged []string
 	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
@@ -2107,6 +2146,35 @@ func TestAgeRuleWaitsADayAfterKeepDaysIsLowered(t *testing.T) {
 	writeJSON(t, archive.RetentionPath(dest), archive.Retention{KeepDays: 100})
 	if n, err := ageRule(t, claudeDir, dest, func(string, ...any) {}); n != 1 || err != nil {
 		t.Errorf("raised to 100: deleted %d, %v: want the 120-day-old one", n, err)
+	}
+}
+
+// The grace day after a keep-days change holds on every computer, as retention.json
+// says when it was set: one that did not run between two changes - off and on again, or
+// 365 then 90 - still only records on its next run. Set again to the value it has, it
+// changes nothing, and waits for nothing.
+func TestAgeRuleWaitsADayOnEveryComputerAfterAChange(t *testing.T) {
+	for _, seq := range [][]string{{"off", "90"}, {"365", "90"}, {"90"}} {
+		claudeDir, dest := ageFixture(t) // ran yesterday under keep-days 90
+		for _, v := range seq {
+			if out, err := captured(t, func() error { return cmdConfig([]string{"--claude-dir", claudeDir, "keep-days", v}) }); err != nil {
+				t.Fatalf("keep-days %s: %v\n%s", v, err, out)
+			}
+		}
+		changed := len(seq) > 1
+		if r, _ := archive.LoadRetention(dest); r.KeepDaysSetAt == nil {
+			t.Errorf("%v: retention.json does not say when keep-days was set", seq)
+		}
+		if n, err := ageRule(t, claudeDir, dest, func(string, ...any) {}); err != nil || (n == 0) != changed {
+			t.Errorf("%v: the next run deleted %d, %v; want none only after a change", seq, n, err)
+		}
+		if !changed {
+			continue
+		}
+		ret, _ := archive.LoadRetention(dest)
+		if n, err := runAgeRule(claudeDir, dest, ret, time.Now().Add(25*time.Hour), 0, func(string, ...any) {}); n != 1 || err != nil {
+			t.Errorf("%v: the run a day on deleted %d, %v", seq, n, err)
+		}
 	}
 }
 

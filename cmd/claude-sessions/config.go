@@ -413,7 +413,15 @@ flags:
 				return fmt.Errorf("keep-days must be at most %d", archive.MaxKeepDays)
 			}
 		}
-		r.KeepDays = days
+		if days != r.KeepDays {
+			// Every computer's next run then only records: the grace day is shared, as the
+			// setting is. Just after the last, so a change is never mistaken for none.
+			at := time.Now().UTC()
+			if r.KeepDaysSetAt != nil && !at.After(*r.KeepDaysSetAt) {
+				at = r.KeepDaysSetAt.Add(time.Nanosecond)
+			}
+			r.KeepDays, r.KeepDaysSetAt = days, &at
+		}
 		if err := archive.SaveRetention(dest, r); err != nil {
 			return err
 		}
@@ -581,7 +589,7 @@ func unkeepOne(dest, arg string) error {
 	if err != nil {
 		return err
 	}
-	entries, _, _, matchErr := keepEntriesFor(dest, arg)
+	entries, buckets, projects, matchErr := keepEntriesFor(dest, arg)
 	listed := archive.KeepEntry{Session: arg, Remote: arg, Leaf: arg}
 	named := func(k archive.KeepEntry) bool {
 		return sameEntry(k, listed) || slices.ContainsFunc(entries, func(e archive.KeepEntry) bool { return sameKeep(k, e) })
@@ -606,7 +614,7 @@ func unkeepOne(dest, arg string) error {
 		if matchErr != nil {
 			return matchErr
 		}
-		return fmt.Errorf("%s is not on the keep list", arg)
+		return notKept(r, arg, buckets, projects)
 	}
 	if err := archive.SaveRetention(dest, r); err != nil {
 		return err
@@ -615,6 +623,30 @@ func unkeepOne(dest, arg string) error {
 		fmt.Printf("No longer kept: %s\n", keepLabel(k))
 	}
 	return nil
+}
+
+// notKept is unkeep's error for arg, which names no entry: with the entries that keep
+// its buckets all the same - a folder name kept for a remote they no longer read - and
+// how to unkeep each.
+func notKept(r archive.Retention, arg string, buckets []string, projects map[string]archive.Project) error {
+	var msg strings.Builder
+	for _, k := range r.Keep {
+		if k.Session != "" || !slices.ContainsFunc(buckets, func(b string) bool { return keeps(k, projects[b], projects) }) {
+			continue
+		}
+		by := k.Remote
+		if by == "" {
+			by = k.ForRemote
+		}
+		if by == "" {
+			by = k.Leaf
+		}
+		fmt.Fprintf(&msg, "\n  %s: claude-sessions config unkeep %s", keepLabel(k), by)
+	}
+	if msg.Len() == 0 {
+		return fmt.Errorf("%s is not on the keep list", arg)
+	}
+	return fmt.Errorf("%s is not on the keep list itself, but these entries still keep it; unkeep them by their remote or name:%s", arg, msg.String())
 }
 
 // saveWork loads the config, applies change and saves it.

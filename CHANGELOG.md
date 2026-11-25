@@ -23,7 +23,7 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   it counts days by no later than 25 hours after the newest other computer's last push,
   so a clock running ahead deletes nothing young, and a computer off for a long time
   pauses deletion of conversations newly due (`machines --forget` one no longer used).
-  A computer's first run of it, or after it is lowered, only notes the time, so it
+  A computer's first run of it, or after it is changed, only notes the time, so it
   starts a day later, and setting it shows the keep list and the `prune --older-than
   <N>d` that previews it. It deletes nothing while a sync app's conflict copy of
   `retention.json` sits beside it. Nothing on any computer is touched. A project
