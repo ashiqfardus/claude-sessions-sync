@@ -8,10 +8,13 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
@@ -35,6 +38,10 @@ func cmdConfig(args []string) error {
   claude-sessions config unmap-folder <path>       remove that mapping
   claude-sessions config exclude-folder <folder>   never back up a folder, and remove its archived copy
   claude-sessions config unexclude-folder <folder> back up a folder again
+  claude-sessions config keep                      list what prune and keep-days never delete
+  claude-sessions config keep <id|path|name>       never delete a conversation, or a project on every computer
+  claude-sessions config unkeep <id|path|name>     take it off the keep list
+  claude-sessions config keep-days <N|off>         delete archived conversations idle N days (N >= 90; off by default)
 
 flags:
 `)
@@ -353,9 +360,186 @@ flags:
 			c.WorkExclude = keep
 		}, rest[1]+" will be backed up again")
 
+	case "keep", "unkeep":
+		if len(rest) > 2 || action == "unkeep" && len(rest) != 2 {
+			return fmt.Errorf("usage: claude-sessions config %s <conversation id | project path | project name>", action)
+		}
+		dest, err := retentionDest(root)
+		if err != nil {
+			return err
+		}
+		if len(rest) == 1 {
+			return listKeep(dest)
+		}
+		arg := expandHome(rest[1])
+		if runtime.GOOS == "windows" && gitBashRewritten(arg) {
+			return gitBashError(arg)
+		}
+		if action == "keep" {
+			return keepOne(dest, arg)
+		}
+		return unkeepOne(dest, arg)
+
+	case "keep-days":
+		dest, err := retentionDest(root)
+		if err != nil {
+			return err
+		}
+		r, err := archive.LoadRetention(dest)
+		if err != nil {
+			return err
+		}
+		if len(rest) == 1 {
+			if r.KeepDays == 0 {
+				fmt.Println("keep-days is off")
+			} else {
+				fmt.Printf("keep-days is %d\n", r.KeepDays)
+			}
+			return nil
+		}
+		if len(rest) != 2 {
+			return fmt.Errorf("usage: claude-sessions config keep-days <N|off>")
+		}
+		days := 0
+		if rest[1] != "off" {
+			if days, err = strconv.Atoi(rest[1]); err != nil {
+				return fmt.Errorf("usage: claude-sessions config keep-days <N|off>: %q is not a number of days", rest[1])
+			}
+			if days < archive.MinKeepDays {
+				return fmt.Errorf("keep-days must be at least %d", archive.MinKeepDays)
+			}
+			if days > archive.MaxKeepDays {
+				return fmt.Errorf("keep-days must be at most %d", archive.MaxKeepDays)
+			}
+		}
+		r.KeepDays = days
+		if err := archive.SaveRetention(dest, r); err != nil {
+			return err
+		}
+		if days == 0 {
+			fmt.Println("keep-days is off: nothing is deleted for its age.")
+		} else {
+			fmt.Printf("keep-days is %d: every computer deletes archived conversations idle longer, except those on the keep list.\n", days)
+		}
+		return nil
+
 	default:
-		return fmt.Errorf("unknown config action %q (try: show, set-destination, map, unmap, set-machine, work, work-placement, map-folder, unmap-folder, exclude-folder, unexclude-folder)", action)
+		return fmt.Errorf("unknown config action %q (try: show, set-destination, map, unmap, set-machine, work, work-placement, map-folder, unmap-folder, exclude-folder, unexclude-folder, keep, unkeep, keep-days)", action)
 	}
+}
+
+// retentionDest is the archive whose retention.json config edits. It must exist: the
+// file is shared, and writing it into a folder that is not there would create one.
+func retentionDest(root string) (string, error) {
+	dest, _, err := archive.ResolveDestination(root, "")
+	if err != nil {
+		return "", err
+	}
+	if dest == "" {
+		return "", fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
+	}
+	if st, err := os.Stat(dest); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("the archive %s is not reachable", dest)
+	}
+	return dest, nil
+}
+
+func listKeep(dest string) error {
+	r, err := archive.LoadRetention(dest)
+	if err != nil {
+		return err
+	}
+	if len(r.Keep) == 0 {
+		fmt.Println("nothing is kept")
+	}
+	for _, e := range r.Keep {
+		fmt.Println(keepLabel(e))
+	}
+	return nil
+}
+
+func keepLabel(e archive.KeepEntry) string {
+	switch {
+	case e.Session != "":
+		return "conversation " + e.Session
+	case e.Remote != "":
+		return "project with remote " + e.Remote
+	}
+	return "project folder " + e.Leaf
+}
+
+// sameEntry reports whether two keep entries name the same thing.
+func sameEntry(a, b archive.KeepEntry) bool {
+	return a.Session != "" && strings.EqualFold(a.Session, b.Session) ||
+		a.Leaf != "" && strings.EqualFold(a.Leaf, b.Leaf) ||
+		identity.SameRemote(a.Remote, b.Remote)
+}
+
+// keepEntryFor is the entry arg names: a conversation, or a project with its buckets.
+func keepEntryFor(dest, arg string) (archive.KeepEntry, []string, map[string]archive.Project, error) {
+	if claude.IsSessionID(arg) {
+		return archive.KeepEntry{Session: strings.ToLower(arg)}, nil, nil, nil
+	}
+	projects, err := projectsOf(dest)
+	if err != nil {
+		return archive.KeepEntry{}, nil, nil, err
+	}
+	e, buckets, err := matchProject(projects, arg)
+	return e, buckets, projects, err
+}
+
+func keepOne(dest, arg string) error {
+	r, err := archive.LoadRetention(dest)
+	if err != nil {
+		return err
+	}
+	e, buckets, projects, err := keepEntryFor(dest, arg)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(r.Keep, func(k archive.KeepEntry) bool { return sameEntry(k, e) }) {
+		fmt.Printf("Already kept: %s\n", keepLabel(e))
+	} else {
+		r.Keep = append(r.Keep, e)
+		if err := archive.SaveRetention(dest, r); err != nil {
+			return err
+		}
+		fmt.Printf("Kept: %s\n", keepLabel(e))
+	}
+	for _, b := range buckets {
+		p := projects[b]
+		fmt.Printf("  %s  %s  %s\n", b, p.Owner(), p.Path)
+	}
+	if len(buckets) > 0 {
+		fmt.Println("A bucket of this project that a computer adds later is kept too.")
+	}
+	return nil
+}
+
+// unkeepOne removes the entry arg names. The entry as listed (a remote or a folder
+// name) is tried first, so one for a project no longer in the archive can still go.
+func unkeepOne(dest, arg string) error {
+	r, err := archive.LoadRetention(dest)
+	if err != nil {
+		return err
+	}
+	direct := archive.KeepEntry{Session: arg, Remote: arg, Leaf: arg}
+	e := direct
+	if !slices.ContainsFunc(r.Keep, func(k archive.KeepEntry) bool { return sameEntry(k, direct) }) {
+		if e, _, _, err = keepEntryFor(dest, arg); err != nil {
+			return err
+		}
+	}
+	n := len(r.Keep)
+	r.Keep = slices.DeleteFunc(r.Keep, func(k archive.KeepEntry) bool { return sameEntry(k, e) })
+	if len(r.Keep) == n {
+		return fmt.Errorf("%s is not on the keep list", arg)
+	}
+	if err := archive.SaveRetention(dest, r); err != nil {
+		return err
+	}
+	fmt.Printf("No longer kept: %s\n", arg)
+	return nil
 }
 
 // saveWork loads the config, applies change and saves it.
@@ -386,7 +570,7 @@ func saveWork(root string, change func(*archive.Config), msg string) error {
 // read as flags: a bucket name on macOS or Linux starts with "-", and the command
 // import prints for it failed exactly as printed. After the action only --claude-dir
 // is a flag.
-var positionalActions = []string{"map", "unmap", "set-machine", "work", "work-placement", "map-folder", "unmap-folder", "exclude-folder", "unexclude-folder"}
+var positionalActions = []string{"map", "unmap", "set-machine", "work", "work-placement", "map-folder", "unmap-folder", "exclude-folder", "unexclude-folder", "keep", "unkeep", "keep-days"}
 
 func positionalAfterAction(args []string) []string {
 	for i, a := range args {
