@@ -405,3 +405,69 @@ func TestUnzipUpperCaseIDWithLowerCaseKey(t *testing.T) {
 		t.Fatal("not restored")
 	}
 }
+
+// symlink plants a link, or skips where links need rights the runner lacks.
+func symlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+}
+
+// A link planted at <id> or under it in the shared archive must not take a write
+// outside the bucket: Unzip refuses before writing anything, and the zip stays.
+func TestUnzipRefusesALinkedFolder(t *testing.T) {
+	for name, at := range map[string]string{"id": testID, "subfolder": filepath.Join(testID, "subagents")} {
+		t.Run(name, func(t *testing.T) {
+			dir, _ := bucket(t)
+			if _, err := Zip(dir, testID); err != nil {
+				t.Fatal(err)
+			}
+			outside := t.TempDir()
+			os.MkdirAll(filepath.Dir(filepath.Join(dir, at)), 0o755)
+			symlink(t, outside, filepath.Join(dir, at))
+			if err := Unzip(dir, testID); err == nil {
+				t.Fatal("unzipped through a link")
+			}
+			if ents, _ := os.ReadDir(outside); len(ents) != 0 {
+				t.Fatalf("wrote %d file(s) through the link", len(ents))
+			}
+			if !exists(Path(dir, testID)) || exists(filepath.Join(dir, testID+".jsonl")) {
+				t.Fatal("the zip went, or the transcript was written before the refusal")
+			}
+		})
+	}
+}
+
+// A conversation whose folder is a link is not zipped: its zip could never be unzipped.
+func TestZipRefusesALinkedFolder(t *testing.T) {
+	dir := t.TempDir()
+	put(t, filepath.Join(dir, testID+".jsonl"), turn(1), time.Now())
+	outside := t.TempDir()
+	put(t, filepath.Join(outside, "x.txt"), "not ours", time.Now())
+	symlink(t, outside, filepath.Join(dir, testID))
+	if _, err := Zip(dir, testID); err == nil {
+		t.Fatal("zipped a conversation whose folder is a link")
+	}
+	if exists(Path(dir, testID)) || !exists(filepath.Join(dir, testID+".jsonl")) || !exists(filepath.Join(outside, "x.txt")) {
+		t.Fatal("touched")
+	}
+}
+
+// Only ASCII case is folded: Unicode folding takes <id>.jſonl for <id>.jsonl, and
+// Unzip then wrote it and deleted the zip.
+func TestUnzipFoldsASCIICaseOnly(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create(testID + ".jſonl")
+	w.Write([]byte(turn(1)))
+	zw.Close()
+	os.WriteFile(Path(dir, testID), buf.Bytes(), 0o644)
+	if err := Unzip(dir, testID); err == nil || !exists(Path(dir, testID)) || exists(filepath.Join(dir, testID+".jſonl")) {
+		t.Fatalf("err = %v", err)
+	}
+	if !mine(strings.ToUpper(testID), testID+".jsonl") || !mine(testID, strings.ToUpper(testID)+"/subagents/a.jsonl") {
+		t.Fatal("ASCII case is no longer folded")
+	}
+}

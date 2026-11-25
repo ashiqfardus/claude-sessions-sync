@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/identity"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/render"
 )
@@ -285,6 +287,9 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	repointed := loadRepointed(root)
 	repointedWas := len(repointed)
 	held, holders := loadHeld(root), sessionHolders(dest)
+	// Zipped copies the held check compares with are unpacked here, gone when push returns.
+	held.tmp, _ = os.MkdirTemp("", "claude-sessions-held-")
+	defer os.RemoveAll(held.tmp)
 	shard.SkipsHeld = true
 	// Transcripts to look for work folders in: those changed since the last full push
 	// - not only those copied now, as the per-reply hook has usually copied them.
@@ -348,9 +353,13 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 				continue
 			}
 
-			c, u := archiveExtras(b.Dir, destBucket, t.ID, t.Extras, dryRun, logf)
-			res.Copied += c
-			res.Unchanged += u
+			if outcome == keptZipped {
+				res.Unchanged += len(t.Extras) // in the zip as they are here
+			} else {
+				c, u := archiveExtras(b.Dir, destBucket, t.ID, t.Extras, dryRun, logf)
+				res.Copied += c
+				res.Unchanged += u
+			}
 
 			sessions = append(sessions, archive.Session{
 				Bucket: b.Name, Project: summary.Cwd, ID: t.ID,
@@ -660,7 +669,7 @@ func keepArchivedHistory(dest string, shard *archive.Shard, sessions []archive.S
 				if have[s.Bucket+"/"+s.ID] || !archive.ValidName(s.Bucket) || !archive.ValidName(s.ID) {
 					continue
 				}
-				if _, err := os.Stat(filepath.Join(archive.ProjectsDir(dest), s.Bucket, s.ID+".jsonl")); err == nil {
+				if _, err := os.Stat(filepath.Join(archive.ProjectsDir(dest), s.Bucket, s.ID+".jsonl")); err == nil || zippedCopy(dest, s.Bucket, s.ID) != "" {
 					sessions = append(sessions, s)
 				}
 			}
@@ -677,7 +686,8 @@ const (
 	keptFork
 	keptShorter
 	copyFailed
-	heldOther // another bucket's copy holds all of it: nothing written
+	heldOther  // another bucket's copy holds all of it: nothing written
+	keptZipped // the archived copy is zipped, and holds it and its folder as they are
 )
 
 // archiveTranscript brings the archived copy of one local transcript up to date. The
@@ -691,11 +701,28 @@ const (
 // machine's folder for it. held, nil in the per-reply hook, remembers those.
 func archiveTranscript(dest, bucket, id, path string, srcInfo os.FileInfo, pushed map[string]archive.Session, repointed map[string]repointedStat, held *heldRecord, others []string, dryRun bool, logf func(string, ...any)) archiveOutcome {
 	target := filepath.Join(archive.ProjectsDir(dest), bucket, filepath.Base(path))
-	dstInfo := archive.StatOrNil(target)
 	if held.hit(dest, bucket, id, srcInfo) {
 		delete(repointed, bucket+"/"+id)
 		return heldOther
 	}
+	// A loose copy is never written beside a zipped one unread. A zip holding this one
+	// as it is stays; any other is unzipped, and the rules below judge the loose copy.
+	// One whose transcript diverged from the loose copy stays beside it: no branch lost.
+	if zp := zippedCopy(dest, bucket, id); zp != "" {
+		if zipHolds(zp, id, path, srcInfo) {
+			return keptZipped
+		}
+		if !dryRun {
+			switch err := convzip.Unzip(filepath.Dir(target), id); {
+			case errors.Is(err, convzip.ErrDiverged):
+				logf("WARN: %s: %v; the zip is kept beside the loose copy", id, err)
+			case err != nil && !errors.Is(err, os.ErrNotExist):
+				logf("WARN: %s: %v", id, err)
+				return copyFailed
+			}
+		}
+	}
+	dstInfo := archive.StatOrNil(target)
 
 	// Rewritten by import --repoint and unchanged since: this machine's paths, so it
 	// replaces the archived copy once, shorter or not - but only over the same turns or
@@ -789,6 +816,7 @@ type heldStat struct {
 type heldRecord struct {
 	m     map[string]heldStat
 	dirty bool
+	tmp   string // where covers unpacks zipped copies; "" for the OS temp folder
 }
 
 func heldPath(root string) string {
@@ -826,15 +854,19 @@ func (h *heldRecord) hit(dest, bucket, id string, src os.FileInfo) bool {
 		return false
 	}
 	s := h.m[bucket+"/"+id]
-	in := archive.StatOrNil(archivedCopy(dest, s.In, id))
-	return in != nil && in.Size() == s.InSize && archive.SameMTime(in.ModTime(), s.InMTime)
+	size, mtime, ok := copyStat(dest, s.In, id)
+	return ok && size == s.InSize && archive.SameMTime(mtime, s.InMTime)
 }
 
 // leftTo reports whether the transcript is unchanged since push left it to a copy that
 // is still archived. That copy may have grown since: it is only replaced by one with
 // more.
 func (h *heldRecord) leftTo(dest, bucket, id string, src os.FileInfo) bool {
-	return h.known(bucket, id, src) && archivedCopy(dest, h.m[bucket+"/"+id].In, id) != ""
+	if !h.known(bucket, id, src) {
+		return false
+	}
+	in := h.m[bucket+"/"+id].In
+	return archivedCopy(dest, in, id) != "" || zippedCopy(dest, in, id) != ""
 }
 
 // known reports whether the transcript is unchanged since push found it held: its
@@ -859,16 +891,25 @@ func (h *heldRecord) covers(dest, bucket, id, path string, src os.FileInfo, othe
 		h.dirty = true
 	}
 	for _, other := range others {
-		if p := archivedCopy(dest, other, id); p != "" {
-			in := archive.StatOrNil(p)
-			// The folder too: a copy archived by a build that left subagents behind
-			// lacks this one's.
-			if r := claude.Compare(path, p); in != nil && (r == claude.Same || r == claude.Behind) &&
-				folderHeld(filepath.Join(filepath.Dir(path), id), filepath.Join(archive.ProjectsDir(dest), other, id)) == nil {
-				h.m[key] = heldStat{Size: src.Size(), MTime: src.ModTime(), In: other, InSize: in.Size(), InMTime: in.ModTime()}
-				h.dirty = true
-				return true
-			}
+		size, mtime, ok := copyStat(dest, other, id)
+		if !ok {
+			continue
+		}
+		// A zipped copy is compared unpacked, its folder beside it; a loose one in place.
+		p, done, err := convzip.Materialize(filepath.Join(archive.ProjectsDir(dest), other), id, h.tmp)
+		if err != nil {
+			continue
+		}
+		// The folder too: a copy archived by a build that left subagents behind
+		// lacks this one's.
+		r := claude.Compare(path, p)
+		held := (r == claude.Same || r == claude.Behind) &&
+			folderHeld(filepath.Join(filepath.Dir(path), id), filepath.Join(filepath.Dir(p), id)) == nil
+		done()
+		if held {
+			h.m[key] = heldStat{Size: src.Size(), MTime: src.ModTime(), In: other, InSize: size, InMTime: mtime}
+			h.dirty = true
+			return true
 		}
 	}
 	return false
@@ -887,16 +928,83 @@ func archivedCopy(dest, bucket, id string) string {
 	return p
 }
 
+// zippedCopy is the zip of session id in bucket, "" unless it is a plain file there by
+// its exact name: a sync client's conflict copy is not one.
+func zippedCopy(dest, bucket, id string) string {
+	if !archive.ValidName(bucket) || !claude.IsSessionID(id) {
+		return ""
+	}
+	p := convzip.Path(filepath.Join(archive.ProjectsDir(dest), bucket), id)
+	if st, err := os.Lstat(p); err != nil || !st.Mode().IsRegular() {
+		return ""
+	}
+	return p
+}
+
+// copyStat is the size and time of bucket's archived transcript of id, loose or zipped.
+// A zip's come from its index alone: a held copy is checked again without unpacking it.
+func copyStat(dest, bucket, id string) (int64, time.Time, bool) {
+	if p := archivedCopy(dest, bucket, id); p != "" {
+		if st, err := os.Stat(p); err == nil {
+			return st.Size(), st.ModTime(), true
+		}
+	}
+	if zp := zippedCopy(dest, bucket, id); zp != "" {
+		if ents, err := convzip.Entries(zp); err == nil {
+			if e, ok := ents[id+".jsonl"]; ok {
+				return e.Size, e.ModTime, true
+			}
+		}
+	}
+	return 0, time.Time{}, false
+}
+
+// zipHolds reports whether the zip, by its index, holds the local transcript at path and
+// every file of its folder at their sizes and times: what a loose copy is judged by.
+func zipHolds(zp, id, path string, src os.FileInfo) bool {
+	ents, err := convzip.Entries(zp)
+	if err != nil {
+		return false
+	}
+	same := func(name string, st os.FileInfo) bool {
+		e, ok := ents[name]
+		return ok && e.Size == st.Size() && archive.SameMTime(e.ModTime, st.ModTime())
+	}
+	if !same(id+".jsonl", src) {
+		return false
+	}
+	dir := filepath.Join(filepath.Dir(path), id)
+	for _, rel := range claude.SessionFiles(dir) {
+		if st, err := os.Stat(filepath.Join(dir, rel)); err == nil && !same(id+"/"+filepath.ToSlash(rel), st) {
+			return false
+		}
+	}
+	return true
+}
+
 // sessionHolders lists, by lower-cased session id, the archive buckets holding a
-// transcript of it.
+// transcript of it, loose or zipped.
 func sessionHolders(dest string) map[string][]string {
 	out := map[string][]string{}
 	names, _ := archive.BucketNames(dest)
 	for _, b := range names {
 		entries, _ := os.ReadDir(filepath.Join(archive.ProjectsDir(dest), b))
+		loose, zipped := map[string]bool{}, []string{}
 		for _, e := range entries {
-			if id, ok := strings.CutSuffix(e.Name(), ".jsonl"); ok && e.Type().IsRegular() && claude.IsSessionID(id) {
+			if !e.Type().IsRegular() {
+				continue
+			}
+			if id, ok := strings.CutSuffix(e.Name(), ".jsonl"); ok && claude.IsSessionID(id) {
 				out[strings.ToLower(id)] = append(out[strings.ToLower(id)], b)
+				loose[strings.ToLower(id)] = true
+			} else if id, ok := strings.CutSuffix(e.Name(), convzip.Suffix); ok && claude.IsSessionID(id) {
+				zipped = append(zipped, strings.ToLower(id))
+			}
+		}
+		// A zip beside its loose transcript is the same copy: the bucket is listed once.
+		for _, id := range zipped {
+			if !loose[id] {
+				out[id] = append(out[id], b)
 			}
 		}
 	}
