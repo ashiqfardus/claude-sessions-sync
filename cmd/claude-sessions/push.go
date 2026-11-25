@@ -1004,6 +1004,9 @@ func (z *zipRecord) judge(dest, bucket, id, zp, path string, src os.FileInfo, dr
 	return keptZipped, true
 }
 
+// unzip is convzip.Unzip, which tests replace to have the zip go mid-run.
+var unzip = convzip.Unzip
+
 // zipIdle is how long every archived file of a conversation, and this machine's
 // transcript of it, must have gone unchanged before push zips it.
 const zipIdle = 30 * 24 * time.Hour
@@ -1176,7 +1179,7 @@ each:
 					continue
 				}
 				if errors.Is(err, convzip.ErrNotHeld) {
-					err = convzip.Unzip(dir, id)
+					err = unzip(dir, id)
 				}
 				switch {
 				case errors.Is(err, convzip.ErrDiverged):
@@ -1187,7 +1190,7 @@ each:
 					logf("WARN: %s: %v; the zip is kept, and the loose files left stay beside it", id, err)
 					remember()
 					continue
-				case errors.Is(err, os.ErrNotExist):
+				case errors.Is(err, os.ErrNotExist) && zippedCopy(dest, bucket, id) == "":
 					logf("WARN: %s: the zip went while it was read; the loose files beside it are kept", id)
 					remember()
 					continue

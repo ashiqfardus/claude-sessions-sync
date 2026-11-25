@@ -385,8 +385,16 @@ func TestQuietSweepFirstSightReadsNoZip(t *testing.T) {
 	if log := pushLog(t, mac); strings.Contains(log, "WARN") {
 		t.Errorf("the confirming sweep read the zip:\n%s", log)
 	}
-	if !strings.Contains(mustRead(t, bothSeenFile(mac)), `"confirmed"`) {
-		t.Errorf("the pair was not confirmed:\n%s", mustRead(t, bothSeenFile(mac)))
+	var seen map[string]struct {
+		Confirmed time.Time `json:"confirmed"`
+	}
+	if err := json.Unmarshal([]byte(mustRead(t, bothSeenFile(mac))), &seen); err != nil || len(seen) != 1 {
+		t.Fatalf("the record cannot be read (%v):\n%s", err, mustRead(t, bothSeenFile(mac)))
+	}
+	for _, e := range seen {
+		if e.Confirmed.IsZero() {
+			t.Errorf("the pair was not confirmed:\n%s", mustRead(t, bothSeenFile(mac)))
+		}
 	}
 }
 

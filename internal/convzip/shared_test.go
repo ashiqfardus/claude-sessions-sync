@@ -5,6 +5,7 @@ package convzip
 // Nothing either does may take the last copy of a turn.
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -278,4 +279,22 @@ func TestUnzipKeepsAZipReplacedMeanwhile(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dir, testID+".jsonl")); string(b) != turn(1)+turn(2)+turn(3) {
 		t.Errorf("the loose transcript was not written: %q", b)
 	}
+}
+
+// The zip goes while Unzip writes the entries - another machine removed it: Unzip says
+// so, rather than success, and the loose files written stay.
+func TestUnzipSaysWhenItsZipWentMeanwhile(t *testing.T) {
+	dir, _ := bucket(t)
+	if _, err := Zip(dir, testID); err != nil {
+		t.Fatal(err)
+	}
+	defer func(old func(string, string) error) { copyFile = old }(copyFile)
+	copyFile = func(src, dst string) error {
+		os.Remove(Path(dir, testID))
+		return archive.CopyFile(src, dst)
+	}
+	if err := Unzip(dir, testID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v, want os.ErrNotExist", err)
+	}
+	holdsEverything(t, dir)
 }

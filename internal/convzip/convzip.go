@@ -394,13 +394,15 @@ func TranscriptOnly(bucketDir, id, tmpDir string) (transcript string, cleanup fu
 // changes nothing and returns ErrDiverged. Any refused or foreign entry fails it, and
 // then the zip stays. Entries are unpacked outside the bucket and moved in one file at
 // a time through a temp beside the target. A zip replaced meanwhile - another
-// machine's, synced in - is not the one read, and stays beside the loose files written.
+// machine's, synced in - is not the one read, and stays beside the loose files written;
+// one removed meanwhile is os.ErrNotExist, the loose files written staying too.
 func Unzip(bucketDir, id string) error {
 	zp := Path(bucketDir, id)
 	read, err := os.Lstat(zp)
 	if err != nil || !read.Mode().IsRegular() {
 		return os.ErrNotExist
 	}
+	os.SameFile(read, read) // Windows reads the file's ID at the first SameFile, by path: now, from the zip read
 	dir, files, err := extract(zp, "", id, false)
 	if err != nil {
 		return err
@@ -437,7 +439,11 @@ func Unzip(bucketDir, id string) error {
 			return err
 		}
 	}
-	if now, err := os.Lstat(zp); err != nil || !os.SameFile(read, now) || now.Size() != read.Size() || !now.ModTime().Equal(read.ModTime()) {
+	now, err := os.Lstat(zp)
+	if err != nil {
+		return os.ErrNotExist // gone meanwhile: another machine is acting on it
+	}
+	if !os.SameFile(read, now) || now.Size() != read.Size() || !now.ModTime().Equal(read.ModTime()) {
 		return nil // the sweep settles the pair, once it has stood
 	}
 	return os.Remove(zp)
