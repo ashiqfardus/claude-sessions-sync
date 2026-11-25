@@ -50,8 +50,9 @@ type prunePlan struct {
 	cutoff time.Time           // zero without --older-than
 	local  map[string][]string // this machine's own copies, by id
 
-	cut  string // the id the age rule's budget stopped it before; "" when it went through
-	left int    // how many it left for the next run, cut included
+	// The age rule's budget, which ends both planning and the checks before recording.
+	deadline time.Time // zero for none
+	cut      string    // the id planning stopped before; "" when it went through
 }
 
 // ageScan is how the age rule selects: unattended, once a day, on an archive that may be
@@ -251,15 +252,18 @@ func planWith(root, dest string, sel pruneSel, ret archive.Retention, now time.T
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	start, mode := time.Now(), dateListed
+	mode := dateListed
 	if scan != nil {
 		mode = dateQuick
+		if scan.budget > 0 {
+			plan.deadline = time.Now().Add(scan.budget)
+		}
 		k := sort.SearchStrings(ids, scan.from)
 		ids = append(slices.Clone(ids[k:]), ids[:k]...)
 	}
 	for i, id := range ids {
-		if scan != nil && scan.budget > 0 && i > 0 && time.Since(start) >= scan.budget {
-			plan.cut, plan.left = id, len(ids)-i
+		if i > 0 && pastDeadline(plan) {
+			plan.cut = id
 			break
 		}
 		buckets := holders[id]
@@ -316,9 +320,8 @@ func planWith(root, dest string, sel pruneSel, ret archive.Retention, now time.T
 // cutoff dates the conversation by that time, too young to select, and nothing more of
 // it is read.
 func datePrune(dest string, it *pruneItem, local []string, now time.Time, mode dateMode, cutoff time.Time) bool {
-	dated, young := true, false
-	var newest func() string // the newest turn's uuid, read only once it is known
-	use := func(at time.Time, uuid func() string) {
+	dated, young, newest := true, false, ""
+	use := func(at time.Time, uuid string) {
 		if at.IsZero() || at.After(now) {
 			dated = false
 		} else if at.After(it.LastAt) {
@@ -334,7 +337,7 @@ func datePrune(dest string, it *pruneItem, local []string, now time.Time, mode d
 	}
 	tooYoung := func(st os.FileInfo) bool {
 		if mode == dateQuick && st.ModTime().After(cutoff) {
-			use(st.ModTime(), nil)
+			use(st.ModTime(), "")
 			young = true
 		}
 		return young
@@ -347,11 +350,11 @@ func datePrune(dest string, it *pruneItem, local []string, now time.Time, mode d
 		if err == nil && tooYoung(st) {
 			return
 		}
-		at, ok := lastTurnTime(p)
-		if !ok && err == nil {
+		uuid, at := lastTurn(p) // one read: both name the same turn while it grows
+		if at.IsZero() && err == nil {
 			at = st.ModTime()
 		}
-		use(at, func() string { return lastUUID(p) })
+		use(at, uuid)
 	}
 	for _, b := range it.Buckets {
 		p, zp := archivedCopy(dest, b, it.ID), zippedCopy(dest, b, it.ID)
@@ -364,27 +367,30 @@ func datePrune(dest string, it *pruneItem, local []string, now time.Time, mode d
 		if zp != "" && !young {
 			switch st, err := size(zp); {
 			case err != nil:
-				use(time.Time{}, nil)
+				use(time.Time{}, "")
 			case mode == dateQuick:
 				if !tooYoung(st) {
-					use(st.ModTime(), nil) // when it was zipped
+					use(st.ModTime(), "") // its last activity: Zip stamps it so
 				}
 			case mode == dateExact:
-				at, uuid := zippedLastTurn(zp, it.ID)
-				use(at, func() string { return uuid })
+				use(zippedLastTurn(zp, it.ID))
 			default:
-				use(zippedTurnTime(zp, it.ID), nil)
+				use(zippedTurnTime(zp, it.ID), "")
 			}
 		}
-		for _, p := range forkCopies(dest, b, it.ID) {
+		forks, err := forkCopies(dest, b, it.ID)
+		if err != nil {
+			dated = false // a fork it cannot list may hold the newest turn
+		}
+		for _, p := range forks {
 			loose(p)
 		}
 	}
 	for _, p := range local {
 		loose(p)
 	}
-	if newest != nil && !young {
-		it.LastUUID = newest()
+	if !young {
+		it.LastUUID = newest
 	}
 	return dated && !it.LastAt.IsZero()
 }
@@ -407,18 +413,15 @@ func zippedLastTurn(zp, id string) (time.Time, string) {
 		return time.Time{}, ""
 	}
 	defer done()
-	at, ok := lastTurnTime(p)
-	if st, err := os.Stat(p); !ok && err == nil {
+	uuid, at := lastTurn(p)
+	if st, err := os.Stat(p); at.IsZero() && err == nil {
 		at = st.ModTime() // the entry's: extracting keeps it
 	}
-	return at, lastUUID(p)
+	return at, uuid
 }
 
-// How prune reads a transcript's last turn; tests count the reads.
-var (
-	lastTurnTime = claude.LastTurnTime
-	lastUUID     = claude.LastUUID
-)
+// lastTurn is how prune reads a transcript's last turn; tests count the reads.
+var lastTurn = claude.LastTurn
 
 // zippedTurnTime is the zip's transcript entry's modification time, zero for none.
 func zippedTurnTime(zp, id string) time.Time {
@@ -437,26 +440,28 @@ func zippedTurnTime(zp, id string) time.Time {
 func forkDir(dest, bucket, id string) string { return filepath.Join(dest, "forks", bucket, id) }
 
 // forkCopies are the forks kept beside bucket's copy of id: forks/<bucket>/<id>/<machine>.jsonl.
-func forkCopies(dest, bucket, id string) []string {
+// A folder there that cannot be read is an error: it may hold one.
+func forkCopies(dest, bucket, id string) ([]string, error) {
 	dir := forkDir(dest, bucket, id)
 	if !archive.ThroughRealDirs(dest, dir) || !archive.IsRealDir(dir) {
-		return nil
+		return nil, nil
 	}
+	ents, err := os.ReadDir(dir)
 	var out []string
-	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
 		if e.Type().IsRegular() && strings.HasSuffix(e.Name(), ".jsonl") {
 			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}
-	return out
+	return out, err
 }
 
 // conversationSize is every copy's transcript, zip, folder, page and forks.
 func conversationSize(dest string, it pruneItem) int64 {
 	var n int64
 	for _, b := range it.Buckets {
-		files := append(forkCopies(dest, b, it.ID), archivedCopy(dest, b, it.ID), zippedCopy(dest, b, it.ID))
+		forks, _ := forkCopies(dest, b, it.ID)
+		files := append(forks, archivedCopy(dest, b, it.ID), zippedCopy(dest, b, it.ID))
 		for _, p := range files {
 			if st, err := os.Lstat(p); p != "" && err == nil {
 				n += st.Size()
@@ -466,6 +471,16 @@ func conversationSize(dest string, it pruneItem) int64 {
 	}
 	return n
 }
+
+// pastDeadline reports whether the age rule's budget is spent. Its first conversation
+// is always read, so every run gets somewhere.
+func pastDeadline(plan prunePlan) bool {
+	return !plan.deadline.IsZero() && !time.Now().Before(plan.deadline)
+}
+
+// errOutOfTime marks the first conversation the age rule's budget left unchecked, and
+// so neither recorded nor deleted: where its next run starts.
+var errOutOfTime = errors.New("left for the next run")
 
 // applyPrune deletes what plan lists. The caller holds the local lock: push's age rule
 // runs it inside its own. It deletes nothing while a manifest or the deleted list cannot
@@ -477,6 +492,8 @@ func conversationSize(dest string, it pruneItem) int64 {
 // no longer datable - or by its exact date no longer older than the cutoff is reported
 // to fail and neither recorded nor deleted. The rest are recorded on the deleted list
 // with that exact date, set in plan.Remove too, then deleted: only the paths checked here.
+// Past plan's deadline it checks no more, reports the first left with errOutOfTime, and
+// records and deletes those checked.
 func applyPrune(dest string, plan prunePlan, now time.Time, fail func(pruneItem, error)) (deleted int, freed int64, err error) {
 	if plan.Unread != "" {
 		return 0, 0, fmt.Errorf("nothing deleted: %s. The computer it belongs to may upload them again", plan.Unread)
@@ -492,8 +509,14 @@ func applyPrune(dest string, plan prunePlan, now time.Time, fail func(pruneItem,
 	var ready []pruneItem
 	var checked [][]prunePath
 	var entries []archive.DeletedEntry
+	todo := len(plan.Remove)
 	for i := range plan.Remove {
 		it := &plan.Remove[i]
+		if i > 0 && pastDeadline(plan) {
+			todo = i
+			fail(*it, errOutOfTime)
+			break
+		}
 		paths, err := prunePaths(dest, *it)
 		if err == nil && len(paths) == 0 {
 			err = errNotFound
@@ -534,8 +557,8 @@ func applyPrune(dest string, plan prunePlan, now time.Time, fail func(pruneItem,
 		deleted++
 		freed += it.Size
 	}
-	if deleted < len(plan.Remove) {
-		err = fmt.Errorf("%d conversation(s) were not deleted", len(plan.Remove)-deleted)
+	if deleted < todo {
+		err = fmt.Errorf("%d conversation(s) were not deleted", todo-deleted)
 	}
 	return deleted, freed, err
 }
@@ -679,23 +702,23 @@ func prunedHere(d map[string]archive.DeletedEntry, id, path string) bool {
 // newer whatever their time. Otherwise by time - its last turn's, else its modification
 // time - no later than e's; one still to come is later, so the transcript is kept.
 func notNewer(e archive.DeletedEntry, path string) bool {
-	if e.LastUUID != "" {
-		if claude.LastUUID(path) == e.LastUUID {
-			return true
-		}
-		if claude.HasUUID(path, e.LastUUID) {
-			return false
-		}
+	uuid, at := claude.LastTurn(path)
+	if e.LastUUID != "" && uuid == e.LastUUID {
+		return true
 	}
-	at, ok := claude.LastTurnTime(path)
-	if !ok {
+	if at.IsZero() {
 		st, err := os.Stat(path)
 		if err != nil {
 			return false
 		}
 		at = st.ModTime()
 	}
-	return !at.After(e.LastAt)
+	if at.After(e.LastAt) {
+		return false
+	}
+	// No later by time: still newer when e's last turn is in it with turns after it,
+	// written by a clock behind. That reads all of it, so it comes last.
+	return e.LastUUID == "" || !claude.HasUUID(path, e.LastUUID)
 }
 
 // ageRuleEvery is how often the age rule runs on one computer: it dates every
@@ -756,29 +779,40 @@ func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget 
 	if err != nil {
 		return 0, err
 	}
-	if plan.cut != last.Next {
-		if err := savePruneLast(root, pruneRun{LastRun: now, Next: plan.cut}); err != nil {
+	plan.deadline = ageDeadline(plan.deadline)
+	next, failed := plan.cut, map[string]bool{}
+	if len(plan.Remove) > 0 {
+		deleted, _, err = applyPrune(dest, plan, now, func(it pruneItem, err error) {
+			if errors.Is(err, errOutOfTime) {
+				next = it.ID
+				return
+			}
+			failed[it.ID] = true
+			logf("WARN: %s: not pruned: %v", it.ID, err)
+		})
+		for _, it := range plan.Remove {
+			if it.ID == next {
+				break // the rest were left unchecked
+			}
+			if deleted > 0 && !failed[it.ID] {
+				logf("PRUNE: %s (%s, last message %s, %s)", it.ID, printable(it.Project), it.LastAt.Local().Format("2006-01-02"), mb(it.Size))
+			}
+		}
+	}
+	if next != last.Next {
+		if err := savePruneLast(root, pruneRun{LastRun: now, Next: next}); err != nil {
 			logf("WARN: %s: %v", pruneLastPath(root), err)
 		}
 	}
-	if plan.cut != "" {
-		logf("KEEP-DAYS: stopped after %s with %d conversation(s) left for the next run", budget, plan.left)
-	}
-	if len(plan.Remove) == 0 {
-		return 0, nil
-	}
-	failed := map[string]bool{}
-	deleted, _, err = applyPrune(dest, plan, now, func(it pruneItem, err error) {
-		failed[it.ID] = true
-		logf("WARN: %s: not pruned: %v", it.ID, err)
-	})
-	for _, it := range plan.Remove {
-		if deleted > 0 && !failed[it.ID] {
-			logf("PRUNE: %s (%s, last message %s, %s)", it.ID, printable(it.Project), it.LastAt.Local().Format("2006-01-02"), mb(it.Size))
-		}
+	if next != "" {
+		logf("KEEP-DAYS: stopped after %s; the next run carries on from %s", budget, next)
 	}
 	return deleted, err
 }
+
+// ageDeadline is where the age rule's budget ends, from when planning started; tests
+// move it.
+var ageDeadline = func(d time.Time) time.Time { return d }
 
 func undoPrune(dest string, ids []string, now time.Time) error {
 	d, err := archive.LoadDeleted(dest)

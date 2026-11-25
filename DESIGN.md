@@ -372,10 +372,14 @@ not suggestions, and each gets a named test.
 8. **Bucket casing follows the string Claude saw, not the disk.** `E:\` has been
    recorded as `e--`. Always match an existing bucket case-insensitively before
    computing a new slug.
-9. **The archive is append-and-update only.** Never delete a transcript from the
-   destination; a session that ages out locally must survive in the archive. (Generated
-   files are another matter: `render --exclude` withdraws pages, `machines --forget`
-   removes a manifest and index file, and orphaned `.tmp-*` files are cleaned up.)
+9. **The archive keeps every conversation until its owner deletes one.** Nothing deletes
+   a transcript from the destination on its own; a session that ages out locally must
+   survive in the archive. Only `prune`, and the `keep-days` age rule the owner turns on,
+   delete conversations, each recorded on the deleted list so no computer uploads it
+   again. `clean` deletes only a copy another copy holds in whole, and zipping deletes
+   loose files only once the zip is read back. (Generated files are another matter:
+   `render --exclude` withdraws pages, `machines --forget` removes a manifest and index
+   file, and orphaned `.tmp-*` files are cleaned up.)
 10. **Idempotent install.** Re-running replaces our own hook rather than adding a
     second, preserves unrelated settings and other people's hooks, and backs up
     `settings.json` before touching it. (Verified in PowerShell against a seeded

@@ -137,6 +137,16 @@ func Zip(bucketDir, id string) (Result, error) {
 	if err := work.WritePack(dst, files); err != nil {
 		return Result{}, err
 	}
+	// The zip's own time is the conversation's last activity, not the day it was zipped:
+	// readers that date it by the file alone never take it for older than its last turn.
+	// Failing that it keeps the time now, which only makes it look younger.
+	newest := files[0].ModTime
+	for _, f := range files {
+		if f.ModTime.After(newest) {
+			newest = f.ModTime
+		}
+	}
+	_ = os.Chtimes(dst, newest, newest)
 	if err := verify(dst, files); err != nil {
 		os.Remove(dst)
 		return Result{}, fmt.Errorf("zip not trusted, files kept: %w", err)

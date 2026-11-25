@@ -584,7 +584,10 @@ claude-sessions prune <conversation id> --yes
   `deleted/<computer>.json`, and no computer uploads that conversation again. Continue
   it on a computer that still has it, and the new turns bring it back. One named by ID
   that cannot be dated (no turn times, and a file time still to come) is recorded with
-  no date, so a computer that still has it uploads it again.
+  no date, so a computer that still has it uploads it again. A computer whose sync app
+  delivers the deleted files before the deleted list may upload a pruned conversation
+  once more; once the list arrives it is left out of the index, and the age rule, or the
+  same `prune` run again, deletes it.
 - **Undo:** `claude-sessions prune --undo <conversation id>` takes it off that list, and
   any computer that still has it uploads it on its next push. With `keep-days` on, also
   `config keep` it, or the age rule deletes it again.
@@ -599,13 +602,14 @@ claude-sessions prune <conversation id> --yes
   most once a day, in the sweep or a `push` from a terminal, never in the hooks, and
   logs `PRUNE: <id> (<project>, last message <date>, <size>)` for each conversation it
   deletes. So as not to fetch the whole archive from a folder that downloads files on
-  demand, it picks conversations by their files' times, a zipped one by when it was
-  zipped, and reads a transcript only when its file is old enough. Each one it picks is
-  then dated from its own last message, as `prune` dates it, before it is deleted: it
-  may delete a conversation a little later than `prune --older-than` would, never
-  sooner. The sweep's run stops after 45 seconds and the next day's carries on from
-  there. `doctor`'s `prune` line shows the setting and
-  when it last ran there.
+  demand, it picks conversations by their files' times, a zip's being the newest of the
+  files in it, and reads a transcript only when its file is old enough. Each one it
+  picks is then dated from its own last message, as `prune` dates it, before it is
+  deleted: a file changed after the last message (a subagent's, a title) can make it
+  delete a conversation a little later than `prune --older-than` would, never sooner.
+  In the sweep, choosing and checking take at most 45 seconds a day; what it has not
+  reached waits for the next day's run, which starts there. `doctor`'s `prune` line
+  shows the setting and when it last ran there.
 - **Every computer must be updated first.** An older version would upload a pruned
   conversation again, so `prune --yes` and the age rule delete nothing until every
   computer that has pushed to the archive runs this version and has pushed once with
@@ -1082,7 +1086,7 @@ cannot overwrite each other's.
 A conversation nobody has touched for 30 days is stored as one file,
 `projects/<project>/<session-id>.conv.zip`: its transcript and everything in its
 `<session-id>/` folder, with their names and times, usually in about a third of the
-space. Push zips it once every archived file of it, and this computer's own transcript
+space. The zip's own date is the newest of theirs: when the conversation was last used. Push zips it once every archived file of it, and this computer's own transcript
 of it if there is one, has gone unchanged for 30 days, in the projects this computer
 pushes to. It reads the zip back and checks that it holds every turn before it deletes
 the loose files. A conversation over 250 MB stays loose. The hooks never zip, so the

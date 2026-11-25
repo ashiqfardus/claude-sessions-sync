@@ -93,6 +93,14 @@ func appendedTo(a, b string) bool {
 	return bytes.Equal(wa, wb)
 }
 
+// LastTurn is the uuid and timestamp of a transcript's last turn, from one read, so
+// both name the same turn while it grows: "" when it has none, and a zero time when
+// that turn has no timestamp that parses.
+func LastTurn(path string) (uuid string, at time.Time) {
+	uuid, at, _ = lastTurn(path)
+	return uuid, at
+}
+
 // LastUUID is the uuid of a transcript's last turn, "" when it has none.
 func LastUUID(path string) string {
 	u, _, _ := lastTurn(path)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -1488,15 +1489,21 @@ func TestAgeRuleRechecksAZipDatedBehind(t *testing.T) {
 	}
 }
 
+// tailReads counts prune's reads of each transcript's last turn, by file name, until the
+// test ends.
+func tailReads(t *testing.T) map[string]int {
+	t.Helper()
+	read, real := map[string]int{}, lastTurn
+	lastTurn = func(p string) (string, time.Time) { read[filepath.Base(p)]++; return real(p) }
+	t.Cleanup(func() { lastTurn = real })
+	return read
+}
+
 // R21: a transcript whose file changed after the cutoff is too young to select, and its
 // tail is not read; an old one's is.
 func TestAgeRuleReadsNoTailOfAYoungCopy(t *testing.T) {
 	claudeDir, dest := ageFixture(t)
-	read := map[string]int{}
-	realT, realU := lastTurnTime, lastUUID
-	lastTurnTime = func(p string) (time.Time, bool) { read[filepath.Base(p)]++; return realT(p) }
-	lastUUID = func(p string) string { read[filepath.Base(p)]++; return realU(p) }
-	defer func() { lastTurnTime, lastUUID = realT, realU }()
+	read := tailReads(t)
 	ret, err := archive.LoadRetention(dest)
 	if err != nil {
 		t.Fatal(err)
@@ -1524,7 +1531,7 @@ func TestAgeRuleBudgetLeavesTheRestForTheNextRun(t *testing.T) {
 	if n, err := runAgeRule(claudeDir, dest, ret, time.Now(), time.Nanosecond, logf); n != 0 || err != nil {
 		t.Fatalf("deleted %d, %v: want only the first conversation read", n, err)
 	}
-	if len(logged) != 1 || !strings.Contains(logged[0], "KEEP-DAYS: stopped after 1ns with 2 conversation(s) left for the next run") {
+	if len(logged) != 1 || !strings.Contains(logged[0], "KEEP-DAYS: stopped after 1ns; the next run carries on from "+oldWeb) {
 		t.Errorf("logged %q", logged)
 	}
 	if r, _ := pruneLast(claudeDir); r.Next != oldWeb || archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
@@ -1549,7 +1556,7 @@ func TestSweepPushStopsTheAgeRuleAtItsBudget(t *testing.T) {
 	defer func() { ageRuleBudget = real }()
 	pushHere(t, claudeDir, pushOpts{Quiet: true, Sweep: true})
 	log := mustReadFile(t, filepath.Join(claudeDir, "session-sync.log"))
-	if !strings.Contains(log, "KEEP-DAYS: stopped after 1ns with 2 conversation(s) left for the next run") ||
+	if !strings.Contains(log, "KEEP-DAYS: stopped after 1ns; the next run carries on from "+oldWeb) ||
 		archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
 		t.Errorf("the sweep's age rule did not stop at its budget:\n%s", log)
 	}
@@ -1576,5 +1583,139 @@ func TestHookPushRunsNoAgeRule(t *testing.T) {
 	pushHere(t, claudeDir, pushOpts{Quiet: true, Sweep: true})
 	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
 		t.Error("the sweep did not run the age rule")
+	}
+}
+
+// I1: a transcript's last turn uuid and time come from one read, so a turn landing at
+// that moment never leaves the deleted list naming a turn its time is not: push would
+// then skip the computer whose copy holds it, and it would never be uploaded again.
+func TestAgeRuleRecordsOneTurnWhileATranscriptGrows(t *testing.T) {
+	for _, before := range []bool{false, true} {
+		claudeDir, dest := ageFixture(t)
+		p := archivedCopy(dest, "-Users-you-dev-web-app", oldWeb)
+		other := mustReadFile(t, p) // what another computer had before continuing it
+		w3 := turns(time.Now(), "w3")
+		real, calls := lastTurn, 0
+		lastTurn = func(path string) (string, time.Time) {
+			if path != p {
+				return real(path)
+			}
+			if calls++; calls == 2 && before { // the exact check: the turn lands just before its read
+				writeFile(t, p, other+w3)
+			}
+			u, at := real(path)
+			if calls == 2 && !before { // ...or just after it
+				writeFile(t, p, other+w3)
+			}
+			return u, at
+		}
+		n, _ := ageRule(t, claudeDir, dest, t.Logf)
+		lastTurn = real
+		d, _ := archive.LoadDeleted(dest)
+		e, w2 := d[oldWeb], time.Now().AddDate(0, 0, -120).Add(time.Minute)
+		switch {
+		case before && (n != 0 || e.ID != ""):
+			t.Errorf("a turn landing before the check: deleted %d, recorded %+v", n, e)
+		case !before && (n != 1 || e.LastUUID != "w2" || e.LastAt.Sub(w2).Abs() > time.Second):
+			t.Errorf("a turn landing after the check: deleted %d, recorded %+v; want w2 with its own time", n, e)
+		}
+		continued := filepath.Join(t.TempDir(), oldWeb+".jsonl")
+		writeFile(t, continued, other+w3)
+		if prunedHere(d, oldWeb, continued) {
+			t.Errorf("before %v: push would never upload the computer whose copy holds w3", before)
+		}
+	}
+}
+
+// I2: the sweep's budget bounds the checks before recording too. Past it, those checked
+// are recorded and deleted, and the next run starts at the first one left.
+func TestAgeRuleStopsCheckingAtTheDeadline(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	conv(t, dest, "-Users-you-dev-api", oldAPI, time.Now().AddDate(0, 0, -200), "p1")
+	real := ageDeadline
+	ageDeadline = func(time.Time) time.Time { return time.Now() } // spent once planning is done
+	defer func() { ageDeadline = real }()
+	ret, err := archive.LoadRetention(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	n, err := runAgeRule(claudeDir, dest, ret, time.Now(), time.Hour, logf)
+	d, _ := archive.LoadDeleted(dest)
+	if n != 1 || err != nil || archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" ||
+		archivedCopy(dest, "-Users-you-dev-api", oldAPI) == "" || d[oldAPI].ID != "" {
+		t.Fatalf("deleted %d, %v, recorded %v: want only the first checked", n, err, d)
+	}
+	if r, _ := pruneLast(claudeDir); r.Next != oldAPI || !strings.Contains(strings.Join(logged, "\n"), "the next run carries on from "+oldAPI) {
+		t.Errorf("prune-last %+v, logged %q: want the next run to start at %s", r, logged, oldAPI)
+	}
+	if strings.Count(strings.Join(logged, "\n"), "PRUNE: ") != 1 {
+		t.Errorf("logged %q: want one PRUNE line, for the one deleted", logged)
+	}
+	ageDeadline = real
+	if n, err := runAgeRule(claudeDir, dest, ret, time.Now().Add(25*time.Hour), time.Hour, logf); n != 1 || err != nil ||
+		archivedCopy(dest, "-Users-you-dev-api", oldAPI) != "" {
+		t.Errorf("the next run deleted %d, %v: want the one left", n, err)
+	}
+}
+
+// The age rule never reads, let alone deletes, a kept conversation.
+func TestAgeRuleLeavesAKeptConversation(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	if out, err := captured(t, func() error { return cmdConfig([]string{"--claude-dir", claudeDir, "keep", oldWeb}) }); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	read := tailReads(t)
+	if n, err := ageRule(t, claudeDir, dest, func(string, ...any) {}); n != 0 || err != nil {
+		t.Errorf("deleted %d, %v", n, err)
+	}
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" || read[oldWeb+".jsonl"] != 0 {
+		t.Errorf("the kept conversation was read %d time(s), or deleted", read[oldWeb+".jsonl"])
+	}
+}
+
+// A retention.json that cannot be read deletes nothing; a prune-last.json that cannot
+// be read is a rule never run, and is written again.
+func TestAgeRuleBadSettingsFiles(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	writeFile(t, archive.RetentionPath(dest), `{"keepDays": 90, "keep": [`)
+	pushHere(t, claudeDir, pushOpts{})
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
+		t.Error("push deleted with a retention.json it cannot read")
+	}
+	if log := mustReadFile(t, filepath.Join(claudeDir, "session-sync.log")); !strings.Contains(log, "WARN: keep-days: ") {
+		t.Errorf("not logged:\n%s", log)
+	}
+
+	writeJSON(t, archive.RetentionPath(dest), archive.Retention{KeepDays: 90})
+	writeFile(t, pruneLastPath(claudeDir), "not json")
+	pushHere(t, claudeDir, pushOpts{})
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
+		t.Error("a prune-last.json it cannot read stopped the age rule")
+	}
+	if r, ok := pruneLast(claudeDir); !ok || time.Since(r.LastRun) > time.Minute {
+		t.Errorf("prune-last.json not written again: %+v %v", r, ok)
+	}
+}
+
+// A fork folder that cannot be listed may hold the newest turn: that conversation cannot
+// be dated this run, and is not deleted.
+func TestPruneSkipsAConversationWithAnUnreadableFork(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a folder this user cannot list")
+	}
+	claudeDir, dest := ageFixture(t)
+	forks := forkDir(dest, "-Users-you-dev-web-app", oldWeb)
+	writeFile(t, filepath.Join(forks, "LAP-2.jsonl"), turns(time.Now().AddDate(0, 0, -1), "w1", "f1"))
+	if err := os.Chmod(forks, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(forks, 0o755) })
+	if got := planned(t, claudeDir, dest, pruneSel{OlderThan: 90}, archive.Retention{}); len(got) != 0 {
+		t.Errorf("prune --older-than 90d: %v", got)
+	}
+	if n, _ := ageRule(t, claudeDir, dest, func(string, ...any) {}); n != 0 || archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
+		t.Errorf("the age rule deleted %d", n)
 	}
 }

@@ -484,3 +484,21 @@ func TestUnzipFoldsASCIICaseOnly(t *testing.T) {
 		t.Fatal("ASCII case is no longer folded")
 	}
 }
+
+// R23: a zip's own time is the newest of the files it packs - the conversation's last
+// activity - not the time it was zipped, so a reader dating it by the file alone never
+// takes it for older than its last turn.
+func TestZipTakesTheNewestFilesTime(t *testing.T) {
+	dir, mt := bucket(t)
+	newest := mt.Add(time.Hour) // a subagent that ran after the last line of the transcript
+	if err := os.Chtimes(filepath.Join(dir, testID, "subagents", "agent-a.jsonl"), newest, newest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Zip(dir, testID); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(Path(dir, testID))
+	if err != nil || !st.ModTime().Equal(newest) {
+		t.Errorf("zip file time %v (%v), want the newest packed file's, %v", st.ModTime(), err, newest)
+	}
+}
