@@ -227,7 +227,7 @@ func planPrune(root, dest string, sel pruneSel, ret archive.Retention, now time.
 			continue
 		}
 		it := pruneItem{ID: id, Buckets: buckets}
-		dated := datePrune(dest, &it, local[id])
+		dated := datePrune(dest, &it, local[id], now)
 		if sel.OlderThan > 0 {
 			// A conversation only in buckets no manifest lists has no identity a keep
 			// entry could name, so age alone never selects it.
@@ -260,19 +260,27 @@ func planPrune(root, dest string, sel pruneSel, ret archive.Retention, now time.
 }
 
 // datePrune sets it.LastAt to the newest last turn of any copy - loose, zipped, forked,
-// or this machine's own - and LastUUID to that turn's. A zipped copy is dated by its
-// transcript entry's modification time, from the zip's index alone: never before its
-// last turn, so the conversation can only look younger. It reports false when any copy
-// cannot be dated: the conversation may then be younger than it looks.
-func datePrune(dest string, it *pruneItem, local []string) bool {
+// or this machine's own - and LastUUID to that turn's. A loose copy with no turn time
+// is dated by its modification time. A zipped copy is dated by its transcript entry's
+// modification time, from the zip's index alone: never before its last turn, so the
+// conversation can only look younger. It reports false when any copy cannot be dated,
+// or is dated after now - a wrong clock: the conversation may be younger than it looks,
+// and a LastAt still to come would make push skip turns added before then.
+func datePrune(dest string, it *pruneItem, local []string, now time.Time) bool {
 	dated, newest := true, ""
-	loose := func(p string) {
-		at, ok := claude.LastTurnTime(p)
-		if !ok {
+	use := func(at time.Time, p string) {
+		if at.IsZero() || at.After(now) {
 			dated = false
 		} else if at.After(it.LastAt) {
 			it.LastAt, newest = at, p
 		}
+	}
+	loose := func(p string) {
+		at, ok := claude.LastTurnTime(p)
+		if st, err := os.Lstat(p); !ok && err == nil {
+			at = st.ModTime()
+		}
+		use(at, p)
 	}
 	for _, b := range it.Buckets {
 		p, zp := archivedCopy(dest, b, it.ID), zippedCopy(dest, b, it.ID)
@@ -283,12 +291,7 @@ func datePrune(dest string, it *pruneItem, local []string) bool {
 			loose(p)
 		}
 		if zp != "" {
-			at, ok := zippedTurnTime(zp, it.ID)
-			if !ok {
-				dated = false
-			} else if at.After(it.LastAt) {
-				it.LastAt, newest = at, ""
-			}
+			use(zippedTurnTime(zp, it.ID), "")
 		}
 		for _, p := range forkCopies(dest, b, it.ID) {
 			loose(p)
@@ -303,17 +306,18 @@ func datePrune(dest string, it *pruneItem, local []string) bool {
 	return dated && !it.LastAt.IsZero()
 }
 
-func zippedTurnTime(zp, id string) (time.Time, bool) {
+// zippedTurnTime is the zip's transcript entry's modification time, zero for none.
+func zippedTurnTime(zp, id string) time.Time {
 	ents, err := convzip.Entries(zp)
 	if err != nil {
-		return time.Time{}, false
+		return time.Time{}
 	}
 	for name, e := range ents {
 		if strings.EqualFold(name, id+".jsonl") {
-			return e.ModTime, !e.ModTime.IsZero()
+			return e.ModTime
 		}
 	}
-	return time.Time{}, false
+	return time.Time{}
 }
 
 func forkDir(dest, bucket, id string) string { return filepath.Join(dest, "forks", bucket, id) }

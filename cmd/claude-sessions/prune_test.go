@@ -624,18 +624,21 @@ func TestPruneSkipsUndatable(t *testing.T) {
 	claudeDir, dest := pruneFixture(t)
 	const u = "aaaaaaaa-1111-4111-8111-00000000000b"
 	p := filepath.Join(archive.ProjectsDir(dest), "-Users-you-dev-api", u+".jsonl")
+	// No turn time, and a modification time still to come - a wrong clock - to fall
+	// back to: it cannot be dated.
 	writeFile(t, p, `{"type":"user","uuid":"q1","message":{"role":"user","content":"no time"}}`+"\n")
-	for _, mtime := range []time.Time{time.Now().Add(48 * time.Hour), time.Now().AddDate(-1, 0, 0)} {
-		if err := os.Chtimes(p, mtime, mtime); err != nil {
-			t.Fatal(err)
-		}
-		if got := planned(t, claudeDir, dest, pruneSel{OlderThan: 1}, archive.Retention{}); !reflect.DeepEqual(got, []string{oldWeb, newWeb, oldAPI}) {
-			t.Errorf("modified %v: %v, want only the dated ones", mtime, got)
-		}
+	future := time.Now().Add(48 * time.Hour)
+	if err := os.Chtimes(p, future, future); err != nil {
+		t.Fatal(err)
 	}
-	// Named, it can be deleted.
-	if got := planned(t, claudeDir, dest, pruneSel{IDs: []string{u}}, archive.Retention{}); !reflect.DeepEqual(got, []string{u}) {
-		t.Errorf("by id: %v", got)
+	if got := planned(t, claudeDir, dest, pruneSel{OlderThan: 1}, archive.Retention{}); !reflect.DeepEqual(got, []string{oldWeb, newWeb, oldAPI}) {
+		t.Errorf("%v: want only the dated ones", got)
+	}
+	// Named, it can be deleted - recorded with no time: a LastAt still to come would make
+	// push skip the turns a computer adds before then.
+	plan, err := planPrune(claudeDir, dest, pruneSel{IDs: []string{u}}, archive.Retention{}, time.Now())
+	if err != nil || len(plan.Remove) != 1 || plan.Remove[0].ID != u || !plan.Remove[0].LastAt.IsZero() {
+		t.Errorf("by id: %+v %v", plan.Remove, err)
 	}
 
 	// Nor is a conversation whose every copy sits in a bucket no manifest lists: no keep
@@ -647,10 +650,39 @@ func TestPruneSkipsUndatable(t *testing.T) {
 
 	// One copy that cannot be dated may hold the newest turn: the old copy beside it
 	// does not date the conversation.
-	writeFile(t, filepath.Join(archive.ProjectsDir(dest), "-Users-you-dev-web-app", oldAPI+".jsonl"),
-		`{"type":"user","uuid":"p2","message":{"role":"user","content":"no time"}}`+"\n")
+	second := filepath.Join(archive.ProjectsDir(dest), "-Users-you-dev-web-app", oldAPI+".jsonl")
+	writeFile(t, second, `{"type":"user","uuid":"p2","message":{"role":"user","content":"no time"}}`+"\n")
+	if err := os.Chtimes(second, future, future); err != nil {
+		t.Fatal(err)
+	}
 	if got := planned(t, claudeDir, dest, pruneSel{OlderThan: 100}, archive.Retention{}); !reflect.DeepEqual(got, []string{oldWeb}) {
 		t.Errorf("with an undatable second copy: %v", got)
+	}
+}
+
+// A transcript with no turn time is dated by its modification time.
+func TestPruneDatesByModTimeWithoutTurnTimes(t *testing.T) {
+	claudeDir, dest := pruneFixture(t)
+	const u = "aaaaaaaa-1111-4111-8111-00000000000e"
+	p := filepath.Join(archive.ProjectsDir(dest), "-Users-you-dev-api", u+".jsonl")
+	writeFile(t, p, `{"type":"user","uuid":"q1","message":{"role":"user","content":"no time here"}}`+"\n")
+	old := time.Now().AddDate(0, 0, -200)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+	out, err := prune(t, claudeDir, "--older-than", "100d")
+	if err != nil || !strings.Contains(out, "no time here") || !strings.Contains(out, "3 conversation(s)") {
+		t.Errorf("the old transcript with no turn time is not listed: %v\n%s", err, out)
+	}
+	plan, err := planPrune(claudeDir, dest, pruneSel{OlderThan: 100}, archive.Retention{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := os.Stat(p)
+	for _, it := range plan.Remove {
+		if it.ID == u && (!it.LastAt.Equal(st.ModTime()) || it.LastUUID != "q1") {
+			t.Errorf("dated %v (%s), want its modification time %v and q1", it.LastAt, it.LastUUID, st.ModTime())
+		}
 	}
 }
 
