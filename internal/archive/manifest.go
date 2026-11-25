@@ -144,6 +144,14 @@ type Shard struct {
 	// prune may delete them: an older build would upload them again.
 	HonorsDeleted bool `json:"honorsDeleted,omitempty"`
 
+	// InstallID is the writer's Config.InstallID. Another one in the shard for this
+	// machine's name is a second computer using that name: each overwrites the other's.
+	InstallID string `json:"installId,omitempty"`
+
+	// LastPush is the writer's last full push, in UTC and cut to the hour: the shard
+	// changes at most once an hour for it, and a sync client keeps no version per reply.
+	LastPush time.Time `json:"lastPush,omitempty"`
+
 	// Sessions is only read from shards written before the index was split out into
 	// its own file. New pushes write index/<machine>.json instead: session rows grow
 	// without bound, and the manifest is read by every import and every doctor run,
@@ -239,9 +247,10 @@ type MachineInfo struct {
 	Name     string
 	Projects int
 	Sessions int
-	// LastSeen is the newest session this machine has archived - not when it last
-	// pushed, which the archive does not record.
+	// LastSeen is the newest session this machine has archived, not when it last
+	// pushed: that is LastPush, zero for a shard from a build older than the field.
 	LastSeen string
+	LastPush time.Time
 }
 
 // Machines lists every machine recorded in the archive.
@@ -265,7 +274,7 @@ func Machines(dest string) ([]MachineInfo, error) {
 
 	var out []MachineInfo
 	for name, s := range shards {
-		info := MachineInfo{Name: name, Projects: len(s.Projects), Sessions: counts[name]}
+		info := MachineInfo{Name: name, Projects: len(s.Projects), Sessions: counts[name], LastPush: s.LastPush}
 		for _, p := range s.Projects {
 			if p.Seen > info.LastSeen {
 				info.LastSeen = p.Seen

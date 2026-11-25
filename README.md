@@ -514,6 +514,12 @@ queued that never ran is a turn, so a copy ending in one is kept as a fork.
 
 ## Several computers
 
+Any number of computers can share one archive: macOS, Windows and Linux, each with
+its projects at its own paths. Set each one up as in Step 8.
+
+- **Every computer uses the same archive folder**, the one your sync app shares
+  between them. On Linux, `install` runs the sweep from a systemd user timer, or a
+  crontab line where there is no systemd.
 - **Run the same version everywhere.** An older version files another computer's fork
   copies as ordinary sessions, and on a shared path still overwrites the other
   computer's archived copy. `doctor` names any computer on a different version.
@@ -529,9 +535,22 @@ queued that never ran is a turn, so a copy ending in one is kept as a fork.
   so its files in the archive are still its own, and other computers keep the forks
   they filed under it. Then run `claude-sessions push`, and
   `claude-sessions machines --forget <old name>` so the list stops showing it.
-- `claude-sessions machines` lists every computer that has pushed, with its newest
-  session. `machines --forget <name>` removes a retired one's manifest and index; its
-  sessions stay.
+- **Names must differ.** Two computers under one name, such as a cloned laptop, would
+  overwrite each other's manifest. Each install makes a random ID on its first push and
+  writes it there, so when another computer has pushed under the same name, `push`
+  logs a warning and `doctor` fails:
+
+  ```
+  Another computer also uses the name LAP-2. Give one of them its own name with `claude-sessions config set-machine`.
+  ```
+
+  Pushing goes on regardless, and the warning stops once the names differ. A computer
+  set up again from scratch makes a new ID, and warns once.
+- `claude-sessions machines` lists every computer that has pushed, with the hour of
+  its last backup and its newest session. **Retire a computer** you no longer use with
+  `machines --forget <name>`: it removes its manifest and index, and its sessions stay.
+  Zipping and deleting wait for any computer listed that runs an older version, so
+  forget one that is gone.
 - **Each conversation is archived once.** A session imported from another computer is
   not archived again under this computer's folder for the project; the other
   computer's copy is the one kept. Once you continue it here, this computer's copy

@@ -33,6 +33,14 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   conversation loose again; `doctor` names the computers it waits for. Update them, or
   `machines --forget` one no longer in use. The older PowerShell scripts are not
   supported alongside zipping.
+- **A warning when two computers use the same name.** Each install makes a random ID
+  on its first push, keeps it in `session-sync.json` and writes it into its manifest.
+  When the archive's manifest for this computer's name carries another ID, `push` logs
+  a warning and `doctor` fails, saying to give one of them its own name with
+  `config set-machine`. Pushing is never refused.
+- **`machines` shows when each computer last backed up.** The manifest records the hour
+  of the last full push, in UTC, and changes only when that hour does, so a sync app
+  keeps no extra version of it per reply.
 
 ### Fixed
 - **`doctor` sat silent on a sync folder that streams files.** Where Google Drive

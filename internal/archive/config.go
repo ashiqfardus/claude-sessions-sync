@@ -52,6 +52,10 @@ type Config struct {
 
 	// ZipSessions false stops push zipping idle conversations; nil means on.
 	ZipSessions *bool `json:"zipSessions,omitempty"`
+
+	// InstallID is this install's random ID, made by its first push. Its shard carries
+	// it, so a second computer pushing under the same name is noticed.
+	InstallID string `json:"installId,omitempty"`
 }
 
 // ZipOn reports whether push zips idle conversations.
@@ -172,6 +176,9 @@ func SaveConfig(claudeRoot string, c Config) error {
 	}
 	if c.ZipSessions != nil {
 		merged["zipSessions"] = *c.ZipSessions
+	}
+	if c.InstallID != "" {
+		merged["installId"] = c.InstallID
 	}
 
 	data, err := json.MarshalIndent(merged, "", "  ")

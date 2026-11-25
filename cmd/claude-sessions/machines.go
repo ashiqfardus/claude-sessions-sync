@@ -71,16 +71,19 @@ func cmdMachines(args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	// The newest archived session, not the last push: a machine that pushes but has
-	// had no new session shows an old date and may still be in use.
-	fmt.Fprintln(w, "MACHINE\tPROJECTS\tSESSIONS\tLAST SESSION")
+	fmt.Fprintln(w, "MACHINE\tPROJECTS\tSESSIONS\tLAST BACKUP\tLAST SESSION")
 	for _, m := range machines {
-		fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", printable(m.Name), m.Projects, m.Sessions, localDate(m.LastSeen))
+		last := "-" // a build older than the field
+		if !m.LastPush.IsZero() {
+			last = m.LastPush.Local().Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\n", printable(m.Name), m.Projects, m.Sessions, last, localDate(m.LastSeen))
 	}
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	fmt.Println("\nLAST SESSION is the newest session archived from that machine, not its last push.")
+	fmt.Println("\nLAST BACKUP is the hour of that machine's last full push (\"-\" for an older version);")
+	fmt.Println("LAST SESSION is the newest session archived from it.")
 	fmt.Println("\nRemove a machine you no longer use with --forget <name>.")
 	fmt.Println("Its transcripts are kept; only its manifest and index entries go.")
 	return nil

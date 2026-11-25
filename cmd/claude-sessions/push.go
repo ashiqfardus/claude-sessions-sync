@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -463,6 +465,12 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	res.Unchanged += pu
 
 	if !dryRun {
+		// Two computers under one name overwrite each other's shard. Said, never refused:
+		// a reinstall here has a new ID too, and must still back up.
+		if shard.InstallID = installID(root); shard.InstallID != "" && nameClash(dest, shard.Machine, shard.InstallID) {
+			logf("WARN: "+nameClashMessage, shard.Machine)
+		}
+		shard.LastPush = time.Now().UTC().Truncate(time.Hour)
 		sessions = keepArchivedHistory(dest, &shard, sessions)
 		if err := writeManifest(dest, shard); err != nil {
 			logf("ERROR: manifest: %v", err)
@@ -1700,6 +1708,38 @@ func pinMachineName(root string) {
 	if archive.SaveConfig(root, cfg) == nil {
 		savedMachine = cfg.Machine
 	}
+}
+
+// installID is this install's ID from session-sync.json, made of 16 random bytes and
+// saved there on first use. "" when the file cannot be read or saved: a new ID every
+// push would read as another computer each time.
+func installID(root string) string {
+	cfg, err := archive.LoadConfig(root)
+	if err != nil {
+		return ""
+	}
+	if cfg.InstallID != "" {
+		return cfg.InstallID
+	}
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	cfg.InstallID = hex.EncodeToString(b)
+	if archive.SaveConfig(root, cfg) != nil {
+		return ""
+	}
+	return cfg.InstallID
+}
+
+// nameClashMessage is what push logs and doctor fails with, given the name.
+const nameClashMessage = "Another computer also uses the name %s. Give one of them its own name with `claude-sessions config set-machine`."
+
+// nameClash reports whether the archive's shard for machine was written by another
+// install than id: two computers pushing under one name.
+func nameClash(dest, machine, id string) bool {
+	s := readShard(dest, machine)
+	return s.InstallID != "" && s.InstallID != id
 }
 
 // machineName identifies the writer of a manifest shard.

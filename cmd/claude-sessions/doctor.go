@@ -210,6 +210,13 @@ func cmdDoctor(args []string) error {
 		}
 	})
 
+	// Only once this install has pushed: before that it has no ID to compare.
+	slow("name", func(add func(check)) {
+		if cfg, err := archive.LoadConfig(root); err == nil && cfg.InstallID != "" && nameClash(dest, machineName(), cfg.InstallID) {
+			add(check{"name", levelFail, fmt.Sprintf(nameClashMessage, machineName()), ""})
+		}
+	})
+
 	slow("zips", func(add func(check)) { add(zipCheck(root, dest)) })
 	slow("prune", func(add func(check)) { add(pruneCheck(root, dest)) })
 
