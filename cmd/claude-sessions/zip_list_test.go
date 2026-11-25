@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 )
 
@@ -57,22 +58,51 @@ func TestArchivedSkipsUnreadableZip(t *testing.T) {
 	}
 }
 
+// WIN's bucket holds MAC's copy in whole, loose, and also a zip of it: without the zip,
+// clean would delete MAC's. With one, the session is left alone.
 func TestCleanLeavesSessionsWithAZippedCopy(t *testing.T) {
-	archive := t.TempDir()
-	m := newMachine(t, "MAC", archive)
-	a := filepath.Join(archive, "projects", "-work-web-app")
-	b := filepath.Join(archive, "projects", "-work-web-app2")
-	body := sessionLines("/work/web-app", "u1", "u2")
-	mustWrite(t, filepath.Join(a, forkSession+".jsonl"), body)
-	mustWrite(t, filepath.Join(b, forkSession+".jsonl"), body)
-	if _, err := convzip.Zip(b, forkSession); err != nil {
+	archive, _, win, macRepo, winRepo := continuedOnWin(t)
+	wb := filepath.Join(archive, "projects", claude.Slug(winRepo))
+	snap := map[string]string{}
+	filepath.WalkDir(wb, func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			snap[p] = mustRead(t, p)
+		}
+		return nil
+	})
+	if _, err := convzip.Zip(wb, forkSession); err != nil {
 		t.Fatal(err)
 	}
-	m.run(t, "clean", "--yes")
-	if _, err := os.Stat(filepath.Join(a, forkSession+".jsonl")); err != nil {
-		t.Fatalf("clean deleted the loose copy: %v", err)
+	for p, body := range snap { // the loose files are back beside the zip
+		mustWrite(t, p, body)
 	}
-	if _, err := os.Stat(convzip.Path(b, forkSession)); err != nil {
+	if out, err := win.clean(t, "--yes"); err != nil {
+		t.Fatalf("clean: %v\n%s", err, out)
+	}
+	if archived(t, archive, macRepo) == "" {
+		t.Fatal("clean deleted a copy of a session that has a zipped copy")
+	}
+	if _, err := os.Stat(convzip.Path(wb, forkSession)); err != nil {
 		t.Fatalf("clean deleted the zip: %v", err)
+	}
+}
+
+func TestSearchArchivedSkipsUnreadableZip(t *testing.T) {
+	m, bucketDir := zippedArchive(t, "needleinzip")
+	other := "77777777-7777-7777-7777-777777777777"
+	mustWrite(t, filepath.Join(bucketDir, other+".jsonl"), sessionLines("/work/web-app", "needleinzip"))
+	mustWrite(t, convzip.Path(bucketDir, forkSession), "not a zip")
+	out := m.run(t, "search", "--archived", "needleinzip")
+	if !strings.Contains(out, other) || strings.Count(out, "skipped") != 1 {
+		t.Fatalf("search did not continue past a bad zip with one note:\n%s", out)
+	}
+}
+
+func TestStatsArchivedSkipsUnreadableZip(t *testing.T) {
+	m, bucketDir := zippedArchive(t, "x1")
+	mustWrite(t, convzip.Path(bucketDir, forkSession), "not a zip")
+	out := m.run(t, "stats", "--archived")
+	if !strings.Contains(out, "1 session(s)") || strings.Count(out, "skipped") > 1 {
+		t.Fatalf("stats failed on a bad zip:\n%s", out)
 	}
 }
