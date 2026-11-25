@@ -498,6 +498,9 @@ func TestPullReadsALooseCopyBesideItsZip(t *testing.T) {
 	if !fileExists(filepath.Join(filepath.Dir(lap.session(repo)), forkSession, "subagents", "agent-a1.jsonl")) {
 		t.Error("the subagent only the zip holds was not filed")
 	}
+	if strings.Contains(out, "stay in the archive") {
+		t.Errorf("a loose copy holding every zipped turn is said to leave some behind:\n%s", out)
+	}
 }
 
 // A zip that cannot be read is named and skipped; the bucket's other conversations are
@@ -519,5 +522,143 @@ func TestPullSkipsAnUnreadableZip(t *testing.T) {
 	}
 	if !fileExists(filepath.Join(filepath.Dir(lap.session(repo)), other+".jsonl")) {
 		t.Errorf("the bucket's other conversation was not filed:\n%s", out)
+	}
+}
+
+// A second pull or import of conversations already here reads no zip: one garbled at
+// the same size and time goes unnoticed.
+func TestRepeatPullAndImportReadNoZip(t *testing.T) {
+	t.Run("pull", func(t *testing.T) {
+		archive, _, repo := pushedSession(t)
+		bucket := zipArchived(t, archive, repo)
+		lap := newMachine(t, "LAP-2", archive)
+		lap.run(t, "pull", "--no-plugins")
+		if !fileExists(lap.session(repo)) {
+			t.Fatal("setup: the first pull filed nothing")
+		}
+		garble(t, convzip.Path(bucket, forkSession))
+		if out := lap.run(t, "pull", "--no-plugins"); strings.Contains(out, "could not be read") {
+			t.Errorf("the second pull read the zip:\n%s", out)
+		}
+	})
+	t.Run("import", func(t *testing.T) {
+		archive, _, win, macRepo, winRepo := zippedOnMac(t)
+		importOn(t, win, macRepo, winRepo)
+		if !fileExists(win.session(winRepo)) {
+			t.Fatal("setup: the first import filed nothing")
+		}
+		garble(t, convzip.Path(filepath.Join(archive, "projects", claude.Slug(macRepo)), forkSession))
+		if out := importOn(t, win, macRepo, winRepo); strings.Contains(out, "could not be read") {
+			t.Errorf("the second import read the zip:\n%s", out)
+		}
+	})
+}
+
+// A loose copy beside a zip that cannot be read is filed alone: not a failure, but a
+// note that the zip's own folder files were not filed.
+func TestPullFilesTheLooseCopyBesideAnUnreadableZip(t *testing.T) {
+	archive, _, repo := pushedSession(t)
+	bucket := zipArchived(t, archive, repo)
+	mustWrite(t, filepath.Join(bucket, forkSession+".jsonl"), sessionLines(repo, "u1", "m1", "x1"))
+	mustWrite(t, convzip.Path(bucket, forkSession), "not a zip")
+	lap := newMachine(t, "LAP-2", archive)
+	out := lap.run(t, "pull", "--no-plugins")
+	if got := mustRead(t, lap.session(repo)); !strings.Contains(got, `"x1"`) {
+		t.Errorf("the loose copy was not filed:\n%s\n%s", got, out)
+	}
+	if !strings.Contains(out, forkSession+convzip.Suffix) || !strings.Contains(out, "only the zip holds") {
+		t.Errorf("no note on the unreadable zip and its folder files:\n%s", out)
+	}
+	if strings.Contains(out, "  x ") {
+		t.Errorf("the loose copy filed is counted as a failure:\n%s", out)
+	}
+}
+
+// The zipped copy and the loose one beside it each have turns the other lacks: the loose
+// one is filed, and a note says the zip's other turns stay in the archive.
+func TestPullSaysADivergedZipKeepsItsTurns(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	appendTurns(t, mac.session(repo), repo, "m2")
+	mac.run(t, "push", "--no-html")
+	bucket := zipArchived(t, archive, repo)
+	mustWrite(t, filepath.Join(bucket, forkSession+".jsonl"), sessionLines(repo, "u1", "m1", "x1"))
+	lap := newMachine(t, "LAP-2", archive)
+	out := lap.run(t, "pull", "--no-plugins")
+	if got := mustRead(t, lap.session(repo)); !strings.Contains(got, `"x1"`) {
+		t.Errorf("the loose copy was not filed:\n%s", got)
+	}
+	if strings.Count(out, "stay in the archive") != 1 {
+		t.Errorf("want one note that the zipped turns stay in the archive:\n%s", out)
+	}
+}
+
+// Both machines went on with the session, and MAC's copy was zipped since: --update files
+// it beside WIN's as a fork, its folder read from the temp extract, which is removed.
+func TestImportUpdateForksADivergedZippedCopy(t *testing.T) {
+	archive, mac, win, macRepo, winRepo := importedOnWin(t)
+	appendTurns(t, win.session(winRepo), winRepo, "w1")
+	appendTurns(t, mac.session(macRepo), macRepo, "m2")
+	mac.run(t, "push", "--no-html")
+	zipArchived(t, archive, macRepo)
+	tmp := t.TempDir()
+	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(k, tmp)
+	}
+	out := importOn(t, win, macRepo, winRepo, "--update")
+
+	got := win.sessions(t, winRepo)
+	if len(got) != 2 {
+		t.Fatalf("WIN holds %v, want its session and the fork:\n%s", got, out)
+	}
+	fork := got[0]
+	if fork == forkSession+".jsonl" {
+		fork = got[1]
+	}
+	dir := filepath.Dir(win.session(winRepo))
+	if f := mustRead(t, filepath.Join(dir, fork)); !strings.Contains(f, `"m2"`) || !strings.Contains(f, `"cwd":`+quoted(winRepo)) {
+		t.Errorf("the fork lacks MAC's turn, or its paths are not rewritten:\n%s", f)
+	}
+	if l := mustRead(t, win.session(winRepo)); !strings.Contains(l, `"w1"`) || strings.Contains(l, `"m2"`) {
+		t.Errorf("WIN's own copy was changed:\n%s", l)
+	}
+	if !fileExists(filepath.Join(dir, strings.TrimSuffix(fork, ".jsonl"), "subagents", "agent-a1.jsonl")) {
+		t.Errorf("the fork's subagent was not filed from the zip:\n%s", out)
+	}
+	if ents, _ := os.ReadDir(tmp); len(ents) != 0 {
+		t.Errorf("import left %d temporary item(s) behind", len(ents))
+	}
+}
+
+// On a shared layout BOX-B's fork of a session is kept under forks/. The session's copy
+// is zipped since: a third machine files the fork with the folder read from the zip.
+func TestPullFilesASharedForkWithItsFolderFromAZip(t *testing.T) {
+	archive := t.TempDir()
+	a, b := newMachine(t, "BOX-A", archive), newMachine(t, "BOX-B", archive)
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "api"))
+	mustWrite(t, a.session(repo), sessionLines(repo, "u1"))
+	mustWrite(t, filepath.Join(filepath.Dir(a.session(repo)), forkSession, "subagents", "agent-a1.jsonl"), sessionLines(repo, "s1"))
+	a.run(t, "push", "--no-html")
+	b.run(t, "pull", "--no-plugins")
+	appendTurns(t, a.session(repo), repo, "a1")
+	a.run(t, "push", "--no-html")
+	appendTurns(t, b.session(repo), repo, "b1", "b2") // a size of its own: same-size copies at one time read as unchanged
+	b.run(t, "push", "--no-html")
+	if !fileExists(filepath.Join(archive, "forks", claude.Slug(repo), forkSession, "BOX-B.jsonl")) {
+		t.Fatal("setup: BOX-B's fork is not kept under forks/")
+	}
+	zipArchived(t, archive, repo)
+
+	lap := newMachine(t, "LAP-2", archive)
+	out := lap.run(t, "pull", "--no-plugins")
+	got := lap.sessions(t, repo)
+	if len(got) != 2 {
+		t.Fatalf("LAP-2 holds %v, want the session and BOX-B's fork:\n%s", got, out)
+	}
+	fork := got[0]
+	if fork == forkSession+".jsonl" {
+		fork = got[1]
+	}
+	if !fileExists(filepath.Join(filepath.Dir(lap.session(repo)), strings.TrimSuffix(fork, ".jsonl"), "subagents", "agent-a1.jsonl")) {
+		t.Errorf("the fork's folder was not filed from the zip:\n%s", out)
 	}
 }

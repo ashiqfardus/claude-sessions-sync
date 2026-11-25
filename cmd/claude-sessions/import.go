@@ -396,6 +396,9 @@ func cmdImport(args []string) error {
 			row.Note = strings.TrimSpace(row.Note + fmt.Sprintf(" %d session(s) continued here and elsewhere, local kept and the other filed beside it: %s",
 				len(res.Diverged), strings.Join(res.Diverged, "; ")))
 		}
+		if len(res.Notes) > 0 {
+			row.Note = strings.TrimSpace(row.Note + " " + strings.Join(res.Notes, "; "))
+		}
 		filed += res.Copied
 		updated += res.Updated
 		if match.How == identity.ByRecordedPath {
@@ -416,6 +419,9 @@ func cmdImport(args []string) error {
 			fmt.Println()
 			for _, f := range res.Failed {
 				fmt.Printf("    x %s\n", f)
+			}
+			for _, n := range res.Notes {
+				fmt.Printf("    ! %s\n", n)
 			}
 			for _, d := range res.Diverged {
 				fmt.Printf("    ! continued here and elsewhere - %s (resume either)\n", d)
@@ -525,11 +531,9 @@ func newestCwd(dir string) string {
 		}
 	}
 	if zipped != "" {
-		if tmp, err := os.MkdirTemp("", "claude-sessions-cwd-"); err == nil {
-			defer os.RemoveAll(tmp)
-			if p, _, err := convzip.Materialize(dir, zipped, tmp); err == nil {
-				newest = p // else the newest loose one
-			}
+		if p, done, err := convzip.Materialize(dir, zipped, ""); err == nil {
+			defer done()
+			newest = p // else the newest loose one
 		}
 	}
 	if newest == "" {
@@ -648,7 +652,7 @@ func cmdPull(args []string) error {
 	writers := sessionWriters(dest)
 	imported := loadImported(root, !*dryRun)
 	var pulled, updated, already, memory int
-	var forked, failed []string
+	var forked, failed, notes []string
 
 	for _, name := range archivedBuckets {
 		if !safeBucketName(name) { // as in import
@@ -689,6 +693,7 @@ func cmdPull(args []string) error {
 		memory += res.Memory
 		forked = append(forked, res.Diverged...)
 		failed = append(failed, res.Failed...)
+		notes = append(notes, res.Notes...)
 	}
 	imported.finish()
 
@@ -713,6 +718,9 @@ func cmdPull(args []string) error {
 	}
 	for _, f := range failed {
 		fmt.Printf("  x %s\n", f)
+	}
+	for _, n := range notes {
+		fmt.Printf("  ! %s\n", n)
 	}
 	printDiverged(forked)
 	printProfile(profile, *dryRun)
