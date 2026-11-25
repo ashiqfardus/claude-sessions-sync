@@ -5,10 +5,442 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="cs-token" content="{{.Token}}">
 <title>claude-sessions</title>
+<link rel="stylesheet" href="/static/panel.css">
+<script type="module" src="/static/js/app.js"></script>
 </head>
 <body>
-<main>
-<h1>claude-sessions</h1>
-</main>
+<a class="skip" href="#main">Skip to content</a>
+<div class="app">
+  <nav aria-label="Panel" class="rail">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18v4H3z"></path><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"></path><path d="M10 12h4"></path></svg></span>
+      <span class="brand-text"><span class="brand-name">claude-sessions</span><span class="brand-sub" data-slot="machine"></span></span>
+    </div>
+    <div class="nav">
+      <a href="#/overview" aria-label="Overview"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"></rect><rect x="14" y="3" width="7" height="5" rx="1.5"></rect><rect x="14" y="12" width="7" height="9" rx="1.5"></rect><rect x="3" y="16" width="7" height="5" rx="1.5"></rect></svg><span class="label">Overview</span></a>
+      <a href="#/conversations" aria-label="Conversations"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z"></path></svg><span class="label">Conversations</span></a>
+      <a href="#/storage" aria-label="Storage"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="8" ry="2.5"></ellipse><path d="M4 5.5v13c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-13"></path><path d="M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5"></path></svg><span class="label">Storage</span></a>
+      <a href="#/settings" aria-label="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10"></path><path d="M18 6h2"></path><path d="M4 12h4"></path><path d="M12 12h8"></path><path d="M4 18h12"></path><circle cx="16" cy="6" r="2"></circle><circle cx="10" cy="12" r="2"></circle><circle cx="18" cy="18" r="2"></circle></svg><span class="label">Settings</span></a>
+    </div>
+    <div class="rail-foot"><span class="dot" aria-hidden="true" data-slot="dot"></span><span class="label" data-slot="foot"></span></div>
+  </nav>
+  <div role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuemin="64" aria-valuemax="320" aria-valuenow="200" tabindex="0" title="Drag to resize. Double-click to fold to icons." class="grip"><span></span></div>
+  <main id="main" class="main" tabindex="-1"></main>
+</div>
+<div id="toasts" role="status"></div>
+<div id="dialogs"></div>
+
+<template id="t-overview">
+  <header class="head rise">
+    <h1 tabindex="-1">Overview</h1>
+    <div class="row">
+      <span class="muted small" data-slot="last"></span>
+      <button type="button" class="btn" data-slot="preview">Preview backup</button>
+      <button type="button" class="btn primary" data-slot="push">Back up now</button>
+    </div>
+  </header>
+
+  <section aria-labelledby="sync-h" class="section rise stagger-1">
+    <h2 id="sync-h">Your computers and the archive</h2>
+    <div class="split gap-16">
+      <div class="archive flex-1" data-slot="archive">
+        <svg class="flow" viewBox="0 0 180 180" aria-hidden="true"><circle cx="90" cy="90" r="80"></circle><circle cx="90" cy="90" r="56"></circle></svg>
+        <p class="archive-title" data-slot="provider"></p>
+        <p><code class="archive-path" data-slot="path"></code></p>
+        <p class="big archive-size" data-slot="size"></p>
+        <p class="sub" data-slot="counts"></p>
+        <a href="#/import" class="btn on-dark archive-action">Bring in work from another computer</a>
+      </div>
+      <ul aria-label="Computers" class="panel rows flex-2" data-slot="computers"></ul>
+    </div>
+  </section>
+
+  <div class="cols">
+    <section aria-labelledby="health-h" class="section rise stagger-2">
+      <h2 id="health-h">Health</h2>
+      <ul class="panel rows" data-slot="health"></ul>
+    </section>
+
+    <div class="stack gap-28 rise stagger-3">
+      <section aria-labelledby="storage-h" class="section">
+        <h2 id="storage-h">Storage</h2>
+        <div class="panel pad stack">
+          <p data-slot="usage"></p>
+          <div class="bar" role="img" data-slot="bar"><span class="part-conversations"></span><span class="part-work"></span><span class="part-other"></span></div>
+          <p class="legend num"><span><i class="part-conversations"></i><span>Conversations <span data-slot="conversations-size"></span></span></span><span><i class="part-work"></i><span>Work folders <span data-slot="work-size"></span></span></span><span><i class="part-other"></i><span>Other <span data-slot="other-size"></span></span></span></p>
+          <p><span data-slot="saving"></span> <a href="#/storage" class="medium">Manage storage</a></p>
+        </div>
+      </section>
+      <section aria-labelledby="activity-h" class="section">
+        <h2 id="activity-h">Recent activity</h2>
+        <ol class="panel rows num" data-slot="activity"></ol>
+        <a href="#/settings" class="medium">Open the full log</a>
+      </section>
+    </div>
+  </div>
+</template>
+
+<template id="t-conversations">
+  <header class="head">
+    <h1 tabindex="-1">Conversations</h1>
+    <div class="field search-field">
+      <label for="q">Search the text of every conversation</label>
+      <input id="q" class="input" type="search" data-slot="q">
+    </div>
+  </header>
+
+  <form aria-label="Filters" class="filters layer-6">
+    <div class="filter" data-slot="project" data-label="Project"></div>
+    <div class="filter" data-slot="machine" data-label="Used on"></div>
+    <div class="filter" data-slot="age" data-label="Last message"></div>
+    <div class="filter" data-slot="state" data-label="Show"></div>
+  </form>
+
+  <details class="panel pad layer-5">
+    <summary><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>Search options</summary>
+    <div class="search-fields">
+      <div class="look-in" data-slot="look" data-label="Look in"></div>
+      <div class="messages-from" data-slot="role" data-label="Messages from"></div>
+      <div class="field date-field"><label for="f-since">From</label><input id="f-since" class="input" type="date" data-slot="since"></div>
+      <div class="field date-field"><label for="f-until">To</label><input id="f-until" class="input" type="date" data-slot="until"></div>
+    </div>
+    <div class="row search-checks">
+      <label class="opt"><input type="checkbox" class="check" data-slot="case">Match upper and lower case</label>
+      <label class="opt"><input type="checkbox" class="check" data-slot="regexp">Search with a pattern (regular expression)</label>
+      <label class="opt"><input type="checkbox" class="check" data-slot="all">Also search tool calls, tool output and Claude's thinking</label>
+    </div>
+  </details>
+
+  <div class="row spread">
+    <p class="muted num" data-slot="summary"></p>
+  </div>
+
+  <div role="region" aria-label="Selected conversations" class="selection slide" data-slot="selection" hidden>
+    <span class="num selection-count" data-slot="selected"></span>
+    <button type="button" class="btn sm on-dark" data-slot="keep">Add to Never delete</button>
+    <button type="button" class="btn sm on-dark on-dark-danger" data-slot="delete">Delete from archive</button>
+    <button type="button" class="btn sm ghost on-dark-quiet" data-slot="clear">Clear</button>
+  </div>
+
+  <div class="panel table-box">
+    <table class="num conv-table">
+      <caption class="sr">Archived conversations</caption>
+      <thead>
+        <tr>
+          <th scope="col" class="col-check"><input type="checkbox" class="check" aria-label="Select all shown" data-slot="select-all"></th>
+          <th scope="col">Conversation</th>
+          <th scope="col">Project</th>
+          <th scope="col">Last message</th>
+          <th scope="col">Used on</th>
+          <th scope="col" class="r">Size</th>
+          <th scope="col">State</th>
+          <th scope="col"><span class="sr">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody data-slot="rows"></tbody>
+    </table>
+  </div>
+
+  <nav aria-label="Pages of results" class="row spread" data-slot="pages">
+    <span class="muted num" data-slot="range"></span>
+    <span class="pager num" data-slot="pager"></span>
+  </nav>
+</template>
+
+<template id="t-storage">
+  <header class="stack">
+    <h1 tabindex="-1">Storage</h1>
+    <p class="usage" data-slot="usage"></p>
+    <div class="bar usage-bar" role="img" data-slot="bar"><span class="part-conversations"></span><span class="part-work"></span><span class="part-other"></span></div>
+    <p class="legend num"><span><i class="part-conversations"></i><span>Conversations <span data-slot="conversations-size"></span></span></span><span><i class="part-work"></i><span>Work folders <span data-slot="work-size"></span></span></span><span><i class="part-other"></i><span>Pages and other files <span data-slot="other-size"></span></span></span></p>
+  </header>
+
+  <div class="cols">
+    <section aria-labelledby="free-h" class="section">
+      <h2 id="free-h">Ways to free space</h2>
+      <ul class="panel rows">
+        <li class="way">
+          <div class="grow stack gap-3 way-text">
+            <h3 id="zip-h">Compress old conversations</h3>
+            <p class="muted">Conversations nobody has used for 30 days are zipped. Nothing is lost, and they still open as usual.</p>
+            <p class="medium" data-slot="zip-line"></p>
+            <p class="status warn small slide" data-slot="zip-wait" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span data-slot="zip-wait-text"></span> <a href="#/settings">See computers</a></p>
+          </div>
+          <label class="row switch-label medium"><input type="checkbox" role="switch" class="switch" aria-labelledby="zip-h zip-state" data-slot="zip"><span id="zip-state" data-slot="zip-state"></span></label>
+        </li>
+        <li class="way">
+          <div class="grow stack gap-3 way-text">
+            <h3>Remove duplicate copies</h3>
+            <p class="muted">The same conversation stored twice, once from each computer.</p>
+            <p class="medium" data-slot="dup-line"></p>
+          </div>
+          <button type="button" class="btn" data-slot="check">Check now</button>
+        </li>
+        <li class="way">
+          <div class="grow stack gap-3 way-text">
+            <h3>Delete old conversations</h3>
+            <p class="muted">Remove conversations you won't need from the archive. Your computers keep their own copies.</p>
+            <p class="medium" data-slot="prune-line"></p>
+          </div>
+          <a href="#/delete" class="btn dark">Choose what to delete</a>
+        </li>
+      </ul>
+    </section>
+
+    <div class="stack gap-28">
+      <section aria-labelledby="safe-h" class="section">
+        <h2 id="safe-h">Protected and deleted</h2>
+        <ul class="panel rows">
+          <li><span class="grow" data-slot="kept-line"></span><a href="#/delete" class="btn sm">Manage</a></li>
+          <li><span class="grow" data-slot="deleted-line"></span><a href="#/delete" class="btn sm">Restore</a></li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="big-h" class="section">
+        <h2 id="big-h">Biggest projects</h2>
+        <div class="panel table-box">
+          <table class="num projects-table">
+            <caption class="sr">Archive space by project</caption>
+            <thead><tr><th scope="col">Project</th><th scope="col" class="r">Conversations</th><th scope="col" class="col-space">Space</th></tr></thead>
+            <tbody data-slot="projects"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+</template>
+
+<template id="t-delete">
+  <header class="stack gap-8">
+    <a href="#/storage" class="back">Back to Storage</a>
+    <h1 tabindex="-1">Delete old conversations</h1>
+    <p class="lead">This removes conversations from the archive in Google Drive. Each computer keeps its own copy, and a conversation you continue is backed up again. Google Drive keeps deleted files in its trash for 30 days.</p>
+  </header>
+
+  <div class="cols">
+    <div class="stack gap-24">
+      <section aria-labelledby="auto-delete-h" class="panel pad stack layer-6">
+        <h2 id="auto-delete-h">Delete automatically</h2>
+        <div class="row fields">
+          <div class="auto-age" data-slot="auto-age" data-label="Delete conversations not used for"></div>
+          <button type="button" class="btn primary" data-slot="save">Save</button>
+        </div>
+        <p class="muted small">Checked once a day during the automatic backup. Anything you protect below is never deleted.</p>
+      </section>
+
+      <section aria-labelledby="now-h" class="panel pad stack layer-5">
+        <h2 id="now-h">Choose now</h2>
+        <div class="row fields">
+          <div class="now-field" data-slot="now-age" data-label="Not used for more than"></div>
+          <div class="now-field" data-slot="now-project" data-label="Project"></div>
+          <button type="button" class="btn dark" data-slot="show">Show what would be deleted</button>
+        </div>
+        <p class="muted small">Or tick conversations on the <a href="#/conversations">Conversations</a> page and choose Delete from archive.</p>
+        <div class="preview slide" data-slot="preview" hidden>
+          <p class="note red preview-summary" data-slot="summary"></p>
+          <ul class="rows preview-items" data-slot="items"></ul>
+          <div class="row preview-actions">
+            <button type="button" class="btn danger" data-slot="delete"></button>
+            <button type="button" class="btn" data-slot="cancel">Cancel</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="stack gap-24">
+      <section aria-labelledby="keep-h" class="panel pad stack layer-4">
+        <h2 id="keep-h">Never delete</h2>
+        <p class="muted">Protected projects and conversations are skipped every time. A project is protected on every computer, whatever its folder is called there.</p>
+        <ul class="rows ruled" data-slot="kept"></ul>
+        <div class="row fields">
+          <div class="keep-add" data-slot="keep-project" data-label="Protect a project"></div>
+          <button type="button" class="btn primary" data-slot="protect">Protect</button>
+        </div>
+      </section>
+
+      <section aria-labelledby="gone-h" class="panel pad stack">
+        <h2 id="gone-h">Deleted recently</h2>
+        <ul class="rows ruled" data-slot="deleted"></ul>
+        <p class="muted small">Restore puts it back in the archive at the next backup of a computer that still has it.</p>
+      </section>
+    </div>
+  </div>
+</template>
+
+<template id="t-import">
+  <header class="stack gap-8">
+    <a href="#/overview" class="back">Back to Overview</a>
+    <h1 tabindex="-1">Bring in work from another computer</h1>
+    <p class="lead">Copies the conversations and work folders your other computers backed up, and files them under your projects here, so you can continue them. Nothing on this computer is replaced unless you tick it below.</p>
+  </header>
+
+  <section aria-labelledby="where-h" class="section">
+    <h2 id="where-h">Where things will go</h2>
+    <div class="panel table-box">
+      <table class="where-table">
+        <caption class="sr">Where each project and folder from the other computers goes on this computer</caption>
+        <thead><tr><th scope="col">From</th><th scope="col">Goes here</th><th scope="col">Why</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+        <tbody data-slot="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="cols">
+    <section aria-labelledby="opt-h" class="panel pad stack">
+      <h2 id="opt-h">What to bring in</h2>
+      <label class="opt"><input type="checkbox" class="check" checked data-slot="update"><span>Update conversations that continued on another computer</span></label>
+      <label class="opt"><input type="checkbox" class="check" checked data-slot="work"><span>Work folders, not just conversations</span></label>
+      <label class="opt"><input type="checkbox" class="check" checked data-slot="plugins"><span>Plugin settings</span></label>
+      <label class="opt"><input type="checkbox" class="check" data-slot="profile"><span>The other computers' rules and skills, where they are newer<small>Replaces this computer's CLAUDE.md, rules and skills. Each computer's own copy stays in the archive.</small></span></label>
+      <label class="opt"><input type="checkbox" class="check" data-slot="repoint"><span>Fix file paths in conversations brought in earlier<small>Use this an hour after bringing work in, for conversations you used recently.</small></span></label>
+
+      <details class="advanced layer-5">
+        <summary><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>Advanced</summary>
+        <div class="stack advanced-body">
+          <div class="row fields">
+            <div class="field search-root"><label for="root">Look for your projects in</label><input id="root" class="input mono" type="text" data-slot="root"></div>
+            <div class="depth" data-slot="depth" data-label="Folders deep"></div>
+          </div>
+          <label class="opt"><input type="checkbox" class="check" data-slot="bare-name"><span>Also update the project's old folder name inside conversations<small>Also changes that name where it appears on its own in conversations, such as in code and prose.</small></span></label>
+          <label class="opt"><input type="checkbox" class="check" data-slot="pull"><span>Keep the other computers' folder names as they are, without matching projects</span></label>
+        </div>
+      </details>
+
+      <div class="row bring-row">
+        <button type="button" class="btn primary" data-slot="bring">Bring in</button>
+        <button type="button" class="btn" data-slot="preview">Preview first</button>
+        <span class="progress grow bring-progress" data-slot="progress" hidden><span></span></span>
+        <span class="muted grow num" data-slot="result"></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="folder-h" class="panel pad stack">
+      <h2 id="folder-h">From a folder instead</h2>
+      <p class="muted">Have conversation files from somewhere else, such as an old backup? File them under a project here.</p>
+      <div class="row fields">
+        <div class="field restore-field"><label for="src">Folder with the conversation files</label><input id="src" class="input mono" type="text" data-slot="source"></div>
+        <div class="field restore-field"><label for="dst">Project they belong to here</label><input id="dst" class="input mono" type="text" data-slot="project-path"></div>
+        <div class="field restore-field"><label for="old">The project's old path, if it moved (optional)</label><input id="old" class="input mono" type="text" placeholder="/Users/old-name/dev/web-app" data-slot="rewrite-from"></div>
+      </div>
+      <label class="opt"><input type="checkbox" class="check" data-slot="restore-update"><span>Update conversations that are already here</span></label>
+      <label class="opt"><input type="checkbox" class="check" data-slot="restore-bare-name"><span>Also update the project's old folder name inside conversations<small>Also changes that name where it appears on its own in conversations, such as in code and prose.</small></span></label>
+      <div class="row"><button type="button" class="btn primary" data-slot="restore">File them here</button><button type="button" class="btn" data-slot="restore-preview">Preview first</button></div>
+    </section>
+  </div>
+</template>
+
+<template id="t-settings">
+  <h1 tabindex="-1">Settings</h1>
+
+  <section aria-labelledby="arch-h" class="section">
+    <h2 id="arch-h">Archive folder</h2>
+    <div class="panel pad row" data-slot="archive"><p class="grow"><span data-slot="archive-label"></span> Every computer must use this same folder.</p><button type="button" class="btn" data-slot="change-folder">Change folder</button></div>
+  </section>
+
+  <section aria-labelledby="comp-h" class="section">
+    <h2 id="comp-h">Computers</h2>
+    <div class="panel pad row align-end">
+      <div class="field name-field"><label for="mname">This computer's name in the archive</label><input id="mname" class="input" type="text" data-slot="name"></div>
+      <button type="button" class="btn" data-slot="rename">Rename</button>
+      <p class="muted small full-line">Each computer needs its own name. A Mac's network name can change, so a fixed name keeps its history together.</p>
+    </div>
+    <div class="panel table-box">
+      <table class="num computers-table">
+        <caption class="sr">Computers using this archive</caption>
+        <thead><tr><th scope="col">Computer</th><th scope="col">Version</th><th scope="col">Last backup</th><th scope="col">Ready for compression and deleting</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+        <tbody data-slot="computers"></tbody>
+      </table>
+    </div>
+    <p class="muted small">Compression and deleting wait until every computer is ready. Forget a computer you no longer use; its conversations stay in the archive.</p>
+  </section>
+
+  <div class="cols">
+    <section aria-labelledby="work-h" class="section">
+      <div class="head"><h2 id="work-h">Work folders</h2><label class="row switch-label"><input type="checkbox" role="switch" class="switch" data-slot="work"><span>Back up the folders Claude works in</span></label></div>
+      <div class="panel table-box">
+        <table class="num work-table">
+          <caption class="sr">Work folders backed up from this computer</caption>
+          <thead><tr><th scope="col">Folder</th><th scope="col" class="r">Files</th><th scope="col" class="r">Size</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+          <tbody data-slot="folders"></tbody>
+        </table>
+      </div>
+      <div class="split gap-16">
+        <div class="panel pad stack gap-6">
+          <h3>Excluded</h3>
+          <ul class="rows excluded" data-slot="excluded"></ul>
+        </div>
+        <fieldset class="panel pad stack gap-8 placement">
+          <legend class="sr">Where the other computers' work folders go here</legend>
+          <h3 aria-hidden="true">Where other computers' work folders go</h3>
+          <label class="opt"><input type="radio" name="placement" value="home" class="check" data-slot="placement-home"><span>The same place in your home folder <span class="muted">(recommended)</span></span></label>
+          <label class="opt"><input type="radio" name="placement" value="machine" class="check" data-slot="placement-machine"><span>Exactly the same path, where this computer has it</span></label>
+        </fieldset>
+      </div>
+      <div class="row"><button type="button" class="btn" data-slot="exclude">Exclude a folder</button><button type="button" class="btn" data-slot="scan-history">Look through older conversations</button><span class="muted small grow">Finds folders used before claude-sessions was installed. It also reads conversations from your other computers.</span></div>
+    </section>
+
+    <section aria-labelledby="map-h" class="section">
+      <h2 id="map-h">Where the other computers' folders go here</h2>
+      <ul class="panel rows" data-slot="maps"></ul>
+      <div class="row"><button type="button" class="btn" data-slot="add-folder">Add a folder</button><button type="button" class="btn" data-slot="add-project">Add a project</button></div>
+    </section>
+
+    <section aria-labelledby="auto-backup-h" class="section">
+      <h2 id="auto-backup-h">Automatic backup</h2>
+      <div class="panel pad stack layer-5">
+        <p class="status ok" data-slot="auto-state"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg><span class="status-text" data-slot="auto-text"></span></p>
+        <div class="row fields">
+          <div class="every" data-slot="every" data-label="Scheduled backup"></div>
+          <button type="button" class="btn" data-slot="install">Set up again</button>
+          <button type="button" class="btn quiet-danger" data-slot="uninstall">Turn off automatic backup</button>
+        </div>
+        <p class="muted small">Turning it off keeps your archive. Restart Claude Code after setting it up again.</p>
+      </div>
+    </section>
+
+    <div class="stack gap-16">
+      <section aria-labelledby="prof-h" class="panel pad stack">
+        <h2 id="prof-h">Rules and skills</h2>
+        <p data-slot="profile-line"></p>
+        <ul class="small profile-list" data-slot="profile"></ul>
+        <div class="row"><button type="button" class="btn" data-slot="compare">Compare</button><button type="button" class="btn" data-slot="take-newer">Take the newer copies here</button></div>
+      </section>
+      <section aria-labelledby="pages-h" class="panel pad stack">
+        <h2 id="pages-h">Readable pages</h2>
+        <p data-slot="pages-line"></p>
+        <p class="small">Left out of pages: <span data-slot="left-out"></span> <button type="button" class="btn sm ghost" data-slot="change-left-out">Change</button></p>
+        <div class="row"><button type="button" class="btn" data-slot="rebuild">Rebuild all pages</button></div>
+      </section>
+    </div>
+
+    <section aria-labelledby="full-h" class="panel pad row">
+      <div class="grow stack gap-3"><h2 id="full-h">Full backup file</h2><p class="muted">One zip of everything on this computer: conversations, subagents, memory and settings. Keep it somewhere safe; it may hold passwords from your conversations.</p></div>
+      <div class="row"><button type="button" class="btn" data-slot="backup-preview">Preview</button><button type="button" class="btn" data-slot="backup">Create backup file</button></div>
+    </section>
+  </div>
+
+  <section aria-labelledby="log-h" class="section">
+    <h2 id="log-h">Log</h2>
+    <pre class="mono log" data-slot="log"></pre>
+    <div class="row"><button type="button" class="btn" data-slot="open-log">Open the log file</button></div>
+  </section>
+
+  <p class="muted small" data-slot="about"></p>
+</template>
+
+<template id="t-commands">
+  <header class="stack gap-8">
+    <a href="#/settings" class="back">Back to Settings</a>
+    <h1 tabindex="-1">Every command, and where it is in the panel</h1>
+    <p class="lead">Everything the terminal can do, the panel can do too. The panel runs the same commands, so the two always agree. Only shell tab-completion stays terminal-only, because it changes your shell, not your backups.</p>
+  </header>
+  <div class="panel table-box">
+    <table class="commands-table">
+      <caption class="sr">Terminal commands and the matching place in the panel</caption>
+      <thead><tr><th scope="col" class="col-terminal">In the terminal</th><th scope="col">In the panel</th></tr></thead>
+      <tbody data-slot="rows"></tbody>
+    </table>
+  </div>
+</template>
 </body>
 </html>
