@@ -1,6 +1,6 @@
 # Browser panel: design
 
-Date: 2026-11-25. Status: ready for the owner's approval.
+Date: 2026-11-25. Status: approved by the owner 2026-11-26 (mockups and design).
 Mockups (approved by the owner 2026-11-25): https://claude.ai/artifact/EhxAMwwqmLs72xChPRLJ3J.
 The mockups are private to the owner; the screens are described below.
 
@@ -199,11 +199,23 @@ purpose.
 - **A manual browser checklist** in the plan, run on macOS and Windows before release.
   No browser automation in CI, since that would bring in Node.
 
-## Delivery (my call)
+## Delivery (the owner's call, 2026-11-26)
 
-Conversation zips, pruning and the several-computers work ship first as 0.6.0, then get
-rolled out to all three computers. The panel ships next as 0.7.0: it depends on all of
-them, and is large enough to deserve its own review and release.
+There is one release, 0.7.0, with everything: conversation zips, pruning, the
+several-computers work, and the panel. 0.6.0 is not published separately. Each computer
+then updates once.
+
+**Before publishing:**
+1. Install the release candidate fresh on a new Windows laptop (code
+   on D:, Google Drive on H:, no git or Scoop). It is the first-time-user test:
+   - set up from `docs/setup-with-claude.md` and the panel;
+   - bring in the other two computers' work;
+   - turn on automatic backup.
+2. Then update the Mac and the other Windows laptop.
+3. Check on all three: compression, deleting, and bringing work in each way.
+
+The `lastPush` field is part of the same release, so every computer reports it from its
+first update.
 
 ## Left to the builder
 
