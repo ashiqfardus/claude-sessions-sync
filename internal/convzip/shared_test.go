@@ -250,3 +250,32 @@ func TestUnzipKilledAtEachStep(t *testing.T) {
 		holdsEverything(t, dir)
 	}
 }
+
+// Another machine's zip replaces the one Unzip read while Unzip writes the entries:
+// that zip stays, beside the loose files written, for the sweep to settle later.
+func TestUnzipKeepsAZipReplacedMeanwhile(t *testing.T) {
+	dir, _ := bucket(t)
+	if _, err := Zip(dir, testID); err != nil {
+		t.Fatal(err)
+	}
+	zp := Path(dir, testID)
+	other := "another machine's newer zip"
+	defer func(old func(string, string) error) { copyFile = old }(copyFile)
+	once := false
+	copyFile = func(src, dst string) error {
+		if !once {
+			once = true
+			put(t, zp, other, time.Now())
+		}
+		return archive.CopyFile(src, dst)
+	}
+	if err := Unzip(dir, testID); err != nil {
+		t.Fatalf("unzip: %v", err)
+	}
+	if b, err := os.ReadFile(zp); err != nil || string(b) != other {
+		t.Errorf("Unzip removed the zip that replaced the one it read: %q %v", b, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, testID+".jsonl")); string(b) != turn(1)+turn(2)+turn(3) {
+		t.Errorf("the loose transcript was not written: %q", b)
+	}
+}

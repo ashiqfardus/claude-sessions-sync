@@ -1025,20 +1025,44 @@ func zipSkippedPath(root string) string {
 }
 
 // bothSeenPath remembers, by "bucket/id", each zip a sweep found with loose files beside
-// it: that state by stat alone, and when it was first seen. Nothing in it comes from
-// the archive.
+// it: that state by stat alone, when it was first seen, confirmed and last seen.
+// Nothing in it comes from the archive.
 func bothSeenPath(root string) string {
 	return filepath.Join(root, "session-sync-base", "both-seen.json")
 }
 
 type bothSeen struct {
-	State string    `json:"state"`
-	Since time.Time `json:"since"`
+	State     string    `json:"state"`
+	Since     time.Time `json:"since"`
+	Confirmed time.Time `json:"confirmed,omitempty"`
+	Last      time.Time `json:"last"`
 }
 
-// bothSettle is how long a zip and the loose files beside it must have stood as they
-// are before a sweep removes or rewrites either.
-const bothSettle = 24 * time.Hour // a day: outlasts a lid closed mid-upload, and costs only space
+// A zip and the loose files beside it are removed or rewritten only once they have stood
+// as they are bothSettle, which a later sighting confirms, and bothAwake more after
+// that: wall-clock time alone may have passed with this computer asleep and its sync
+// client stopped. A gap over bothGap between two sightings starts again.
+const (
+	bothSettle = 24 * time.Hour // a day: outlasts a lid closed mid-upload, and costs only space
+	bothAwake  = time.Hour      // awake this long since the confirmation, the sync client has caught up
+	bothGap    = 72 * time.Hour // longer between sightings, this computer was off: its view may be days old
+)
+
+// next is the record of a pair seen in state at now, and whether to act on it now.
+// A new state, a clock gone back, or a gap of days is a first sighting again.
+func (prev bothSeen) next(state string, now time.Time) (bothSeen, bool) {
+	if prev.State != state || prev.Since.After(now) || prev.Confirmed.After(now) || prev.Last.After(now) || now.Sub(prev.Last) > bothGap {
+		return bothSeen{State: state, Since: now, Last: now}, false
+	}
+	switch {
+	case prev.Confirmed.IsZero() && now.Sub(prev.Since) >= bothSettle:
+		prev.Confirmed = now
+	case !prev.Confirmed.IsZero() && now.Sub(prev.Confirmed) >= bothAwake:
+		return prev, true
+	}
+	prev.Last = now
+	return prev, false
+}
 
 // bothState is a zip and the loose files beside it, by stat alone: the zip's size and
 // time, then each loose file's name and size, sorted. "" when either is missing.
@@ -1070,8 +1094,8 @@ func bothState(dir, id string) string {
 // machine's transcript of it, are all unchanged since now-zipIdle, until budget (0 for
 // none) runs out: the rest wait for the next run. Loose files beside a zip - another
 // machine's zip whose deletions have not arrived, another machine's unzip whose removal
-// of the zip has not, or a run killed half way - are only recorded the first time. Once
-// the same state was seen bothSettle before, whatever was in flight has landed: they are
+// of the zip has not, or a run killed half way - are only recorded until that state has
+// stood long enough (bothSeen.next); then whatever was in flight has landed. They are
 // removed when the zip holds every one, and the zip left as it is; only loose files
 // holding something it lacks are unzipped into it, then zipped again. A dry run lists
 // them.
@@ -1136,12 +1160,9 @@ each:
 			if zp != "" {
 				// The first sight of a zip beside loose files changes nothing: another
 				// machine may be zipping or unzipping it, its writes still on their way.
-				state := bothState(dir, id)
-				if prev, ok := seen[key]; !ok || prev.State != state {
-					seen[key], seenDirty, sawNow[key] = bothSeen{State: state, Since: now}, true, true
-					continue
-				} else if now.Sub(prev.Since) < bothSettle {
-					sawNow[key] = true
+				rec, act := seen[key].next(bothState(dir, id), now)
+				if !act {
+					seen[key], seenDirty, sawNow[key] = rec, true, true
 					continue
 				}
 				delete(seen, key) // settled below, or remembered as skipped
@@ -1160,6 +1181,14 @@ each:
 				switch {
 				case errors.Is(err, convzip.ErrDiverged):
 					logf("WARN: %s: %v; the zip and the loose copy beside it are both kept", id, err)
+					remember()
+					continue
+				case errors.Is(err, convzip.ErrNotRemoved):
+					logf("WARN: %s: %v; the zip is kept, and the loose files left stay beside it", id, err)
+					remember()
+					continue
+				case errors.Is(err, os.ErrNotExist):
+					logf("WARN: %s: the zip went while it was read; the loose files beside it are kept", id)
 					remember()
 					continue
 				case err != nil:
@@ -1214,21 +1243,53 @@ each:
 }
 
 // removeStaleExtracts removes the folders of zips unpacked in the OS temp folder that a
-// killed run left behind, untouched for an hour: no push, read or check holds one that
-// long, and Windows never clears its temp folder. Only these names, only folders, and a
-// link is never followed.
+// killed run left behind, nothing in them touched for an hour: no push, read or check
+// holds one that long, and Windows never clears its temp folder. Only the names this
+// program's own MkdirTemp calls make, only folders this user owns, and a link is never
+// followed.
 func removeStaleExtracts(now time.Time) {
 	tmp := os.TempDir()
 	ents, _ := os.ReadDir(tmp)
 	for _, e := range ents {
-		n := e.Name()
-		if !e.IsDir() || !(strings.HasPrefix(n, "convzip-") || strings.HasPrefix(n, "claude-sessions-push-") || strings.HasPrefix(n, "cs-zip")) {
+		if !e.IsDir() || !extractName(e.Name()) {
 			continue
 		}
-		if info, err := e.Info(); err == nil && now.Sub(info.ModTime()) > time.Hour {
-			os.RemoveAll(filepath.Join(tmp, n))
+		p := filepath.Join(tmp, e.Name())
+		if info, err := e.Info(); err == nil && ownedByMe(info) && untouchedSince(p, now.Add(-time.Hour)) {
+			os.RemoveAll(p)
 		}
 	}
+}
+
+// extractName reports a name os.MkdirTemp makes from one of this program's patterns
+// for unpacked zips: the pattern, then digits.
+func extractName(n string) bool {
+	for _, pattern := range []string{"convzip-verify-", "convzip-", "claude-sessions-push-", "cs-zip"} {
+		if rest, ok := strings.CutPrefix(n, pattern); ok && rest != "" && strings.Trim(rest, "0123456789") == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// untouchedSince reports whether root and everything under it, links not followed, is
+// no newer than cutoff. A tree too large to walk quickly, or with an entry it cannot
+// stat, counts as touched.
+func untouchedSince(root string, cutoff time.Time) bool {
+	n, untouched := 0, true
+	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		n++
+		var info os.FileInfo
+		if err == nil {
+			info, err = d.Info()
+		}
+		if err != nil || n > 10000 || info.ModTime().After(cutoff) {
+			untouched = false
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return untouched
 }
 
 // looseSize totals the regular files of id's loose copy in dir, its transcript and

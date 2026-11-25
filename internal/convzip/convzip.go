@@ -32,6 +32,10 @@ var ErrZipExists = errors.New("a zip already exists; unzip it first")
 // It changes nothing.
 var ErrNotHeld = errors.New("a loose file holds what the zip lacks")
 
+// ErrNotRemoved is DropHeld's answer when the zip holds every loose file but removing
+// them stopped part way: the zip stays, and so do the files not yet removed.
+var ErrNotRemoved = errors.New("the zip holds every loose file beside it, but not all could be removed")
+
 // ErrDiverged is Unzip's refusal when the loose and zipped copies of a transcript each
 // hold turns the other lacks. It changes nothing.
 var ErrDiverged = errors.New("loose and zipped transcripts have each turns the other lacks")
@@ -389,10 +393,12 @@ func TranscriptOnly(bucketDir, id, tmpDir string) (transcript string, cleanup fu
 // one's, is replaced when the zipped one holds all of it, and when neither does Unzip
 // changes nothing and returns ErrDiverged. Any refused or foreign entry fails it, and
 // then the zip stays. Entries are unpacked outside the bucket and moved in one file at
-// a time through a temp beside the target.
+// a time through a temp beside the target. A zip replaced meanwhile - another
+// machine's, synced in - is not the one read, and stays beside the loose files written.
 func Unzip(bucketDir, id string) error {
 	zp := Path(bucketDir, id)
-	if !isRegular(zp) {
+	read, err := os.Lstat(zp)
+	if err != nil || !read.Mode().IsRegular() {
 		return os.ErrNotExist
 	}
 	dir, files, err := extract(zp, "", id, false)
@@ -430,6 +436,9 @@ func Unzip(bucketDir, id string) error {
 		if err := copyFile(f.Path, dst); err != nil { // temp, mtime, rename
 			return err
 		}
+	}
+	if now, err := os.Lstat(zp); err != nil || !os.SameFile(read, now) || now.Size() != read.Size() || !now.ModTime().Equal(read.ModTime()) {
+		return nil // the sweep settles the pair, once it has stood
 	}
 	return os.Remove(zp)
 }
@@ -475,7 +484,10 @@ func DropHeld(bucketDir, id string) error {
 	if !isRegular(zp) { // removed meanwhile: the loose files may be all there is
 		return os.ErrNotExist
 	}
-	return removeLoose(bucketDir, id, files)
+	if err := removeLoose(bucketDir, id, files); err != nil {
+		return fmt.Errorf("%w: %v", ErrNotRemoved, err)
+	}
+	return nil
 }
 
 func exists(p string) bool { _, err := os.Lstat(p); return err == nil }

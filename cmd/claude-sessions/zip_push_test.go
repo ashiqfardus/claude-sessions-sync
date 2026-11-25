@@ -182,7 +182,7 @@ func TestPushSaysOnceWhenAZipCannotBeRedone(t *testing.T) {
 	bucket := zipArchived(t, archive, repo)
 	garble(t, convzip.Path(bucket, forkSession))
 	mac.run(t, "push", "--no-html") // archives the local copy beside the zip it cannot read
-	aDayOn(t, mac)
+	confirmed(t, mac)
 	mac.run(t, "push", "--no-html")
 	mac.run(t, "push", "--no-html")
 	if n := strings.Count(pushLog(t, mac), "not unzipped to zip again"); n != 1 {
@@ -289,7 +289,7 @@ func TestPushZipsALeftoverBesideItsZip(t *testing.T) {
 	agePaths(t, 31*day, left)
 
 	mac.run(t, "push", "--no-html") // first seen: left as it is
-	aDayOn(t, mac)
+	confirmed(t, mac)
 	mac.run(t, "push", "--no-html")
 	onlyZip(t, bucket)
 	ents, err := convzip.Entries(convzip.Path(bucket, forkSession))
@@ -312,7 +312,7 @@ func TestPushLeavesADivergedLeftoverOnce(t *testing.T) {
 	agePaths(t, 31*day, loose)
 
 	mac.run(t, "push", "--no-html")
-	aDayOn(t, mac)
+	confirmed(t, mac)
 	mac.run(t, "push", "--no-html")
 	mac.run(t, "push", "--no-html")
 	if n := strings.Count(pushLog(t, mac), "WARN: "+forkSession); n != 1 {

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -89,18 +90,30 @@ func bothSeenFile(m machine) string {
 }
 
 // aDayOn makes each pair m's sweeps recorded seen 25 hours earlier: its next sweep
-// finds a state it has seen long enough to act on.
+// confirms a state it has seen that long.
 func aDayOn(t *testing.T, m machine) {
 	t.Helper()
 	ageRecord(t, m, 25*time.Hour)
 }
 
-// ageRecord makes each pair m's sweeps recorded seen by earlier.
+// confirmed takes each pair m's sweeps recorded through the day's wait and its
+// confirmation, then two hours on: m's next sweep acts on it.
+func confirmed(t *testing.T, m machine) {
+	t.Helper()
+	aDayOn(t, m)
+	m.run(t, "push", "--no-html")
+	ageRecord(t, m, 2*time.Hour)
+}
+
+// ageRecord moves every time m's record of pairs holds by earlier: as though that much
+// time passed before its next sweep.
 func ageRecord(t *testing.T, m machine, by time.Duration) {
 	t.Helper()
 	var seen map[string]struct {
-		State string    `json:"state"`
-		Since time.Time `json:"since"`
+		State     string    `json:"state"`
+		Since     time.Time `json:"since"`
+		Confirmed time.Time `json:"confirmed,omitempty"`
+		Last      time.Time `json:"last"`
 	}
 	data, err := os.ReadFile(bothSeenFile(m))
 	if os.IsNotExist(err) {
@@ -110,7 +123,10 @@ func ageRecord(t *testing.T, m machine, by time.Duration) {
 		t.Fatalf("the record cannot be read (%v): %s", err, data)
 	}
 	for k, e := range seen {
-		e.Since = e.Since.Add(-by)
+		e.Since, e.Last = e.Since.Add(-by), e.Last.Add(-by)
+		if !e.Confirmed.IsZero() {
+			e.Confirmed = e.Confirmed.Add(-by)
+		}
 		seen[k] = e
 	}
 	b, _ := json.Marshal(seen)
@@ -196,10 +212,10 @@ func TestSharedBucketKeepsLooseFilesWhoseUnzipIsOnTheWay(t *testing.T) {
 }
 
 // A zip with loose files beside it that stay so - a run here killed after the zip was
-// in place, before the loose files went - is settled by the first sweep at least a day
-// after that state was first seen, and not before, even hours on: the loose files go,
-// the zip stays.
-func TestALeftoverBesideItsZipIsSettledADayOn(t *testing.T) {
+// in place, before the loose files went - is settled over two days: a sweep a day after
+// the first sight only confirms it, and the first sweep an hour after that acts. None
+// before does: the loose files go, the zip stays.
+func TestALeftoverBesideItsZipIsSettledOverTwoDays(t *testing.T) {
 	archive, mac, repo := pushedSession(t)
 	ageSession(t, mac, repo, 31*day)
 	bucket := archiveBucket(archive, repo)
@@ -209,18 +225,110 @@ func TestALeftoverBesideItsZipIsSettledADayOn(t *testing.T) {
 	zst := mustStat(t, convzip.Path(bucket, forkSession))
 
 	before := tree(t, bucket)
-	mac.run(t, "push", "--no-html")
-	mac.run(t, "push", "--no-html")
-	ageRecord(t, mac, 2*time.Hour)
-	mac.run(t, "push", "--no-html")
-	if after := tree(t, bucket); after != before {
-		t.Fatalf("a sweep within the day changed the leftover:\n%s\nwas\n%s", after, before)
+	for i, wait := range []time.Duration{0, 2 * time.Hour, 23 * time.Hour, 30 * time.Minute} { // first sight, hours on, confirmed, too soon
+		ageRecord(t, mac, wait)
+		mac.run(t, "push", "--no-html")
+		if after := tree(t, bucket); after != before {
+			t.Fatalf("sweep %d changed the leftover:\n%s\nwas\n%s", i+1, after, before)
+		}
 	}
-	aDayOn(t, mac)
+	ageRecord(t, mac, time.Hour)
 	mac.run(t, "push", "--no-html")
 	onlyZip(t, bucket)
 	if st, err := os.Stat(convzip.Path(bucket, forkSession)); err != nil || !os.SameFile(zst, st) {
 		t.Errorf("the zip, which holds every loose file, was written again: %v", err)
+	}
+	holdsConversation(t, bucket, []string{"u1", "m1"}, map[string]string{"subagents/agent-a1.jsonl": `"s1"`})
+}
+
+// The mirror ordering, B asleep for a day after its first sight: its sync client
+// delivered nothing meanwhile, and its first sweep on waking runs before the client
+// catches up. That sweep only confirms the pair; by the next, A's writes have landed.
+func TestASweepAfterASleepOnlyConfirms(t *testing.T) {
+	archive, b, repo := pushedSession(t)
+	bucket := archiveBucket(archive, repo)
+	mustWrite(t, filepath.Join(bucket, forkSession, "tool-results", "r0.txt"), "archived only\n")
+	ageSession(t, b, repo, 31*day)
+	zipArchived(t, archive, repo)
+	zp := convzip.Path(bucket, forkSession)
+	zipped, zst := mustRead(t, zp), mustStat(t, zp)
+	if err := convzip.Unzip(bucket, forkSession); err != nil { // computer A
+		t.Fatal(err)
+	}
+	mustWrite(t, zp, zipped)
+	os.Chtimes(zp, zst.ModTime(), zst.ModTime())
+
+	b.run(t, "push", "--no-html") // first sight
+	aDayOn(t, b)                  // asleep: nothing lands
+	b.run(t, "push", "--no-html") // awake, before the sync client catches up
+	os.Remove(zp)                 // it catches up: A's removal of the zip and its new turn land
+	mustWrite(t, filepath.Join(bucket, forkSession+".jsonl"), sessionLines(repo, "u1", "m1", "w1"))
+	holdsConversation(t, bucket, []string{"u1", "m1", "w1"}, map[string]string{"subagents/agent-a1.jsonl": `"s1"`, "tool-results/r0.txt": "archived only"})
+	ageRecord(t, b, 2*time.Hour)
+	b.run(t, "push", "--no-html")
+	holdsConversation(t, bucket, []string{"u1", "m1", "w1"}, map[string]string{"subagents/agent-a1.jsonl": `"s1"`, "tool-results/r0.txt": "archived only"})
+}
+
+// A clock that went back, or a gap of days between two sightings, starts the pair
+// again from a first sight: a record from the future never settles early, nor does one
+// confirmed before the computer was off for three days.
+func TestAClockJumpStartsThePairAgain(t *testing.T) {
+	for name, jump := range map[string]func(t *testing.T, m machine){
+		"first sight in the future": func(t *testing.T, m machine) { ageRecord(t, m, -72*time.Hour) },
+		"confirmed in the future": func(t *testing.T, m machine) {
+			confirmed(t, m)
+			ageRecord(t, m, -5*time.Hour) // the clock went back: confirmed 3 hours from now
+		},
+		"off for three days": func(t *testing.T, m machine) {
+			confirmed(t, m)
+			ageRecord(t, m, 72*time.Hour)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			archive, mac, repo := pushedSession(t)
+			ageSession(t, mac, repo, 31*day)
+			bucket := archiveBucket(archive, repo)
+			files := zippedFiles(t, filepath.Join(bucket, forkSession+".jsonl"), filepath.Join(bucket, forkSession, "subagents", "agent-a1.jsonl"))
+			zipArchived(t, archive, repo)
+			notYetDeleted(t, files)
+			before := tree(t, bucket)
+			mac.run(t, "push", "--no-html")
+			jump(t, mac)
+			mac.run(t, "push", "--no-html") // a first sight again
+			ageRecord(t, mac, 5*time.Hour)
+			mac.run(t, "push", "--no-html")
+			if after := tree(t, bucket); after != before {
+				t.Errorf("the pair was settled across the jump:\n%s\nwas\n%s", after, before)
+			}
+		})
+	}
+}
+
+// A zip beside loose files it holds, settled, where removing one of them fails: the log
+// says so, not that nothing was unzipped, and the zip and that file stay.
+func TestASettleThatCannotRemoveSaysSo(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a folder its owner cannot write")
+	}
+	archive, mac, repo := pushedSession(t)
+	ageSession(t, mac, repo, 31*day)
+	bucket := archiveBucket(archive, repo)
+	files := zippedFiles(t, filepath.Join(bucket, forkSession+".jsonl"), filepath.Join(bucket, forkSession, "subagents", "agent-a1.jsonl"))
+	zipArchived(t, archive, repo)
+	notYetDeleted(t, files)
+	mac.run(t, "push", "--no-html")
+	confirmed(t, mac)
+	sub := filepath.Join(bucket, forkSession, "subagents")
+	os.Chmod(sub, 0o555)
+	t.Cleanup(func() { os.Chmod(sub, 0o755) })
+	mac.run(t, "push", "--no-html")
+	os.Chmod(sub, 0o755)
+	log := pushLog(t, mac)
+	if strings.Contains(log, "not unzipped") || !strings.Contains(log, "the zip holds every loose file") {
+		t.Errorf("the log does not say what happened:\n%s", log)
+	}
+	if !fileExists(convzip.Path(bucket, forkSession)) || !fileExists(filepath.Join(sub, "agent-a1.jsonl")) {
+		t.Error("the zip, or the file that could not be removed, is gone")
 	}
 	holdsConversation(t, bucket, []string{"u1", "m1"}, map[string]string{"subagents/agent-a1.jsonl": `"s1"`})
 }
@@ -251,8 +359,8 @@ func TestAnUnreadablePairRecordChangesNothing(t *testing.T) {
 	}
 }
 
-// A quiet sweep that finds a zip beside loose files for the first time reads no zip:
-// one garbled at the same size and time goes unnoticed.
+// A quiet sweep that finds a zip beside loose files for the first time, or confirms
+// it a day on, reads no zip: one garbled at the same size and time goes unnoticed.
 func TestQuietSweepFirstSightReadsNoZip(t *testing.T) {
 	archive, mac, repo := pushedSession(t)
 	ageSession(t, mac, repo, 31*day)
@@ -271,6 +379,14 @@ func TestQuietSweepFirstSightReadsNoZip(t *testing.T) {
 	}
 	if !strings.Contains(mustRead(t, bothSeenFile(mac)), forkSession) {
 		t.Error("the pair was not recorded")
+	}
+	aDayOn(t, mac) // the confirming sweep reads none either
+	mac.run(t, "push", "--no-html", "--quiet", "--sweep")
+	if log := pushLog(t, mac); strings.Contains(log, "WARN") {
+		t.Errorf("the confirming sweep read the zip:\n%s", log)
+	}
+	if !strings.Contains(mustRead(t, bothSeenFile(mac)), `"confirmed"`) {
+		t.Errorf("the pair was not confirmed:\n%s", mustRead(t, bothSeenFile(mac)))
 	}
 }
 
@@ -372,11 +488,12 @@ func TestNothingUnpackableRewritesTheZip(t *testing.T) {
 	})
 }
 
-// A push removes what killed runs left in the OS temp folder: its own extracts, older
-// than an hour. Nothing else there - a newer extract, another name, a file, a link and
-// what it points to - is touched.
+// A push removes what killed runs left in the OS temp folder: its own extracts, with
+// nothing in them touched for an hour. Nothing else there is touched: an old folder
+// holding a file in use, another name or one only like ours, a file, a link and what
+// it points to.
 func TestPushRemovesStaleExtractsFromTheTempFolder(t *testing.T) {
-	archive, mac, _ := pushedSession(t)
+	_, mac, _ := pushedSession(t)
 	tmp := t.TempDir()
 	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(k, tmp)
@@ -385,24 +502,31 @@ func TestPushRemovesStaleExtractsFromTheTempFolder(t *testing.T) {
 	at := func(name string, dir bool) string {
 		p := filepath.Join(tmp, name)
 		if dir {
-			mustWrite(t, filepath.Join(p, "x.jsonl"), "extracted\n")
+			mustWrite(t, filepath.Join(p, "sub", "x.jsonl"), "extracted\n")
+			agePaths(t, 2*time.Hour, p)
+			os.Chtimes(filepath.Join(p, "sub"), old, old)
 		} else {
 			mustWrite(t, p, "a file\n")
 		}
 		os.Chtimes(p, old, old)
 		return p
 	}
-	stale := []string{at("convzip-123", true), at("claude-sessions-push-456", true), at("cs-zip789", true)}
-	kept := []string{at("convzip-file", false), at("other-123", true)}
-	fresh := filepath.Join(tmp, "convzip-new")
+	stale := []string{at("convzip-123", true), at("convzip-verify-456", true), at("claude-sessions-push-789", true), at("cs-zip1011", true)}
+	kept := []string{at("convzip-file", false), at("other-123", true), at("cs-zipper", true), at("convzip-abc", true), at("cs-zip12x", true)}
+	inUse := at("convzip-999", true)
+	mustWrite(t, filepath.Join(inUse, "sub", "y.jsonl"), "in use\n") // a file written now, deep in an old folder
+	os.Chtimes(filepath.Join(inUse, "sub"), old, old)
+	os.Chtimes(inUse, old, old)
+	fresh := filepath.Join(tmp, "convzip-1000")
 	mustWrite(t, filepath.Join(fresh, "x.jsonl"), "in use\n")
-	kept = append(kept, fresh)
+	kept = append(kept, inUse, fresh)
 	target := filepath.Join(t.TempDir(), "elsewhere")
 	mustWrite(t, filepath.Join(target, "x.jsonl"), "not ours\n")
-	if os.Symlink(target, filepath.Join(tmp, "convzip-link")) == nil {
-		kept = append(kept, filepath.Join(tmp, "convzip-link"), filepath.Join(target, "x.jsonl"))
-	}
+	agePaths(t, 2*time.Hour, target)
 	os.Chtimes(target, old, old)
+	if os.Symlink(target, filepath.Join(tmp, "convzip-1001")) == nil {
+		kept = append(kept, filepath.Join(tmp, "convzip-1001"), filepath.Join(target, "x.jsonl"))
+	}
 
 	mac.run(t, "push", "--no-html")
 	for _, p := range stale {
@@ -415,7 +539,6 @@ func TestPushRemovesStaleExtractsFromTheTempFolder(t *testing.T) {
 			t.Errorf("%s was removed", p)
 		}
 	}
-	_ = archive
 }
 
 // A loose copy beside a zip that holds more of the conversation - written by a computer
