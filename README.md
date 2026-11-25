@@ -607,8 +607,9 @@ claude-sessions prune <conversation id> --yes
   picks is then dated from its own last message, as `prune` dates it, before it is
   deleted: a file changed after the last message (a subagent's, a title) can make it
   delete a conversation a little later than `prune --older-than` would, never sooner.
-  In the sweep, choosing and checking take at most 45 seconds a day; what it has not
-  reached waits for the next day's run, which starts there. `doctor`'s `prune` line
+  In the sweep it stops choosing after about 22 seconds and starts no new check after
+  45; one large conversation being checked can run past that. What it has not reached waits for
+  the next day's run, which starts there. `doctor`'s `prune` line
   shows the setting and when it last ran there.
 - **Every computer must be updated first.** An older version would upload a pruned
   conversation again, so `prune --yes` and the age rule delete nothing until every

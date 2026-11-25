@@ -1627,21 +1627,40 @@ func TestAgeRuleRecordsOneTurnWhileATranscriptGrows(t *testing.T) {
 	}
 }
 
+// fakeClock drives the age rule's budget clock: each read of a transcript's last turn
+// moves it on by step(name, n), n counting that file's reads from 1.
+func fakeClock(t *testing.T, step func(name string, n int) time.Duration) {
+	t.Helper()
+	now, reads := time.Now(), map[string]int{}
+	realC, realT := pruneClock, lastTurn
+	pruneClock = func() time.Time { return now }
+	lastTurn = func(p string) (string, time.Time) {
+		name := filepath.Base(p)
+		reads[name]++
+		now = now.Add(step(name, reads[name]))
+		return realT(p)
+	}
+	t.Cleanup(func() { pruneClock, lastTurn = realC, realT })
+}
+
 // I2: the sweep's budget bounds the checks before recording too. Past it, those checked
 // are recorded and deleted, and the next run starts at the first one left.
 func TestAgeRuleStopsCheckingAtTheDeadline(t *testing.T) {
 	claudeDir, dest := ageFixture(t)
 	conv(t, dest, "-Users-you-dev-api", oldAPI, time.Now().AddDate(0, 0, -200), "p1")
-	real := ageDeadline
-	ageDeadline = func(time.Time) time.Time { return time.Now() } // spent once planning is done
-	defer func() { ageDeadline = real }()
+	fakeClock(t, func(_ string, n int) time.Duration {
+		if n == 1 {
+			return time.Second // choosing
+		}
+		return 100 * time.Second // the check before recording: past the minute
+	})
 	ret, err := archive.LoadRetention(dest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var logged []string
 	logf := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
-	n, err := runAgeRule(claudeDir, dest, ret, time.Now(), time.Hour, logf)
+	n, err := runAgeRule(claudeDir, dest, ret, time.Now(), time.Minute, logf)
 	d, _ := archive.LoadDeleted(dest)
 	if n != 1 || err != nil || archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" ||
 		archivedCopy(dest, "-Users-you-dev-api", oldAPI) == "" || d[oldAPI].ID != "" {
@@ -1653,10 +1672,60 @@ func TestAgeRuleStopsCheckingAtTheDeadline(t *testing.T) {
 	if strings.Count(strings.Join(logged, "\n"), "PRUNE: ") != 1 {
 		t.Errorf("logged %q: want one PRUNE line, for the one deleted", logged)
 	}
-	ageDeadline = real
-	if n, err := runAgeRule(claudeDir, dest, ret, time.Now().Add(25*time.Hour), time.Hour, logf); n != 1 || err != nil ||
+	if n, err := runAgeRule(claudeDir, dest, ret, time.Now().Add(25*time.Hour), time.Minute, logf); n != 1 || err != nil ||
 		archivedCopy(dest, "-Users-you-dev-api", oldAPI) != "" {
 		t.Errorf("the next run deleted %d, %v: want the one left", n, err)
+	}
+}
+
+// Choosing stops at half the budget, so the checks always have the other half.
+func TestAgeRuleSplitsItsBudget(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	conv(t, dest, "-Users-you-dev-api", oldAPI, time.Now().AddDate(0, 0, -200), "p1")
+	fakeClock(t, func(string, int) time.Duration { return 40 * time.Second })
+	ret, err := archive.LoadRetention(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reading oldWeb takes choosing past 30 of the 60 seconds: it stops before newWeb,
+	// and oldWeb is checked, recorded and deleted in the rest.
+	n, err := runAgeRule(claudeDir, dest, ret, time.Now(), time.Minute, func(string, ...any) {})
+	if r, _ := pruneLast(claudeDir); n != 1 || err != nil || r.Next != newWeb || archivedCopy(dest, "-Users-you-dev-api", oldAPI) == "" {
+		t.Errorf("deleted %d, %v, next %q: want oldWeb deleted and choosing stopped before %s", n, err, r.Next, newWeb)
+	}
+}
+
+// With no turn time, a transcript is dated by its file's time taken after its last turn
+// is read: a turn landing between the two never gets an older time than its own.
+func TestPruneDatesAnUntimedTranscriptAfterReadingIt(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	const u = "aaaaaaaa-1111-4111-8111-00000000000f"
+	p := filepath.Join(archive.ProjectsDir(dest), "-Users-you-dev-api", u+".jsonl")
+	untimed := func(uuid string) string {
+		return `{"type":"user","uuid":"` + uuid + `","message":{"role":"user","content":"no time"}}` + "\n"
+	}
+	writeFile(t, p, untimed("q1"))
+	old := time.Now().AddDate(0, 0, -200)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+	real, calls := lastTurn, 0
+	lastTurn = func(path string) (string, time.Time) {
+		if path == p {
+			if calls++; calls == 2 { // the check before recording: q2 lands after its stat
+				writeFile(t, p, untimed("q1")+untimed("q2"))
+				now := time.Now().Add(-time.Hour)
+				if err := os.Chtimes(p, now, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return real(path)
+	}
+	defer func() { lastTurn = real }()
+	ageRule(t, claudeDir, dest, func(string, ...any) {})
+	if d, _ := archive.LoadDeleted(dest); archivedCopy(dest, "-Users-you-dev-api", u) == "" || d[u].ID != "" {
+		t.Errorf("the conversation continued an hour ago was deleted, recorded %+v", d[u])
 	}
 }
 

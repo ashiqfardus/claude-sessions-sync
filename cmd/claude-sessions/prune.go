@@ -32,7 +32,7 @@ type pruneItem struct {
 	ID, Project string
 	Buckets     []string
 	LastAt      time.Time // the newest copy's last turn
-	LastUUID    string    // that turn's uuid; "" when that copy is zipped, as zips are never unpacked to date them
+	LastUUID    string    // that turn's uuid, "" for none; while listed, also "" when that copy is zipped: only the check before recording reads a zip for it
 	Prompt      string
 	Size        int64
 	dated       bool    // every copy had a time when listed
@@ -50,7 +50,8 @@ type prunePlan struct {
 	cutoff time.Time           // zero without --older-than
 	local  map[string][]string // this machine's own copies, by id
 
-	// The age rule's budget, which ends both planning and the checks before recording.
+	// The age rule's budget. Planning stops at its first half, and the checks before
+	// recording at its end, so the checks always have the second half.
 	deadline time.Time // zero for none
 	cut      string    // the id planning stopped before; "" when it went through
 }
@@ -58,9 +59,10 @@ type prunePlan struct {
 // ageScan is how the age rule selects: unattended, once a day, on an archive that may be
 // a drive that fetches each file only when it is opened. It dates by stat first. A
 // transcript or fork whose file changed after the cutoff is too young to select, so its
-// tail is not read. A zip is dated by its file's own time, when it was zipped, and
-// neither its index nor its content is read. It starts at from, where the last run
-// stopped, and stops once budget (0 for none) is spent. This only selects: applyPrune
+// tail is not read. A zip is dated by its file's own time, which Zip sets to the newest
+// of its files', its last activity, and neither its index nor its content is read. It
+// starts at from, where the last run stopped, and stops choosing once half its budget
+// (0 for none) is spent, leaving the rest to the checks. This only selects: applyPrune
 // dates each one selected exactly before anything is recorded, as for prune.
 type ageScan struct {
 	budget time.Duration
@@ -252,17 +254,18 @@ func planWith(root, dest string, sel pruneSel, ret archive.Retention, now time.T
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	mode := dateListed
+	mode, planned := dateListed, time.Time{} // when choosing stops; zero for never
 	if scan != nil {
 		mode = dateQuick
 		if scan.budget > 0 {
-			plan.deadline = time.Now().Add(scan.budget)
+			start := pruneClock()
+			plan.deadline, planned = start.Add(scan.budget), start.Add(scan.budget/2)
 		}
 		k := sort.SearchStrings(ids, scan.from)
 		ids = append(slices.Clone(ids[k:]), ids[:k]...)
 	}
 	for i, id := range ids {
-		if i > 0 && pastDeadline(plan) {
+		if i > 0 && !planned.IsZero() && !pruneClock().Before(planned) {
 			plan.cut = id
 			break
 		}
@@ -310,15 +313,19 @@ func planWith(root, dest string, sel pruneSel, ret archive.Retention, now time.T
 
 // datePrune sets it.LastAt to the newest last turn of any copy - loose, zipped, forked,
 // or this machine's own - and LastUUID to that turn's. A loose copy with no turn time
-// is dated by its modification time. A zipped copy is dated by its transcript entry's
-// modification time, from the zip's index alone: never before its last turn, so the
-// conversation can only look younger. It reports false when any copy cannot be dated,
-// or is dated after now - a wrong clock: the conversation may be younger than it looks,
-// and a LastAt still to come would make push skip turns added before then.
+// is dated by its modification time, taken after its last turn is read. It reports
+// false when any copy cannot be dated, or is dated after now - a wrong clock: the
+// conversation may be younger than it looks, and a LastAt still to come would make push
+// skip turns added before then.
 //
-// mode says how a zip is read, and dateQuick dates as ageScan says: a file changed after
-// cutoff dates the conversation by that time, too young to select, and nothing more of
-// it is read.
+// mode says how a zipped copy is read, and whether stat comes first:
+//   - dateListed, prune's listing: by its transcript entry's modification time, from the
+//     zip's index alone, never before its last turn; no uuid.
+//   - dateQuick, the age rule's selection (ageScan): a file changed after cutoff dates
+//     the conversation by that time, too young to select, and nothing more of it is
+//     read; a zip is dated by its file's own time; no uuid from a zip.
+//   - dateExact, the check before recording: by its transcript's last turn and uuid,
+//     read from the zip itself.
 func datePrune(dest string, it *pruneItem, local []string, now time.Time, mode dateMode, cutoff time.Time) bool {
 	dated, young, newest := true, false, ""
 	use := func(at time.Time, uuid string) {
@@ -351,7 +358,8 @@ func datePrune(dest string, it *pruneItem, local []string, now time.Time, mode d
 			return
 		}
 		uuid, at := lastTurn(p) // one read: both name the same turn while it grows
-		if at.IsZero() && err == nil {
+		// Its time, with no turn time, from after that read: never older than what it read.
+		if st, err := os.Lstat(p); at.IsZero() && err == nil {
 			at = st.ModTime()
 		}
 		use(at, uuid)
@@ -475,8 +483,11 @@ func conversationSize(dest string, it pruneItem) int64 {
 // pastDeadline reports whether the age rule's budget is spent. Its first conversation
 // is always read, so every run gets somewhere.
 func pastDeadline(plan prunePlan) bool {
-	return !plan.deadline.IsZero() && !time.Now().Before(plan.deadline)
+	return !plan.deadline.IsZero() && !pruneClock().Before(plan.deadline)
 }
+
+// pruneClock is the age rule's budget's clock; tests drive it.
+var pruneClock = time.Now
 
 // errOutOfTime marks the first conversation the age rule's budget left unchecked, and
 // so neither recorded nor deleted: where its next run starts.
@@ -779,7 +790,6 @@ func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget 
 	if err != nil {
 		return 0, err
 	}
-	plan.deadline = ageDeadline(plan.deadline)
 	next, failed := plan.cut, map[string]bool{}
 	if len(plan.Remove) > 0 {
 		deleted, _, err = applyPrune(dest, plan, now, func(it pruneItem, err error) {
@@ -809,10 +819,6 @@ func runAgeRule(root, dest string, ret archive.Retention, now time.Time, budget 
 	}
 	return deleted, err
 }
-
-// ageDeadline is where the age rule's budget ends, from when planning started; tests
-// move it.
-var ageDeadline = func(d time.Time) time.Time { return d }
 
 func undoPrune(dest string, ids []string, now time.Time) error {
 	d, err := archive.LoadDeleted(dest)
