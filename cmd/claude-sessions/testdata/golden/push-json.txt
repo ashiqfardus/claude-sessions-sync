@@ -1,0 +1,13 @@
+$ claude-sessions push --claude-dir <CLAUDE> --json
+exit 0
+--- stdout
+{
+  "copied": 5,
+  "unchanged": 0,
+  "sessions": 3,
+  "projects": 2,
+  "archive": "<ARCHIVE>"
+}
+--- stderr
+<TIME>  PUSH: 5 copied, 0 unchanged, 3 session(s), 2 project(s) -> <ARCHIVE>
+<TIME>  HTML: 3 rendered, 0 up to date

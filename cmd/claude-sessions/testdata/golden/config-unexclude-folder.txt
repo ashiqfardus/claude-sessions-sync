@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> unexclude-folder <HOME>/reports
+exit 0
+--- stdout
+<HOME>/reports will be backed up again
+--- stderr

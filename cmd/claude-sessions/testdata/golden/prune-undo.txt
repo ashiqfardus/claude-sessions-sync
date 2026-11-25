@@ -1,0 +1,6 @@
+$ claude-sessions prune --claude-dir <CLAUDE> --undo 33333333-3333-3333-3333-333333333333
+exit 0
+--- stdout
+Off the deleted list: 33333333-3333-3333-3333-333333333333
+Any computer that still has it uploads it on its next push.
+--- stderr

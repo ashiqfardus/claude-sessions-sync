@@ -1,0 +1,5 @@
+$ claude-sessions prune --claude-dir <CLAUDE>
+exit 1
+--- stdout
+--- stderr
+error: prune needs --older-than, --project or a conversation id

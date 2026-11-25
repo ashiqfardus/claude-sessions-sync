@@ -1,0 +1,7 @@
+$ claude-sessions config --claude-dir <CLAUDE> keep-days 365
+exit 0
+--- stdout
+keep-days is 365: every computer deletes archived conversations idle longer, except those on the keep list:
+  nothing is kept
+Each computer starts a day after its first run with a new or lower setting; run `claude-sessions prune --older-than 365d` to see what it deletes.
+--- stderr

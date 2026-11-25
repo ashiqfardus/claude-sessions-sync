@@ -16,6 +16,14 @@ import (
 	"github.com/ashiqfardus/claude-sessions-sync/internal/hostagent"
 )
 
+// The scheduled sweep's calls, replaced by tests that must not register a real job.
+var (
+	installSweep      = hostagent.Install
+	uninstallSweep    = hostagent.Uninstall
+	legacySweep       = hostagent.LegacySweep
+	removeLegacySweep = hostagent.RemoveLegacySweep
+)
+
 func cmdInstall(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
@@ -92,9 +100,9 @@ func cmdInstall(args []string) error {
 		// Report the predecessor's scheduled job rather than removing it. It belongs
 		// to another program; taking it away because the names looked similar is how
 		// a working backup disappears.
-		if action, exists := hostagent.LegacySweep(); exists {
+		if action, exists := legacySweep(); exists {
 			if *replaceLegacySweep {
-				if err := hostagent.RemoveLegacySweep(); err != nil {
+				if err := removeLegacySweep(); err != nil {
 					fmt.Printf("  legacy    could not remove: %v\n", err)
 				} else {
 					fmt.Printf("  legacy    removed the PowerShell sweep\n")
@@ -111,7 +119,7 @@ func cmdInstall(args []string) error {
 		}
 		var status hostagent.Status
 		if err == nil {
-			status, err = hostagent.Install(sweepJob(root, sweepBinary), *every)
+			status, err = installSweep(sweepJob(root, sweepBinary), *every)
 		}
 		if err != nil {
 			// The hook alone still archives every session that ends normally, so this
@@ -149,7 +157,7 @@ func cmdUninstall(args []string) error {
 	}
 	fmt.Printf("  hook      removed %d entr(y/ies)\n", removed)
 
-	if removed, err := hostagent.Uninstall(sweepJob(root, "")); err != nil {
+	if removed, err := uninstallSweep(sweepJob(root, "")); err != nil {
 		fmt.Printf("  sweep     FAILED: %v\n", err)
 	} else if removed {
 		fmt.Printf("  sweep     removed\n")

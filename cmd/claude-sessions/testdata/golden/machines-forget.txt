@@ -1,0 +1,10 @@
+$ claude-sessions machines --claude-dir <CLAUDE> --forget LAP-2
+exit 0
+--- stdout
+Forgot "LAP-2": its manifest and index entries are removed.
+Its transcripts, and their pages, stay in the archive: they are the
+irreplaceable part. To stop publishing a project's pages, add it to
+render-exclude.txt (or `claude-sessions render --exclude <project>`).
+If that machine is still in use, its next push adds it back.
+Run `claude-sessions push` to rebuild INDEX.md without it.
+--- stderr

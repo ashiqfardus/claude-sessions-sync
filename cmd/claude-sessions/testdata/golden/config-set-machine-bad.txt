@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> set-machine ..
+exit 1
+--- stdout
+--- stderr
+error: ".." cannot name a machine: use letters, digits, dots and dashes

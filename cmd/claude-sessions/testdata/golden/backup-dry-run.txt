@@ -1,0 +1,8 @@
+$ claude-sessions backup --claude-dir <CLAUDE> --out <HOME>/backups --dry-run
+exit 0
+--- stdout
+source  <CLAUDE>
+target  <HOME>/backups/claude-backup-LAP-1-<STAMP>.zip
+
+6 file(s), 3 transcript(s) in 2 project bucket(s)
+--- stderr

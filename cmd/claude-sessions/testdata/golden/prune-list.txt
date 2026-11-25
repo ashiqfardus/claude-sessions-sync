@@ -1,0 +1,9 @@
+$ claude-sessions prune --claude-dir <CLAUDE> --older-than 30d
+exit 0
+--- stdout
+  .../Documents/GitHub/example-org/web-app  2026-08-30     0.0 MB  turn u4
+  ...ents/planning-notes/example-org/notes  2026-08-30     0.0 MB  turn u6
+Would delete 2 conversation(s), 0.0 MB: every copy in the archive.
+0 kept (on the keep list)
+Run with --yes to delete them
+--- stderr

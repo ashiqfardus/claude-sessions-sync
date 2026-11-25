@@ -1,0 +1,9 @@
+$ claude-sessions clean --claude-dir <LAP2-CLAUDE>
+exit 0
+--- stdout
+Would delete 1 duplicate copies, 0.0 MB - each session stays archived in the other folder:
+  <HOME-SLUG>-Documents-GitHub-example-org-web-app    1      0.0 MB  (kept in <LAP2-HOME-SLUG>-dev-web-app)
+
+Run `claude-sessions clean --yes` to delete them.
+--- stderr
+comparing copies: 0/1comparing copies: 1/1

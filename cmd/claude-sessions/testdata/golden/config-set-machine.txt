@@ -1,0 +1,7 @@
+$ claude-sessions config --claude-dir <CLAUDE> set-machine LAP-2
+exit 0
+--- stdout
+This machine is now known as LAP-2 (saved in <CLAUDE>/session-sync.json).
+It was LAP-1. Run `claude-sessions push`, then `claude-sessions machines --forget LAP-1`
+so the archive does not keep listing the old name as another machine.
+--- stderr

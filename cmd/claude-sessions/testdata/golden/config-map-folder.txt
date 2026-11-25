@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> map-folder /Users/you/reports <HOME>/reports
+exit 0
+--- stdout
+/Users/you/reports -> <HOME>/reports
+--- stderr

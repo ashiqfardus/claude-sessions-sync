@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> unmap <HOME-SLUG>-Documents-GitHub-example-org-web-app
+exit 0
+--- stdout
+<HOME-SLUG>-Documents-GitHub-example-org-web-app unmapped
+--- stderr

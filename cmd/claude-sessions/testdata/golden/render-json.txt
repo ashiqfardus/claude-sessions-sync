@@ -1,0 +1,14 @@
+$ claude-sessions render --claude-dir <CLAUDE> --json
+exit 0
+--- stdout
+{
+  "Rendered": 0,
+  "UpToDate": 3,
+  "Deferred": 0,
+  "Failed": 0,
+  "Excluded": 0,
+  "Unpublished": 0,
+  "Skipped": 0,
+  "OutputDir": "<ARCHIVE>/html"
+}
+--- stderr

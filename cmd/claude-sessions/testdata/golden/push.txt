@@ -1,0 +1,9 @@
+$ claude-sessions push --claude-dir <CLAUDE>
+exit 0
+--- stdout
+
+copied 5 file(s), 0 unchanged.
+3 session(s) across 2 project(s) -> <ARCHIVE> (session-sync.json)
+--- stderr
+<TIME>  PUSH: 5 copied, 0 unchanged, 3 session(s), 2 project(s) -> <ARCHIVE>
+<TIME>  HTML: 3 rendered, 0 up to date

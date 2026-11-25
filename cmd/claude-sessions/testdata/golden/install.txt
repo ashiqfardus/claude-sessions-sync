@@ -1,0 +1,13 @@
+$ claude-sessions install --claude-dir <CLAUDE>
+err <nil>
+--- stdout
+Installing on <OS>
+
+  archive   <ARCHIVE> (session-sync.json)
+  binary    <CLAUDE>/bin/claude-sessions
+  hook      SessionEnd (new)
+  sweep     <MECH>: every 30 minutes
+
+Done. Sessions on this machine now archive automatically.
+Run `claude-sessions doctor` to confirm, and restart Claude Code (or run /hooks)
+so a running session picks up the new hook.

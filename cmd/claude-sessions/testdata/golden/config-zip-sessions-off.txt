@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> zip-sessions off
+exit 0
+--- stdout
+Zipping idle conversations is off; zips already made stay readable
+--- stderr

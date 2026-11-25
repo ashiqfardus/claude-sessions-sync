@@ -1,0 +1,7 @@
+$ claude-sessions render --claude-dir <CLAUDE>
+exit 0
+--- stdout
+
+Rendered 0, 3 already up to date -> <ARCHIVE>/html
+Open <ARCHIVE>/html/index.html
+--- stderr

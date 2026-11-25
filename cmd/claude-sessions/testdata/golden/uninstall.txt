@@ -1,0 +1,8 @@
+$ claude-sessions uninstall --claude-dir <CLAUDE>
+err <nil>
+--- stdout
+  hook      removed 2 entr(y/ies)
+  sweep     removed
+
+Your archive and its transcripts are untouched.
+The binary is still at <CLAUDE>/bin if you want to remove it.

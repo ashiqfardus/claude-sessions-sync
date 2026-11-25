@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> unmap-folder /Users/you/reports
+exit 0
+--- stdout
+/Users/you/reports unmapped
+--- stderr

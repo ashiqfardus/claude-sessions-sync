@@ -1,0 +1,8 @@
+$ claude-sessions push --claude-dir <CLAUDE> --dry-run
+exit 0
+--- stdout
+
+would copy 5 file(s), 0 unchanged.
+3 session(s) across 2 project(s) -> <ARCHIVE> (session-sync.json)
+--- stderr
+<TIME>  DRY-RUN: would copy 5, 0 unchanged, 3 session(s), 2 project(s) -> <ARCHIVE>

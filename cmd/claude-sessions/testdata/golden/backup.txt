@@ -1,0 +1,12 @@
+$ claude-sessions backup --claude-dir <CLAUDE> --out <HOME>/backups
+exit 0
+--- stdout
+source  <CLAUDE>
+target  <HOME>/backups/claude-backup-LAP-1-<STAMP>.zip
+
+6 file(s), 3 transcript(s) in 2 project bucket(s)
+
+Wrote <HOME>/backups/claude-backup-LAP-1-<STAMP>.zip (<SIZE>)
+To bring it back, unzip it anywhere and run:
+  claude-sessions import --archive <unzipped folder>
+--- stderr

@@ -1,0 +1,6 @@
+$ claude-sessions config --claude-dir <CLAUDE> set-destination <ARCHIVE>
+exit 0
+--- stdout
+Destination set to <ARCHIVE>
+Saved in <CLAUDE>/session-sync.json
+--- stderr

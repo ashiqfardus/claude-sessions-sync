@@ -1,0 +1,6 @@
+$ claude-sessions config --claude-dir <CLAUDE> exclude-folder <HOME>/reports
+exit 0
+--- stdout
+<HOME>/reports will not be backed up
+Nothing archived under that folder.
+--- stderr

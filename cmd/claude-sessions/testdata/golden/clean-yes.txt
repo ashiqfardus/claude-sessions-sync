@@ -1,0 +1,12 @@
+$ claude-sessions clean --claude-dir <LAP2-CLAUDE> --yes
+exit 0
+--- stdout
+Deleting 1 duplicate copies, 0.0 MB - each session stays archived in the other folder:
+  <HOME-SLUG>-Documents-GitHub-example-org-web-app    1      0.0 MB  (kept in <LAP2-HOME-SLUG>-dev-web-app)
+
+Deleted 1 copies, 0.0 MB.
+Run clean on one computer at a time, and only after the other has synced.
+A sync client may keep deleted files in its trash, still counting toward your storage -
+Google Drive does, for 30 days. Empty it to get the space back now.
+--- stderr
+comparing copies: 0/1comparing copies: 1/1

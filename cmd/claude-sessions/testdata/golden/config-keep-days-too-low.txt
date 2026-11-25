@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> keep-days 30
+exit 1
+--- stdout
+--- stderr
+error: keep-days must be at least 90

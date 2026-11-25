@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> work-placement machine
+exit 0
+--- stdout
+Work folders are filed under machine
+--- stderr

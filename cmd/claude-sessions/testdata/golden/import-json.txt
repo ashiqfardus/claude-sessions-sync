@@ -1,0 +1,30 @@
+$ claude-sessions import --claude-dir <LAP2-CLAUDE> --search-root <LAP2-HOME>/dev --json
+exit 0
+--- stdout
+[
+  {
+    "bucket": "<HOME-SLUG>",
+    "recordedPath": "<HOME>",
+    "localPath": "<LAP2-HOME>",
+    "matchedBy": "home folder",
+    "filed": 1,
+    "skipped": 0
+  },
+  {
+    "bucket": "<HOME-SLUG>-Documents-GitHub-example-org-web-app",
+    "recordedPath": "<HOME>/Documents/GitHub/example-org/web-app",
+    "localPath": "<LAP2-HOME>/dev/web-app",
+    "matchedBy": "git remote",
+    "filed": 2,
+    "skipped": 0
+  },
+  {
+    "bucket": "<HOME-SLUG>-Documents-planning-notes-example-org-notes",
+    "recordedPath": "<HOME>/Documents/planning-notes/example-org/notes",
+    "matchedBy": "not found",
+    "filed": 0,
+    "skipped": 0,
+    "note": "no folder named /"notes/" under the search roots"
+  }
+]
+--- stderr

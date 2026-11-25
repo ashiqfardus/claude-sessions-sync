@@ -1,0 +1,11 @@
+$ claude-sessions restore --claude-dir <CLAUDE> --source <HOME>/restore-from --project-path <HOME>/dev/web-app --rewrite-from <HOME>/Documents/GitHub/example-org/web-app
+exit 0
+--- stdout
+
+filed 2 transcript(s) and 0 memory file(s), skipped 0 already present -> <CLAUDE>/projects/<HOME-SLUG>-dev-web-app
+
+Lines rewritten, by form:
+  json-escaped   5
+
+Now: cd <HOME>/dev/web-app  then  claude --resume
+--- stderr

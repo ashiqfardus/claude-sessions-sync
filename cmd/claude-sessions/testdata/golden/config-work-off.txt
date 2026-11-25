@@ -1,0 +1,5 @@
+$ claude-sessions config --claude-dir <CLAUDE> work off
+exit 0
+--- stdout
+Work folder backup is off
+--- stderr

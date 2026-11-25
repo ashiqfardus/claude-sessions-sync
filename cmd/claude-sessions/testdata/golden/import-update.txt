@@ -1,0 +1,18 @@
+$ claude-sessions import --claude-dir <LAP2-CLAUDE> --search-root <LAP2-HOME>/dev --update
+exit 0
+--- stdout
+archive      <ARCHIVE> (session-sync.json)
+search roots <LAP2-HOME>/dev
+
++ <HOME-SLUG> -> <LAP2-HOME> (matched by home folder): 0 filed, 1 already present
++ <HOME-SLUG>-Documents-GitHub-example-org-web-app -> <LAP2-HOME>/dev/web-app (matched by git remote): 0 filed, 1 already present, 1 updated
+- <HOME-SLUG>-Documents-planning-notes-example-org-notes: no folder named "notes" under the search roots
+      fix: claude-sessions config map <HOME-SLUG>-Documents-planning-notes-example-org-notes '<local folder>'
+
+0 transcript(s) filed, 1 updated. 0 same layout, 1 not found, 0 ambiguous.
+work folders from LAP-1: <HOME>/reports/q3 -> <LAP2-HOME>/reports/q3 (0 file(s) filed, 2 kept, 0 beside, 0 refused, 0 excluded here)
+  to place them elsewhere: claude-sessions config map-folder '<path from above>' '<local folder>', or claude-sessions config work-placement home|machine
+
+For anything not placed, say where it lives here once, then run import again:
+  claude-sessions config map <bucket> '<local folder>'
+--- stderr

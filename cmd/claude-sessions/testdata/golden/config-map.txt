@@ -1,0 +1,6 @@
+$ claude-sessions config --claude-dir <CLAUDE> map <HOME-SLUG>-Documents-GitHub-example-org-web-app <HOME>/dev/web-app
+exit 0
+--- stdout
+<HOME-SLUG>-Documents-GitHub-example-org-web-app -> <HOME>/dev/web-app
+Run `claude-sessions import` to file it.
+--- stderr

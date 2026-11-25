@@ -1,0 +1,11 @@
+$ claude-sessions prune --claude-dir <CLAUDE> 33333333-3333-3333-3333-333333333333 --yes
+exit 0
+--- stdout
+  ...ents/planning-notes/example-org/notes  2026-11-20     0.0 MB  turn u6
+Deleting 1 conversation(s), 0.0 MB: every copy in the archive.
+0 kept (on the keep list)
+
+Deleted 1 conversation(s), 0.0 MB.
+A sync client may keep deleted files in its trash, still counting toward your storage -
+Google Drive does, for 30 days. Empty it to get the space back now.
+--- stderr
