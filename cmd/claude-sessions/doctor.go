@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/hostagent"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/render"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
@@ -380,7 +382,7 @@ func liveness(root, dest string, buckets []claude.Bucket) []check {
 
 	var pending []string
 	cutoff := time.Now().Add(-archiveLag)
-	held := loadHeld(root)
+	held, zips := loadHeld(root), loadZipCompared(root)
 	for _, b := range buckets {
 		for _, t := range b.Transcripts {
 			if t.ModTime.After(cutoff) {
@@ -394,10 +396,10 @@ func liveness(root, dest string, buckets []claude.Bucket) []check {
 			// A shorter local copy is a session forked across machines, which push
 			// deliberately leaves alone; it is not a failure to archive. Nor is one
 			// whose copy is saved as a fork beside the archived one, or one another
-			// bucket's archived copy holds in whole.
+			// bucket's archived copy holds in whole, nor one whose copy is zipped.
 			fork := archive.StatOrNil(forkPath(dest, b.Name, t.ID, machineName()))
 			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) &&
-				!held.leftTo(dest, b.Name, t.ID, src) {
+				!held.leftTo(dest, b.Name, t.ID, src) && !(dst == nil && zipCovers(dest, b.Name, t.ID, src, zips)) {
 				pending = append(pending, b.Name+"/"+t.ID)
 			}
 		}
@@ -442,6 +444,31 @@ func liveness(root, dest string, buckets []claude.Bucket) []check {
 		out = append(out, check{"archive access", levelFail, line, hint})
 	}
 	return out
+}
+
+// zipCovers reports whether bucket's zip of session id holds the local transcript src.
+// A pair push left zipped, both unchanged since, is taken from its record with no read:
+// most zipped conversations are still on this machine. Otherwise the zip's index is
+// judged by the rule a loose copy is: its entry is the same, newer or longer.
+func zipCovers(dest, bucket, id string, src os.FileInfo, zips *zipRecord) bool {
+	zp := zippedCopy(dest, bucket, id)
+	zst, err := os.Lstat(zp)
+	if zp == "" || err != nil {
+		return false
+	}
+	if c, ok := zips.m[bucket+"/"+id]; ok && !c.Diverged && !c.Unreadable &&
+		c.Size == src.Size() && archive.SameMTime(c.MTime, src.ModTime()) &&
+		c.ZipSize == zst.Size() && archive.SameMTime(c.ZipMTime, zst.ModTime()) {
+		return true
+	}
+	ents, err := convzip.Entries(zp)
+	e, ok := ents[id+".jsonl"]
+	if err != nil || !ok {
+		return false
+	}
+	// The entry as the os.FileInfo NeedsCopy takes: its size and modification time.
+	dst := (&zip.FileHeader{UncompressedSize64: uint64(e.Size), Modified: e.ModTime}).FileInfo()
+	return !archive.NeedsCopy(src, dst) || src.Size() < dst.Size()
 }
 
 // otherVersions names every other machine whose shard was written by a different
@@ -676,15 +703,18 @@ func renderState(dest string, manifest map[string]archive.Project, exclude []str
 			continue
 		}
 
-		entries, err := os.ReadDir(filepath.Join(archive.ProjectsDir(dest), bucket))
+		bucketDir := filepath.Join(archive.ProjectsDir(dest), bucket)
+		entries, err := os.ReadDir(bucketDir)
 		if err != nil {
 			continue
 		}
+		loose := map[string]bool{}
 		for _, e := range entries {
 			if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".jsonl") {
 				continue
 			}
 			transcripts++
+			loose[strings.ToLower(strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())))] = true
 			info, err := e.Info()
 			if err != nil {
 				continue
@@ -693,6 +723,13 @@ func renderState(dest string, manifest map[string]archive.Project, exclude []str
 				newestMod = info.ModTime()
 				newestBucket = bucket
 				newestPath = strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+			}
+		}
+		// A zipped conversation has its page too. Counted by name, with no zip read: it
+		// has been idle for weeks, so it is never the newest session.
+		for id := range convzip.Find(bucketDir) {
+			if !loose[id] {
+				transcripts++
 			}
 		}
 	}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 )
 
 // maxBlockChars caps one block of content.
@@ -77,6 +78,9 @@ const stateSaveEvery = 10 * time.Second
 
 // now is the clock the render budget is measured with; a test replaces it.
 var now = time.Now
+
+// materialize unpacks a zipped conversation for its page; a test counts the calls.
+var materialize = convzip.Materialize
 
 // Archive renders every transcript in the archive.
 func Archive(dest string, opts Options) (Result, error) {
@@ -155,56 +159,46 @@ func Archive(dest string, opts Options) (Result, error) {
 			continue
 		}
 
-		for _, f := range files {
-			// Regular files only: a symlink would be read through to whatever it names.
-			if !f.Type().IsRegular() || !strings.EqualFold(filepath.Ext(f.Name()), ".jsonl") {
-				continue
-			}
-			src := filepath.Join(bucketDir, f.Name())
-			id := strings.TrimSuffix(f.Name(), filepath.Ext(f.Name()))
+		// one renders or lists the transcript name, of size and mtime; open gives its path,
+		// and is called only when its page is due.
+		one := func(name string, size int64, mtime time.Time, open func() (string, func(), error)) {
+			id := strings.TrimSuffix(name, filepath.Ext(name))
 			out := filepath.Join(res.OutputDir, bucket, id+".html")
-
-			info, err := f.Info()
-			if err != nil {
-				res.Failed++
-				continue
-			}
 
 			// Prefer this machine's own copy when it is byte-identical: push has just
 			// written it across, and reading it straight back is a needless round trip
 			// through a cloud filesystem.
-			read := src
 			if opts.LocalProjects != "" {
-				local := filepath.Join(opts.LocalProjects, bucket, f.Name())
+				local := filepath.Join(opts.LocalProjects, bucket, name)
 				// Size AND timestamp: same size with different content is unlikely but
 				// possible, and rendering local bytes while the page claims to be the
 				// archive is not a trade worth making to save one read.
-				if li, err := os.Stat(local); err == nil && li.Size() == info.Size() && archive.SameMTime(li.ModTime(), info.ModTime()) {
-					read = local
+				if li, err := os.Stat(local); err == nil && li.Size() == size && archive.SameMTime(li.ModTime(), mtime) {
+					open = func() (string, func(), error) { return local, func() {}, nil }
 				}
 			}
 
 			key := bucket + "/" + id
 			var known *pageState
-			if ps, ok := prev.Pages[key]; ok && !opts.Force && prev.Version == templateVersion && ps.Size == info.Size() {
+			if ps, ok := prev.Pages[key]; ok && !opts.Force && prev.Version == templateVersion && ps.Size == size {
 				known = &ps
 			}
 			mayRender := opts.Budget <= 0 || now().Sub(start) < opts.Budget
-			page, err := renderOne(read, project, id, known, out, info, mayRender)
+			page, err := renderOne(open, project, id, known, out, mtime, mayRender)
 			if err == nil && !page.deferred {
-				next.Pages[key] = pageState{Size: info.Size(), Prompt: page.prompt}
+				next.Pages[key] = pageState{Size: size, Prompt: page.prompt}
 			}
 			switch {
 			case err != nil:
 				// One bad transcript must not stop the rest: the point of the archive
 				// is that it survives the tooling.
 				res.Failed++
-				continue
+				return
 			case page.deferred:
 				res.Deferred++
 				// Still listed when an older page exists, so the index does not lose it.
 				if _, err := os.Stat(out); err != nil {
-					continue
+					return
 				}
 				page.prompt = prev.Pages[key].Prompt
 			case page.upToDate:
@@ -221,8 +215,45 @@ func Archive(dest string, opts Options) (Result, error) {
 			entries = append(entries, indexEntry{
 				Project: project, Bucket: bucket, ID: id,
 				Href:    pageHref(bucket, id),
-				Updated: info.ModTime(), Size: info.Size(), Prompt: page.prompt,
+				Updated: mtime.Local(), Size: size, Prompt: page.prompt,
 			})
+		}
+
+		loose := map[string]bool{}
+		for _, f := range files {
+			// Regular files only: a symlink would be read through to whatever it names.
+			if !f.Type().IsRegular() || !strings.EqualFold(filepath.Ext(f.Name()), ".jsonl") {
+				continue
+			}
+			info, err := f.Info()
+			if err != nil {
+				res.Failed++
+				continue
+			}
+			src := filepath.Join(bucketDir, f.Name())
+			loose[strings.ToLower(strings.TrimSuffix(f.Name(), filepath.Ext(f.Name())))] = true
+			one(f.Name(), info.Size(), info.ModTime(), func() (string, func(), error) { return src, func() {}, nil })
+		}
+
+		// A zipped conversation keeps its page. It is dated by its transcript's entry in
+		// the zip's index, and unpacked only when the page is due: a template change,
+		// or a page withdrawn by an exclusion since lifted. A loose copy beside a zip is
+		// a continuation the zip lacks, so it is the one rendered above.
+		for lid, zp := range convzip.Find(bucketDir) {
+			if loose[lid] {
+				continue
+			}
+			id := strings.TrimSuffix(filepath.Base(zp), convzip.Suffix)
+			ents, err := convzip.Entries(zp)
+			if err != nil {
+				res.Failed++
+				continue
+			}
+			e, ok := ents[id+".jsonl"]
+			if !ok {
+				continue // a folder with no transcript: nothing to show
+			}
+			one(id+".jsonl", e.Size, e.ModTime, func() (string, func(), error) { return materialize(bucketDir, id, "") })
 		}
 	}
 
@@ -376,10 +407,11 @@ type pageInfo struct {
 	unrecordedThinking int
 }
 
-// renderOne writes one page. known is what the page was last rendered from, when that
-// was this template and a transcript of the same size; nil forces a render. When
-// mayRender is false a page that is not current is left for later.
-func renderOne(src, project, id string, known *pageState, out string, srcInfo os.FileInfo, mayRender bool) (pageInfo, error) {
+// renderOne writes one page from the transcript open gives, last modified at mtime.
+// known is what the page was last rendered from, when that was this template and a
+// transcript of the same size; nil forces a render. When mayRender is false a page
+// that is not current is left for later. open is called only to render.
+func renderOne(open func() (string, func(), error), project, id string, known *pageState, out string, mtime time.Time, mayRender bool) (pageInfo, error) {
 	var info pageInfo
 
 	// Pages carry their source's timestamp, so "current" means the two match - not
@@ -388,7 +420,7 @@ func renderOne(src, project, id string, known *pageState, out string, srcInfo os
 	// otherwise leave a stale page that never re-renders. The same tolerance as
 	// everywhere else: a synced filesystem rounds timestamps.
 	if known != nil {
-		if outInfo, err := os.Stat(out); err == nil && archive.SameMTime(outInfo.ModTime(), srcInfo.ModTime()) {
+		if outInfo, err := os.Stat(out); err == nil && archive.SameMTime(outInfo.ModTime(), mtime) {
 			info.prompt = known.Prompt
 			info.upToDate = true
 			return info, nil
@@ -398,6 +430,11 @@ func renderOne(src, project, id string, known *pageState, out string, srcInfo os
 		info.deferred = true
 		return info, nil
 	}
+	src, done, err := open()
+	if err != nil {
+		return info, err
+	}
+	defer done()
 
 	var body strings.Builder
 	var first time.Time
@@ -480,7 +517,7 @@ func renderOne(src, project, id string, known *pageState, out string, srcInfo os
 		return info, err
 	}
 	// Match the transcript's timestamp so the up-to-date check above is stable.
-	_ = os.Chtimes(out, srcInfo.ModTime(), srcInfo.ModTime())
+	_ = os.Chtimes(out, mtime, mtime)
 	return info, nil
 }
 
