@@ -68,6 +68,9 @@ func cmdLs(args []string) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", dir, err)
 	}
+	if *archived || *archiveDir != "" {
+		buckets = withZipped(buckets)
+	}
 
 	// Collect and order first, using only directory metadata, so that --limit reads N
 	// transcripts rather than every one. On a machine with hundreds of sessions this
@@ -99,8 +102,11 @@ func cmdLs(args []string) error {
 		if *limit > 0 && len(rows) >= *limit {
 			break
 		}
-		s, err := claude.ScanHead(c.t.Path, headScanLines)
+		s, err := scanHead(c.t.Path, headScanLines)
 		if err != nil {
+			if isZip(c.t.Path) {
+				continue // noted on stderr by openTranscript
+			}
 			// An unreadable transcript still deserves a row: knowing a session exists
 			// matters more than knowing what it was about.
 			rows = append(rows, sessionRow{

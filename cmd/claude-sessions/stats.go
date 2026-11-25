@@ -51,6 +51,9 @@ func cmdStats(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *archived || *archiveDir != "" {
+		buckets = withZipped(buckets)
+	}
 
 	paths := newResolver()
 	rep := statsReport{}

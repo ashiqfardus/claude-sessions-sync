@@ -70,6 +70,9 @@ func cmdSearch(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *archived || *archiveDir != "" {
+		buckets = withZipped(buckets)
+	}
 
 	var hits []hit
 	var scanned, unreadable int
@@ -106,10 +109,14 @@ func cmdSearch(args []string) error {
 
 		// One pass. The cwd is picked up from the same walk that does the matching,
 		// rather than paying for a separate head scan over every file.
+		tpath, cleanup, err := openTranscript(tr.Path)
+		if err != nil {
+			continue // a zip that cannot be read: noted on stderr, skipped
+		}
 		scanned++
 		var found []hit
 		cwd := ""
-		_, err := claude.Walk(tr.Path, func(r claude.Record) bool {
+		_, err = claude.Walk(tpath, func(r claude.Record) bool {
 			if cwd == "" && r.Cwd != "" {
 				cwd = r.Cwd
 			}
@@ -138,6 +145,7 @@ func cmdSearch(args []string) error {
 			}
 			return *limit <= 0 || len(hits)+len(found) < *limit
 		})
+		cleanup()
 		if err != nil {
 			unreadable++
 		}

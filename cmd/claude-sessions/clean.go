@@ -148,6 +148,11 @@ func planClean(dest string, progress bool) cleanPlan {
 		if namedTwice(holders[id]) {
 			continue
 		}
+		// A session with a zipped copy is never deleted or kept for: a zip is read as
+		// a whole, not compared by turns, and is never removed by clean.
+		if hasZippedCopy(dest, holders[id], id) {
+			continue
+		}
 		type cp struct {
 			bucket, path string
 			size         int64
@@ -231,6 +236,15 @@ func planClean(dest string, progress bool) cleanPlan {
 		fmt.Fprintf(os.Stderr, "\rcomparing copies: %d/%d\n", len(ids), len(ids))
 	}
 	return plan
+}
+
+func hasZippedCopy(dest string, buckets []string, id string) bool {
+	for _, b := range buckets {
+		if zippedCopy(dest, b, id) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func namedTwice(buckets []string) bool {
