@@ -18,9 +18,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("X-Frame-Options", "DENY")
-	if !strings.HasPrefix(p, "/read/") { // conversation pages set PageCSP themselves
-		h.Set("Content-Security-Policy", CSP)
+	csp := CSP
+	if strings.HasPrefix(p, "/read/") {
+		csp = PageCSP // set here, so a conversation page never goes out without it
 	}
+	h.Set("Content-Security-Policy", csp)
 	if !strings.HasPrefix(p, "/static/") {
 		h.Set("Cache-Control", "no-store")
 	}

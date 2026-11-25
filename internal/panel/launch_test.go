@@ -8,7 +8,39 @@ import (
 	"testing"
 )
 
+// fakeHome points the redirect file's Linux home at a test folder, so no test writes
+// into the real home.
+func fakeHome(t *testing.T, goos string) string {
+	home := t.TempDir()
+	oldOS, oldHome := redirectOS, redirectHome
+	t.Cleanup(func() { redirectOS, redirectHome = oldOS, oldHome })
+	redirectOS, redirectHome = goos, func() (string, error) { return home, nil }
+	return home
+}
+
+// Snap browsers (Ubuntu's defaults) cannot read /tmp or hidden folders, so on Linux the
+// file goes straight into the home folder, not hidden; elsewhere it stays in the temp folder.
+func TestRedirectGoesToHomeOnLinux(t *testing.T) {
+	for goos, inHome := range map[string]bool{"linux": true, "darwin": false, "windows": false} {
+		home := fakeHome(t, goos)
+		path, err := WriteRedirect("http://127.0.0.1:4321/k/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(path)
+		want := filepath.Clean(os.TempDir())
+		if inHome {
+			want = home
+		}
+		base := filepath.Base(path)
+		if filepath.Dir(path) != want || !strings.HasPrefix(base, "claude-sessions-panel-") || filepath.Ext(base) != ".html" {
+			t.Errorf("%s: redirect file at %s, want claude-sessions-panel-*.html in %s", goos, path, want)
+		}
+	}
+}
+
 func TestRedirectFileIsPrivate(t *testing.T) {
+	fakeHome(t, runtime.GOOS)
 	key := strings.Repeat("ab", 32)
 	url := "http://127.0.0.1:4321/k/" + key
 	path, err := WriteRedirect(url)
@@ -17,9 +49,6 @@ func TestRedirectFileIsPrivate(t *testing.T) {
 	}
 	defer os.Remove(path)
 
-	if filepath.Dir(path) != filepath.Clean(os.TempDir()) || !strings.HasPrefix(filepath.Base(path), "claude-sessions-panel-") || filepath.Ext(path) != ".html" {
-		t.Errorf("redirect file at %s", path)
-	}
 	if strings.Contains(path, key) {
 		t.Errorf("the key is in the file's path %s", path)
 	}

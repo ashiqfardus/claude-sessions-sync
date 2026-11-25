@@ -80,6 +80,10 @@ func New(o Options) (*Server, error) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			return nil, fmt.Errorf("panel: route %s has method %q, want GET or POST", r.Path, r.Method)
 		}
+		// The guard skips the cookie on /launch and under /k/, so no caller route may answer there.
+		if r.Path == "/launch" || strings.HasPrefix(r.Path, "/k/") || r.Prefix && (strings.HasPrefix("/launch", r.Path) || strings.HasPrefix("/k/", r.Path)) {
+			return nil, fmt.Errorf("panel: route %s overlaps /k/ or /launch", r.Path)
+		}
 	}
 	s.routes = append(s.routes, o.Routes...)
 	return s, nil

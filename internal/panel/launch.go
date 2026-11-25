@@ -21,15 +21,27 @@ func (s *Server) launch(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"key": s.NewKey()})
 }
 
+// Seams for the tests: where WriteRedirect decides its folder.
+var redirectOS, redirectHome = runtime.GOOS, os.UserHomeDir
+
 // WriteRedirect writes a private page that redirects to url, so the opener is handed a
-// file path and the key never appears in any process's arguments. The caller deletes it.
+// file path and the key never appears in any process's arguments. The caller deletes it,
+// on use, after 60 s and at exit: on Linux it sits in plain sight in the home folder.
 func WriteRedirect(url string) (string, error) {
-	f, err := os.CreateTemp("", "claude-sessions-panel-*.html")
+	dir := "" // the temp folder
+	if redirectOS == "linux" {
+		// Snap Firefox and Chromium (Ubuntu's defaults) have a private /tmp and cannot read hidden folders.
+		if h, err := redirectHome(); err == nil {
+			dir = h
+		}
+	}
+	f, err := os.CreateTemp(dir, "claude-sessions-panel-*.html") // O_EXCL, mode 0600, a random name
 	if err != nil {
 		return "", err
 	}
 	u := html.EscapeString(url)
 	_, err = f.WriteString("<!doctype html>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"refresh\" content=\"0;url=" + u + "\">\n<title>claude-sessions panel</title>\n<p><a href=\"" + u + "\">Open the claude-sessions panel</a></p>\n")
+	// On Windows the file's privacy relies on the per-user %TEMP% folder's ACL.
 	if err == nil && runtime.GOOS != "windows" {
 		err = f.Chmod(0o600)
 	}

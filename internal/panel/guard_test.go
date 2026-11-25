@@ -85,14 +85,22 @@ func post(s *Server, cookie, path string, hdr ...string) *httptest.ResponseRecor
 func TestRefusesWrongHost(t *testing.T) {
 	s := newTestServer(t, nil)
 	cookie := login(t, s)
-	other := "127.0.0.1:" + strconv.Itoa(s.Port()+1)
-	for _, h := range []string{"evil.example:" + strconv.Itoa(s.Port()), other, ""} {
+	p := strconv.Itoa(s.Port())
+	key := s.NewKey()
+	for _, h := range []string{
+		"evil.example:" + p, "127.0.0.1:" + strconv.Itoa(s.Port()+1), "",
+		"127.0.0.1.evil.example:" + p, "localhost.:" + p, "[::1]:" + p, "127.0.0.1", "localhost",
+	} {
 		if w := do(s, http.MethodGet, "/api/ping", "Host", h, "Cookie", cookie); w.Code != http.StatusForbidden {
 			t.Errorf("Host %q: got %d, want 403", h, w.Code)
 		}
-		if w := do(s, http.MethodGet, "/k/"+s.NewKey(), "Host", h); w.Code != http.StatusForbidden {
+		if w := do(s, http.MethodGet, "/k/"+key, "Host", h); w.Code != http.StatusForbidden {
 			t.Errorf("Host %q on /k/: got %d, want 403", h, w.Code)
 		}
+	}
+	// A /k/ refused for its Host burned nothing.
+	if w := do(s, http.MethodGet, "/k/"+key); w.Code != http.StatusOK {
+		t.Errorf("key after wrong-Host tries: %d, want 200", w.Code)
 	}
 	// Both allowed names pass, in any case.
 	for _, h := range []string{s.host(), "LocalHost:" + strconv.Itoa(s.Port())} {
@@ -186,6 +194,8 @@ func TestPostNeedsOriginAndToken(t *testing.T) {
 		"no token":    {"Cookie", cookie, "Origin", origin},
 		"wrong token": {"Cookie", cookie, "Origin", origin, "X-CS-Token", strings.Repeat("0", 64)},
 		"no cookie":   {"Origin", origin, "X-CS-Token", s.Token()},
+		"null Origin": {"Cookie", cookie, "Origin", "null", "X-CS-Token", s.Token()},
+		"other port":  {"Cookie", cookie, "Origin", "http://127.0.0.1:" + strconv.Itoa(s.Port()+1), "X-CS-Token", s.Token()},
 	}
 	for name, hdr := range cases {
 		if w := do(s, http.MethodPost, "/api/poke", hdr...); w.Code != http.StatusForbidden {
@@ -248,9 +258,32 @@ func TestCSPHeader(t *testing.T) {
 			}
 		}
 	}
-	// Conversation pages set their own policy; the panel's must not be added to it.
-	if got := do(s, http.MethodGet, "/read/x/y", "Cookie", cookie).Header().Get("Content-Security-Policy"); got != "" {
-		t.Errorf("/read/ got CSP %q, want none from the guard", got)
+	// Conversation pages get PageCSP from the guard itself, so none goes out without it.
+	if got := do(s, http.MethodGet, "/read/x/y", "Cookie", cookie).Header().Get("Content-Security-Policy"); got != PageCSP {
+		t.Errorf("/read/ got CSP %q, want %q", got, PageCSP)
+	}
+}
+
+// The guard skips the cookie on /launch and under /k/, so no caller route may answer there.
+func TestRefusesRoutesOverExemptPaths(t *testing.T) {
+	get := http.MethodGet
+	for _, r := range []Route{
+		{Method: get, Path: "/", Prefix: true}, {Method: get, Path: "", Prefix: true},
+		{Method: get, Path: "/k", Prefix: true}, {Method: get, Path: "/k/", Prefix: true}, {Method: get, Path: "/k/x", Prefix: true},
+		{Method: get, Path: "/launch", Prefix: true}, {Method: get, Path: "/lau", Prefix: true},
+		{Method: get, Path: "/launch"}, {Method: http.MethodPost, Path: "/k/x"},
+	} {
+		if _, err := New(Options{Routes: []Route{r}}); err == nil {
+			t.Errorf("New accepted %+v", r)
+		}
+	}
+	for _, r := range []Route{
+		{Method: get, Path: "/api/", Prefix: true}, {Method: get, Path: "/kb", Prefix: true},
+		{Method: get, Path: "/launchpad"}, {Method: get, Path: "/k"},
+	} {
+		if _, err := New(Options{Routes: []Route{r}}); err != nil {
+			t.Errorf("New refused %+v: %v", r, err)
+		}
 	}
 }
 
