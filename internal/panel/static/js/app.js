@@ -21,29 +21,37 @@ const main = document.getElementById('main')
 const nav = document.getElementById('rail')
 const dialogs = document.getElementById('dialogs')
 
-const external = new Set()
+// README is the panel's one external link (the About link in Settings).
+export const README = 'https://github.com/ashiqfardus/claude-sessions-sync#readme'
+let readmeLinked = false
 const LOCAL = /^(#|\/(?![/\\]))/ // "#..." or "/...", never "//host" or "/\host"
+const REFUSED = ['style', 'action', 'formaction', 'srcset', 'xlink:href']
 
-// allowExternal(url) lets h() set that one absolute URL as an href: the README link,
-// whose module is the only one allowed to hold it.
+// Settings calls allowExternal(README) once, so h() may then link to the README. It
+// throws for any other URL: no other site can ever be linked.
 export function allowExternal(url) {
-  external.add(url)
+  if (!/^https:\/\//.test(url) || url !== README) throw new Error('h: only the README may be linked')
+  readmeLinked = true
 }
 
 // h(tag, attrs, ...children). A function attribute named on<event> becomes a listener;
 // true sets an empty attribute; false, null and undefined set nothing. Strings and
-// numbers become text nodes; null and false children are skipped. It refuses `style`
-// (the CSP drops it) and an href or src that leaves the panel, so archive text can
+// numbers become text nodes; null and false children are skipped. Attribute names are
+// matched in any case. It refuses `style` (the CSP drops it), form and srcset targets,
+// a string on<event>, and an href or src that leaves the panel, so archive text can
 // never become a link elsewhere.
 export function h(tag, attrs, ...kids) {
   const el = document.createElement(tag)
   for (const [k, v] of Object.entries(attrs || {})) {
-    if (k === 'style') throw new Error('h: style is refused; use a class or element.style')
-    if ((k === 'href' || k === 'src') && v != null && !LOCAL.test(String(v)) && !external.has(v)) throw new Error('h: refused ' + k)
-    if (k.startsWith('on')) {
-      if (typeof v === 'function') el.addEventListener(k.slice(2), v)
-    } else if (v === true) el.setAttribute(k, '')
-    else if (v !== false && v != null) el.setAttribute(k, v)
+    const n = k.toLowerCase()
+    if (v == null || v === false) continue
+    if (REFUSED.includes(n)) throw new Error('h: refused ' + n)
+    if (n.startsWith('on')) {
+      if (typeof v !== 'function') throw new Error('h: refused ' + n)
+      el.addEventListener(n.slice(2), v)
+    } else if ((n === 'href' || n === 'src') && !LOCAL.test(String(v)) && !(readmeLinked && v === README)) {
+      throw new Error('h: refused ' + n)
+    } else el.setAttribute(n, v === true ? '' : v)
   }
   for (const kid of kids.flat()) {
     if (kid instanceof Node) el.append(kid)

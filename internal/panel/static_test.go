@@ -84,7 +84,7 @@ var svgNS = regexp.MustCompile("http://www\\.w3\\.org/2000/svg([\"'`])")
 
 // remoteLoads lists what in a file the browser loads could fetch from another computer.
 func remoteLoads(name, s string) []string {
-	if name == "static/js/settings.js" {
+	if name == "static/js/app.js" { // app.js exports it as README, the panel's one external link
 		s = strings.ReplaceAll(s, readmeURL, "")
 	}
 	s = svgNS.ReplaceAllString(s, "$1")
@@ -123,8 +123,8 @@ func TestRemoteScanAllowsOnlyTheSVGNamespace(t *testing.T) {
 		{"static/index.html", `<svg xmlns="https://www.w3.org/2000/svg">`, false},
 		{"static/panel.css", `.a{background:url("http://example.com/a.png")}`, false},
 		{"static/panel.css", `@import "fonts.css";`, false},
-		{"static/js/settings.js", `a.href = "` + readmeURL + `"`, true},
-		{"static/js/app.js", `a.href = "` + readmeURL + `"`, false},
+		{"static/js/app.js", `export const README = '` + readmeURL + `'`, true},
+		{"static/js/settings.js", `a.href = "` + readmeURL + `"`, false},
 	} {
 		if found := remoteLoads(c.name, c.text); (len(found) == 0) != c.ok {
 			t.Errorf("%s %s: found %q, want allowed=%v", c.name, c.text, found, c.ok)
@@ -187,7 +187,7 @@ func TestShellCarriesTheToken(t *testing.T) {
 
 // pageCore is what Task 18's modules export for every screen.
 var pageCore = map[string][]string{
-	"static/js/app.js":     {"h", "icon", "api", "follow", "toast", "modal", "confirmDialog", "register", "noArchive", "when", "reducedMotion", "allowExternal", "GENERIC"},
+	"static/js/app.js":     {"h", "icon", "api", "follow", "toast", "modal", "confirmDialog", "register", "noArchive", "when", "reducedMotion", "allowExternal", "README", "GENERIC"},
 	"static/js/rail.js":    {"rail"},
 	"static/js/combo.js":   {"combo"},
 	"static/js/pager.js":   {"pager"},
@@ -336,6 +336,31 @@ func TestPageScriptsKeepTheRules(t *testing.T) {
 	for _, want := range []string{`'X-CS-Token'`, `meta[name="cs-token"]`, `credentials: 'same-origin'`, `'/api/jobs/events?id='`} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js lacks %s", want)
+		}
+	}
+}
+
+// The README is the panel's only external link: app.js holds it as README, and
+// allowExternal is only ever called with that constant (it also throws on any other
+// URL), never with a variable and never through an alias.
+func TestOnlyTheReadmeIsExternal(t *testing.T) {
+	files := staticFiles(t)
+	if want := `export const README = '` + readmeURL + `'`; !strings.Contains(files["static/js/app.js"], want) {
+		t.Errorf("app.js lacks %s", want)
+	}
+	allowed := regexp.MustCompile(`allowExternal\(README\)`)
+	for p, s := range files {
+		if path.Ext(p) != ".js" {
+			continue
+		}
+		for _, m := range jsNamedImport.FindAllString(s, -1) {
+			s = strings.Replace(s, m, strings.ReplaceAll(m, "allowExternal", ""), 1)
+		}
+		if p == "static/js/app.js" { // its one definition
+			s = strings.Replace(s, "export function allowExternal(url)", "", 1)
+		}
+		if left := allowed.ReplaceAllString(s, ""); strings.Contains(left, "allowExternal") {
+			t.Errorf("%s uses allowExternal other than as allowExternal(README)", p)
 		}
 	}
 }
