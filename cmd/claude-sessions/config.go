@@ -475,17 +475,37 @@ func sameEntry(a, b archive.KeepEntry) bool {
 		identity.SameRemote(a.Remote, b.Remote)
 }
 
-// keepEntryFor is the entry arg names: a conversation, or a project with its buckets.
-func keepEntryFor(dest, arg string) (archive.KeepEntry, []string, map[string]archive.Project, error) {
+// keepEntriesFor is what arg names: a conversation, or a project with its buckets. A
+// project found by its remote whose match includes buckets with none is stored by its
+// folder name too, so those stay kept once the machines with the remote are forgotten.
+func keepEntriesFor(dest, arg string) ([]archive.KeepEntry, []string, map[string]archive.Project, error) {
 	if claude.IsSessionID(arg) {
-		return archive.KeepEntry{Session: strings.ToLower(arg)}, nil, nil, nil
+		return []archive.KeepEntry{{Session: strings.ToLower(arg)}}, nil, nil, nil
+	}
+	if arg == "." || arg == ".." || !rewrite.AbsoluteAnywhere(arg) && strings.ContainsAny(arg, `/\`) {
+		abs, err := filepath.Abs(arg) // `config keep .` in the project
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		arg = abs
 	}
 	projects, err := projectsOf(dest)
 	if err != nil {
-		return archive.KeepEntry{}, nil, nil, err
+		return nil, nil, nil, err
 	}
 	e, buckets, err := matchProject(projects, arg)
-	return e, buckets, projects, err
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	entries := []archive.KeepEntry{e}
+	for _, b := range buckets {
+		if p := projects[b]; e.Remote != "" && strings.TrimSpace(p.Remote) == "" && p.Leaf != "" {
+			if leaf := (archive.KeepEntry{Leaf: strings.ToLower(p.Leaf)}); !slices.Contains(entries, leaf) {
+				entries = append(entries, leaf)
+			}
+		}
+	}
+	return entries, buckets, projects, nil
 }
 
 func keepOne(dest, arg string) error {
@@ -493,18 +513,24 @@ func keepOne(dest, arg string) error {
 	if err != nil {
 		return err
 	}
-	e, buckets, projects, err := keepEntryFor(dest, arg)
+	entries, buckets, projects, err := keepEntriesFor(dest, arg)
 	if err != nil {
 		return err
 	}
-	if slices.ContainsFunc(r.Keep, func(k archive.KeepEntry) bool { return sameEntry(k, e) }) {
-		fmt.Printf("Already kept: %s\n", keepLabel(e))
-	} else {
+	added := false
+	for _, e := range entries {
+		if slices.ContainsFunc(r.Keep, func(k archive.KeepEntry) bool { return sameEntry(k, e) }) {
+			fmt.Printf("Already kept: %s\n", keepLabel(e))
+			continue
+		}
 		r.Keep = append(r.Keep, e)
+		added = true
+		fmt.Printf("Kept: %s\n", keepLabel(e))
+	}
+	if added {
 		if err := archive.SaveRetention(dest, r); err != nil {
 			return err
 		}
-		fmt.Printf("Kept: %s\n", keepLabel(e))
 	}
 	for _, b := range buckets {
 		p := projects[b]
@@ -516,23 +542,24 @@ func keepOne(dest, arg string) error {
 	return nil
 }
 
-// unkeepOne removes the entry arg names. The entry as listed (a remote or a folder
-// name) is tried first, so one for a project no longer in the archive can still go.
+// unkeepOne removes every entry arg names: what keep would store for it, and an entry
+// as listed (a remote or a folder name), so one for a project no longer in the archive
+// can still go.
 func unkeepOne(dest, arg string) error {
 	r, err := archive.LoadRetention(dest)
 	if err != nil {
 		return err
 	}
-	direct := archive.KeepEntry{Session: arg, Remote: arg, Leaf: arg}
-	e := direct
-	if !slices.ContainsFunc(r.Keep, func(k archive.KeepEntry) bool { return sameEntry(k, direct) }) {
-		if e, _, _, err = keepEntryFor(dest, arg); err != nil {
-			return err
-		}
-	}
+	entries, _, _, matchErr := keepEntriesFor(dest, arg)
+	entries = append(entries, archive.KeepEntry{Session: arg, Remote: arg, Leaf: arg})
 	n := len(r.Keep)
-	r.Keep = slices.DeleteFunc(r.Keep, func(k archive.KeepEntry) bool { return sameEntry(k, e) })
+	r.Keep = slices.DeleteFunc(r.Keep, func(k archive.KeepEntry) bool {
+		return slices.ContainsFunc(entries, func(e archive.KeepEntry) bool { return sameEntry(k, e) })
+	})
 	if len(r.Keep) == n {
+		if matchErr != nil {
+			return matchErr
+		}
 		return fmt.Errorf("%s is not on the keep list", arg)
 	}
 	if err := archive.SaveRetention(dest, r); err != nil {

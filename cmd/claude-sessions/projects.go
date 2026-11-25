@@ -59,6 +59,9 @@ func sameProject(a, b archive.Project) bool {
 // give a path instead.
 func matchProject(projects map[string]archive.Project, arg string) (archive.KeepEntry, []string, error) {
 	byPath := rewrite.AbsoluteAnywhere(arg)
+	if byPath && arg[1] == ':' { // E:/web-app as typed; the manifest records E:\web-app
+		arg = strings.ReplaceAll(arg, "/", `\`)
+	}
 	var seeds []string
 	for b, p := range projects {
 		if byPath && samePath(p.Path, arg) || !byPath && p.Leaf != "" && strings.EqualFold(p.Leaf, arg) {
@@ -98,7 +101,11 @@ func matchProject(projects map[string]archive.Project, arg string) (archive.Keep
 	remotes := slices.DeleteFunc(slices.Clone(groups), func(g archive.KeepEntry) bool { return g.Remote == "" })
 	if len(remotes) > 1 {
 		var msg strings.Builder
-		fmt.Fprintf(&msg, "%q matches %d different projects; give the path of the one you mean:", arg, len(remotes))
+		if byPath {
+			fmt.Fprintf(&msg, "%s matches %d different projects by its folder name; keep each remote's project by its own path:", arg, len(remotes))
+		} else {
+			fmt.Fprintf(&msg, "%q matches %d different projects; give the path of the one you mean:", arg, len(remotes))
+		}
 		for i, g := range groups {
 			label := "remote " + g.Remote
 			if g.Remote == "" {
@@ -124,7 +131,9 @@ func matchProject(projects map[string]archive.Project, arg string) (archive.Keep
 }
 
 // kept reports whether prune and the age rule must skip a conversation: it is kept
-// itself, or any of its buckets belongs to a kept project.
+// itself, or any of its buckets belongs to a kept project. While any project is kept, a
+// bucket no manifest lists - its machine forgotten, say - counts as kept: its identity
+// is unknown, so it cannot be shown not to be that project.
 func kept(r archive.Retention, id string, buckets []string, projects map[string]archive.Project) bool {
 	for _, e := range r.Keep {
 		if e.Session != "" {
@@ -134,7 +143,7 @@ func kept(r archive.Retention, id string, buckets []string, projects map[string]
 			continue
 		}
 		for _, b := range buckets {
-			if keeps(e, projects[b], projects) {
+			if p, ok := projects[b]; !ok || keeps(e, p, projects) {
 				return true
 			}
 		}

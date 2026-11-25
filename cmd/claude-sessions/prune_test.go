@@ -27,7 +27,7 @@ func twoMachines() map[string]archive.Project {
 
 func TestMatchProjectAcrossMachines(t *testing.T) {
 	projects := twoMachines()
-	for _, arg := range []string{"web-app", "WEB-APP", "/Users/you/dev/web-app", `E:\web-app`} {
+	for _, arg := range []string{"web-app", "WEB-APP", "/Users/you/dev/web-app", `E:\web-app`, "E:/web-app"} {
 		id, buckets, err := matchProject(projects, arg)
 		if err != nil {
 			t.Fatalf("%s: %v", arg, err)
@@ -80,6 +80,13 @@ func TestMatchProjectAmbiguous(t *testing.T) {
 	if err != nil || id.Remote != "git@github.com:acme/api.git" || !reflect.DeepEqual(buckets, []string{"e--clients-acme-api"}) {
 		t.Errorf("by path: %+v %v %v", id, buckets, err)
 	}
+
+	// A path whose bucket has no remote is the folder name of both: the refusal says
+	// to keep each by its own path.
+	projects["d--api"] = archive.Project{Path: `D:\api`, Leaf: "api"}
+	if _, _, err := matchProject(projects, `D:\api`); err == nil || !strings.Contains(err.Error(), "by its own path") {
+		t.Errorf("by a path with no remote: %v", err)
+	}
 }
 
 func TestMatchProjectIsNotSubstring(t *testing.T) {
@@ -121,6 +128,106 @@ func TestKeptCoversEveryMachinesBucket(t *testing.T) {
 	r = archive.Retention{Keep: []archive.KeepEntry{id}}
 	if !kept(r, otherID, []string{"e--web-app"}, projects) {
 		t.Error("a bucket with no remote is not kept with its project")
+	}
+}
+
+// A bucket no manifest lists - its machine forgotten - has no known identity, so while
+// any project is kept it cannot be shown not to be that project.
+func TestKeptCountsAnUnlistedBucket(t *testing.T) {
+	projects := twoMachines()
+	byProject := archive.Retention{Keep: []archive.KeepEntry{{Leaf: "web-app"}}}
+	if !kept(byProject, otherID, []string{"-Users-you-dev-gone"}, projects) {
+		t.Error("a conversation in an unlisted bucket is not kept while a project is")
+	}
+	if kept(archive.Retention{Keep: []archive.KeepEntry{{Session: keptID}}}, otherID, []string{"-Users-you-dev-gone"}, projects) {
+		t.Error("an unlisted bucket is kept when only conversations are")
+	}
+	if kept(archive.Retention{}, otherID, []string{"-Users-you-dev-gone"}, projects) {
+		t.Error("an unlisted bucket is kept with an empty keep list")
+	}
+}
+
+// The Mac's bucket has the remote and the Windows one has none. Once the Mac is
+// forgotten, the Windows bucket must stay kept: keep stores the folder name too.
+func TestKeepSurvivesForgettingTheMachineWithTheRemote(t *testing.T) {
+	const remote = "git@github.com:example/web-app.git"
+	projects := twoMachines()
+	mac := projects["-Users-you-dev-web-app"]
+	mac.Remote = remote
+	projects["-Users-you-dev-web-app"] = mac
+	claudeDir, dest := keepFixture(t, projects)
+	config := func(args ...string) error {
+		return cmdConfig(append([]string{"--claude-dir", claudeDir}, args...))
+	}
+	both := []archive.KeepEntry{{Remote: remote}, {Leaf: "web-app"}}
+
+	if err := config("keep", "web-app"); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := archive.LoadRetention(dest); !reflect.DeepEqual(r.Keep, both) {
+		t.Fatalf("keep list %+v, want %+v", r.Keep, both)
+	}
+	if err := config("unkeep", "web-app"); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := archive.LoadRetention(dest); len(r.Keep) != 0 {
+		t.Fatalf("unkeep left %+v", r.Keep)
+	}
+
+	if err := config("keep", "/Users/you/dev/web-app"); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.ForgetMachine(dest, "you-mac"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := archive.LoadRetention(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := projectsOf(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kept(r, otherID, []string{"e--web-app"}, after) {
+		t.Error("the Windows bucket is not kept once the Mac is forgotten")
+	}
+	if !kept(r, otherID, []string{"-Users-you-dev-web-app"}, after) {
+		t.Error("the forgotten Mac's bucket is not kept")
+	}
+}
+
+// `config keep .` in the project's folder keeps it.
+func TestConfigKeepRelativePath(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeDir, dest := keepFixture(t, map[string]archive.Project{
+		"here": {Path: cwd, Leaf: filepath.Base(cwd), Machine: "LAP-2"},
+	})
+	if err := cmdConfig([]string{"--claude-dir", claudeDir, "keep", "."}); err != nil {
+		t.Fatal(err)
+	}
+	want := []archive.KeepEntry{{Leaf: strings.ToLower(filepath.Base(cwd))}}
+	if r, _ := archive.LoadRetention(dest); !reflect.DeepEqual(r.Keep, want) {
+		t.Errorf("keep list %+v, want %+v", r.Keep, want)
+	}
+}
+
+// A retention.json that cannot be read is never overwritten: it may hold the keep list.
+func TestConfigRefusesAnInvalidRetentionFile(t *testing.T) {
+	claudeDir, dest := keepFixture(t)
+	const bad = `{"keep": [`
+	if err := os.WriteFile(archive.RetentionPath(dest), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"keep"}, {"keep", "web-app"}, {"keep", keptID}, {"unkeep", "web-app"}, {"keep-days"}, {"keep-days", "365"}, {"keep-days", "off"}} {
+		if err := cmdConfig(append([]string{"--claude-dir", claudeDir}, args...)); err == nil {
+			t.Errorf("config %v succeeded with an invalid retention.json", args)
+		}
+	}
+	if got, _ := os.ReadFile(archive.RetentionPath(dest)); string(got) != bad {
+		t.Errorf("retention.json was rewritten: %q", got)
 	}
 }
 
@@ -183,13 +290,18 @@ func TestConfigKeepAndUnkeep(t *testing.T) {
 	}
 }
 
-// keepFixture is a profile whose archive holds twoMachines' manifests.
-func keepFixture(t *testing.T) (claudeDir, dest string) {
+// keepFixture is a profile whose archive holds the manifests of the projects given,
+// twoMachines' by default.
+func keepFixture(t *testing.T, given ...map[string]archive.Project) (claudeDir, dest string) {
 	t.Helper()
 	root := t.TempDir()
 	claudeDir, dest = filepath.Join(root, ".claude"), filepath.Join(root, "archive")
+	all := twoMachines()
+	if len(given) > 0 {
+		all = given[0]
+	}
 	byMachine := map[string]map[string]archive.Project{}
-	for bucket, p := range twoMachines() {
+	for bucket, p := range all {
 		if byMachine[p.Machine] == nil {
 			byMachine[p.Machine] = map[string]archive.Project{}
 		}
