@@ -1373,15 +1373,16 @@ func TestAgeRuleWaitsForOlderShard(t *testing.T) {
 	}
 }
 
-// R21: the age rule dates a zip by its file's own time, when it was zipped, and reads
-// neither its index nor its content. prune keeps its exact dates, by the index.
-func TestAgeRuleReadsNoZipContent(t *testing.T) {
-	claudeDir, dest := ageFixture(t)
-	conv(t, dest, "e--web-app", newWeb, time.Now().AddDate(0, 0, -200), "n1") // both last messages long ago
+// zipBoth is ageFixture with newWeb's last message long ago too, and both zipped: oldWeb
+// zippedWeb days ago, newWeb 10.
+func zipBoth(t *testing.T, zippedWeb int) (claudeDir, dest string) {
+	t.Helper()
+	claudeDir, dest = ageFixture(t)
+	conv(t, dest, "e--web-app", newWeb, time.Now().AddDate(0, 0, -200), "n1")
 	for _, c := range []struct {
 		bucket, id string
 		zipped     int // days ago
-	}{{"-Users-you-dev-web-app", oldWeb, 120}, {"e--web-app", newWeb, 10}} {
+	}{{"-Users-you-dev-web-app", oldWeb, zippedWeb}, {"e--web-app", newWeb, 10}} {
 		dir := filepath.Join(archive.ProjectsDir(dest), c.bucket)
 		writeFile(t, filepath.Join(dir, c.id, "tool-results", "r1.txt"), "output\n")
 		if _, err := convzip.Zip(dir, c.id); err != nil {
@@ -1392,33 +1393,98 @@ func TestAgeRuleReadsNoZipContent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := planned(t, claudeDir, dest, pruneSel{OlderThan: 90}, archive.Retention{}); !reflect.DeepEqual(got, []string{oldWeb, newWeb}) {
-		t.Errorf("prune --older-than 90d by the zips' index: %v, want both", got)
-	}
+	return claudeDir, dest
+}
 
-	unpacked, indexes, realM, realI := 0, 0, materialize, readZipIndex
+// zipReads counts the zips read, by their index and by their content, until the test ends.
+func zipReads(t *testing.T) (indexes, unpacked *[]string) {
+	t.Helper()
+	indexes, unpacked = &[]string{}, &[]string{}
+	realM, realI := materialize, readZipIndex
 	materialize = func(bucketDir, id, tmp string) (string, func(), error) {
-		unpacked++
+		*unpacked = append(*unpacked, id)
 		return realM(bucketDir, id, tmp)
 	}
 	readZipIndex = func(zp string) (map[string]work.PackEntry, error) {
-		indexes++
+		*indexes = append(*indexes, zp)
 		return realI(zp)
 	}
-	defer func() { materialize, readZipIndex = realM, realI }()
+	t.Cleanup(func() { materialize, readZipIndex = realM, realI })
+	return indexes, unpacked
+}
+
+func ageRule(t *testing.T, claudeDir, dest string, logf func(string, ...any)) (int, error) {
+	t.Helper()
 	ret, err := archive.LoadRetention(dest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := runAgeRule(claudeDir, dest, ret, time.Now(), 0, func(string, ...any) {})
-	if n != 1 || err != nil || unpacked != 0 || indexes != 0 {
-		t.Errorf("deleted %d, %v; %d zip(s) unpacked, %d index(es) read", n, err, unpacked, indexes)
+	return runAgeRule(claudeDir, dest, ret, time.Now(), 0, logf)
+}
+
+// R21, R22: the age rule selects a zipped conversation by the zip file's own time, when
+// it was zipped, reading no index; only the one it deletes is then read, exactly, and
+// recorded with its transcript's own last turn. prune selects by the index.
+func TestAgeRuleReadsNoZipContent(t *testing.T) {
+	claudeDir, dest := zipBoth(t, 100) // oldWeb's last message 120 days ago, zipped 100 days ago
+	if got := planned(t, claudeDir, dest, pruneSel{OlderThan: 90}, archive.Retention{}); !reflect.DeepEqual(got, []string{oldWeb, newWeb}) {
+		t.Errorf("prune --older-than 90d by the zips' index: %v, want both", got)
+	}
+	indexes, unpacked := zipReads(t)
+	var logged []string
+	n, err := ageRule(t, claudeDir, dest, func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) })
+	if n != 1 || err != nil || len(*indexes) != 0 || !reflect.DeepEqual(*unpacked, []string{oldWeb}) {
+		t.Errorf("deleted %d, %v; indexes read %v, zips unpacked %v: want only %s's, to record it", n, err, *indexes, *unpacked, oldWeb)
 	}
 	if zippedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
-		t.Error("the conversation zipped 120 days ago was not deleted")
+		t.Error("the conversation zipped 100 days ago was not deleted")
 	}
 	if zippedCopy(dest, "e--web-app", newWeb) == "" {
 		t.Error("the conversation zipped 10 days ago was deleted")
+	}
+	// Recorded by its transcript's last turn, never the zip's time.
+	w2 := time.Now().AddDate(0, 0, -120).Add(time.Minute)
+	d, err := archive.LoadDeleted(dest)
+	if e := d[oldWeb]; err != nil || e.LastUUID != "w2" || e.LastAt.Sub(w2).Abs() > time.Second {
+		t.Errorf("recorded %+v (%v), want w2 at %v", e, err, w2)
+	}
+	if want := "last message " + w2.Format("2006-01-02") + ","; len(logged) != 1 || !strings.Contains(logged[0], want) {
+		t.Errorf("logged %q, want %q", logged, want)
+	}
+}
+
+// R22: a run that selects nothing reads no zip at all.
+func TestAgeRuleSelectingNothingReadsNoZip(t *testing.T) {
+	claudeDir, dest := zipBoth(t, 10) // both zipped 10 days ago
+	indexes, unpacked := zipReads(t)
+	if n, err := ageRule(t, claudeDir, dest, func(string, ...any) {}); n != 0 || err != nil || len(*indexes)+len(*unpacked) != 0 {
+		t.Errorf("deleted %d, %v; indexes read %v, zips unpacked %v", n, err, *indexes, *unpacked)
+	}
+}
+
+// R22: a zip whose time is behind its last turn, a clock behind where it was zipped,
+// is selected by that time; its exact date, read from it, is within keep-days, so it is
+// neither recorded nor deleted.
+func TestAgeRuleRechecksAZipDatedBehind(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	dir := filepath.Join(archive.ProjectsDir(dest), "e--web-app")
+	if _, err := convzip.Zip(dir, newWeb); err != nil { // last message 10 days ago
+		t.Fatal(err)
+	}
+	behind := time.Now().AddDate(0, 0, -120)
+	if err := os.Chtimes(convzip.Path(dir, newWeb), behind, behind); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	n, _ := ageRule(t, claudeDir, dest, func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) })
+	if n != 1 || zippedCopy(dest, "e--web-app", newWeb) == "" {
+		t.Errorf("deleted %d: want only oldWeb, and the zip dated behind kept", n)
+	}
+	if d, _ := archive.LoadDeleted(dest); d[newWeb].ID != "" {
+		t.Errorf("recorded %+v", d[newWeb])
+	}
+	if !strings.Contains(strings.Join(logged, "\n"), newWeb+": not pruned: its last message, "+time.Now().AddDate(0, 0, -10).Format("2006-01-02")) {
+		t.Errorf("logged %q", logged)
 	}
 }
 
@@ -1470,6 +1536,27 @@ func TestAgeRuleBudgetLeavesTheRestForTheNextRun(t *testing.T) {
 	}
 	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
 		t.Error("the conversation left for the next run was not deleted by it")
+	}
+}
+
+// A push from the sweep stops the age rule at its budget, and leaves the rest for the
+// next run; one from a terminal has none.
+func TestSweepPushStopsTheAgeRuleAtItsBudget(t *testing.T) {
+	claudeDir, dest := ageFixture(t)
+	conv(t, dest, "e--web-app", "aaaaaaaa-1111-4111-8111-000000000000", time.Now().AddDate(0, 0, -5), "y1") // read first
+	real := ageRuleBudget
+	ageRuleBudget = time.Nanosecond
+	defer func() { ageRuleBudget = real }()
+	pushHere(t, claudeDir, pushOpts{Quiet: true, Sweep: true})
+	log := mustReadFile(t, filepath.Join(claudeDir, "session-sync.log"))
+	if !strings.Contains(log, "KEEP-DAYS: stopped after 1ns with 2 conversation(s) left for the next run") ||
+		archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) == "" {
+		t.Errorf("the sweep's age rule did not stop at its budget:\n%s", log)
+	}
+	writeJSON(t, pruneLastPath(claudeDir), pruneRun{LastRun: time.Now().Add(-25 * time.Hour), Next: oldWeb})
+	pushHere(t, claudeDir, pushOpts{})
+	if archivedCopy(dest, "-Users-you-dev-web-app", oldWeb) != "" {
+		t.Error("the next run, from a terminal, did not delete what was left")
 	}
 }
 

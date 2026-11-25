@@ -48,20 +48,19 @@ type prunePlan struct {
 
 	// What applyPrune dates each conversation by again, right before deleting it.
 	cutoff time.Time           // zero without --older-than
-	quick  time.Time           // the age rule's stat-first cutoff, see ageScan; zero for exact dates
 	local  map[string][]string // this machine's own copies, by id
 
 	cut  string // the id the age rule's budget stopped it before; "" when it went through
 	left int    // how many it left for the next run, cut included
 }
 
-// ageScan is how the age rule plans: unattended, once a day, on an archive that may be a
-// drive that fetches each file only when it is opened. It dates by stat first. A
+// ageScan is how the age rule selects: unattended, once a day, on an archive that may be
+// a drive that fetches each file only when it is opened. It dates by stat first. A
 // transcript or fork whose file changed after the cutoff is too young to select, so its
-// tail is not read. A zip is dated by its file's own time, when it was zipped, which is
-// at or after its last turn, and its index is never read. Either way a conversation can
-// only look younger than prune dates it, so the rule keeps more, never less. It starts
-// at from, where the last run stopped, and stops once budget (0 for none) is spent.
+// tail is not read. A zip is dated by its file's own time, when it was zipped, and
+// neither its index nor its content is read. It starts at from, where the last run
+// stopped, and stops once budget (0 for none) is spent. This only selects: applyPrune
+// dates each one selected exactly before anything is recorded, as for prune.
 type ageScan struct {
 	budget time.Duration
 	from   string
@@ -252,9 +251,9 @@ func planWith(root, dest string, sel pruneSel, ret archive.Retention, now time.T
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	start := time.Now()
+	start, mode := time.Now(), dateListed
 	if scan != nil {
-		plan.quick = cutoff
+		mode = dateQuick
 		k := sort.SearchStrings(ids, scan.from)
 		ids = append(slices.Clone(ids[k:]), ids[:k]...)
 	}
@@ -277,7 +276,7 @@ func planWith(root, dest string, sel pruneSel, ret archive.Retention, now time.T
 			continue // kept at any age: not worth a read
 		}
 		it := pruneItem{ID: id, Buckets: buckets}
-		dated := datePrune(dest, &it, local[id], now, plan.quick)
+		dated := datePrune(dest, &it, local[id], now, mode, cutoff)
 		it.dated = dated
 		if sel.OlderThan > 0 && (!dated || !it.LastAt.Before(cutoff)) {
 			continue
@@ -313,16 +312,17 @@ func planWith(root, dest string, sel pruneSel, ret archive.Retention, now time.T
 // or is dated after now - a wrong clock: the conversation may be younger than it looks,
 // and a LastAt still to come would make push skip turns added before then.
 //
-// With quick, the age rule's cutoff, it dates as ageScan says: a file changed after
-// quick dates the conversation by that time, too young to select, and nothing more of
-// it is read; a zip is dated by its file's time.
-func datePrune(dest string, it *pruneItem, local []string, now, quick time.Time) bool {
-	dated, newest, young := true, "", false
-	use := func(at time.Time, p string) {
+// mode says how a zip is read, and dateQuick dates as ageScan says: a file changed after
+// cutoff dates the conversation by that time, too young to select, and nothing more of
+// it is read.
+func datePrune(dest string, it *pruneItem, local []string, now time.Time, mode dateMode, cutoff time.Time) bool {
+	dated, young := true, false
+	var newest func() string // the newest turn's uuid, read only once it is known
+	use := func(at time.Time, uuid func() string) {
 		if at.IsZero() || at.After(now) {
 			dated = false
 		} else if at.After(it.LastAt) {
-			it.LastAt, newest = at, p
+			it.LastAt, newest = at, uuid
 		}
 	}
 	size := func(p string) (os.FileInfo, error) {
@@ -333,8 +333,8 @@ func datePrune(dest string, it *pruneItem, local []string, now, quick time.Time)
 		return st, err
 	}
 	tooYoung := func(st os.FileInfo) bool {
-		if !quick.IsZero() && st.ModTime().After(quick) {
-			use(st.ModTime(), "")
+		if mode == dateQuick && st.ModTime().After(cutoff) {
+			use(st.ModTime(), nil)
 			young = true
 		}
 		return young
@@ -351,7 +351,7 @@ func datePrune(dest string, it *pruneItem, local []string, now, quick time.Time)
 		if !ok && err == nil {
 			at = st.ModTime()
 		}
-		use(at, p)
+		use(at, func() string { return lastUUID(p) })
 	}
 	for _, b := range it.Buckets {
 		p, zp := archivedCopy(dest, b, it.ID), zippedCopy(dest, b, it.ID)
@@ -363,12 +363,17 @@ func datePrune(dest string, it *pruneItem, local []string, now, quick time.Time)
 		}
 		if zp != "" && !young {
 			switch st, err := size(zp); {
-			case quick.IsZero():
-				use(zippedTurnTime(zp, it.ID), "")
 			case err != nil:
-				use(time.Time{}, "")
-			case !tooYoung(st):
-				use(st.ModTime(), "") // when it was zipped: at or after its last turn
+				use(time.Time{}, nil)
+			case mode == dateQuick:
+				if !tooYoung(st) {
+					use(st.ModTime(), nil) // when it was zipped
+				}
+			case mode == dateExact:
+				at, uuid := zippedLastTurn(zp, it.ID)
+				use(at, func() string { return uuid })
+			default:
+				use(zippedTurnTime(zp, it.ID), nil)
 			}
 		}
 		for _, p := range forkCopies(dest, b, it.ID) {
@@ -378,10 +383,35 @@ func datePrune(dest string, it *pruneItem, local []string, now, quick time.Time)
 	for _, p := range local {
 		loose(p)
 	}
-	if newest != "" && !young {
-		it.LastUUID = lastUUID(newest)
+	if newest != nil && !young {
+		it.LastUUID = newest()
 	}
 	return dated && !it.LastAt.IsZero()
+}
+
+// dateMode is how datePrune reads a conversation.
+type dateMode int
+
+const (
+	dateListed dateMode = iota // prune's listing: a zip by its index's transcript entry
+	dateQuick                  // the age rule's selection, see ageScan: stat first, a zip by its file's time
+	dateExact                  // before recording: a zip by its own transcript's last turn, read from it
+)
+
+// zippedLastTurn is the last turn of the transcript in the zip zp, read from the zip
+// itself, as every reader sees it: its time, else its entry's, and its uuid. Zero when it
+// cannot be read. Only the check before recording reads it, for the few being deleted.
+func zippedLastTurn(zp, id string) (time.Time, string) {
+	p, done, err := materialize(filepath.Dir(zp), id, "")
+	if err != nil {
+		return time.Time{}, ""
+	}
+	defer done()
+	at, ok := lastTurnTime(p)
+	if st, err := os.Stat(p); !ok && err == nil {
+		at = st.ModTime() // the entry's: extracting keeps it
+	}
+	return at, lastUUID(p)
 }
 
 // How prune reads a transcript's last turn; tests count the reads.
@@ -441,11 +471,12 @@ func conversationSize(dest string, it pruneItem) int64 {
 // runs it inside its own. It deletes nothing while a manifest or the deleted list cannot
 // be read, or a machine's build would upload the conversations again.
 //
-// Each conversation's paths are checked, and it is found and dated again as the plan
-// did, before any is recorded: one refused, no longer there, or changed since it was
-// listed - a copy added, gone or grown, a newer turn, one no longer datable - is
-// reported to fail and neither recorded nor deleted. The rest are recorded on the
-// deleted list, then deleted: only the paths checked here.
+// Each conversation's paths are checked, and it is found and dated again, exactly - a
+// zip by its own transcript's last turn - before any is recorded: one refused, no longer
+// there, changed since it was listed - a copy added, gone or grown, a newer turn, one
+// no longer datable - or by its exact date no longer older than the cutoff is reported
+// to fail and neither recorded nor deleted. The rest are recorded on the deleted list
+// with that exact date, set in plan.Remove too, then deleted: only the paths checked here.
 func applyPrune(dest string, plan prunePlan, now time.Time, fail func(pruneItem, error)) (deleted int, freed int64, err error) {
 	if plan.Unread != "" {
 		return 0, 0, fmt.Errorf("nothing deleted: %s. The computer it belongs to may upload them again", plan.Unread)
@@ -461,25 +492,32 @@ func applyPrune(dest string, plan prunePlan, now time.Time, fail func(pruneItem,
 	var ready []pruneItem
 	var checked [][]prunePath
 	var entries []archive.DeletedEntry
-	for _, it := range plan.Remove {
-		paths, err := prunePaths(dest, it)
+	for i := range plan.Remove {
+		it := &plan.Remove[i]
+		paths, err := prunePaths(dest, *it)
 		if err == nil && len(paths) == 0 {
 			err = errNotFound
 		}
 		if err != nil {
-			fail(it, err)
+			fail(*it, err)
 			continue
 		}
 		again := pruneItem{ID: it.ID, Buckets: it.Buckets}
-		dated := datePrune(dest, &again, plan.local[it.ID], now, plan.quick)
+		dated := datePrune(dest, &again, plan.local[it.ID], now, dateExact, time.Time{})
+		last := again.LastAt.Local().Format("2006-01-02 15:04")
 		// A copy grown since is a turn added, whatever its time says - none, one ahead, or
-		// one from a clock behind.
-		if !slices.Equal(holders[it.ID], it.Buckets) || again.LastAt.After(it.LastAt) || it.dated && !dated ||
-			!slices.Equal(again.sizes, it.sizes) || !plan.cutoff.IsZero() && !again.LastAt.Before(plan.cutoff) {
-			fail(it, fmt.Errorf("it changed since it was listed (last message %s); not deleted", again.LastAt.Local().Format("2006-01-02 15:04")))
+		// one from a clock behind. Its time is not compared with the listing's: that read a
+		// zip's index, to the second, or for the age rule only its file's time.
+		switch {
+		case !slices.Equal(holders[it.ID], it.Buckets) || it.dated && !dated || !slices.Equal(again.sizes, it.sizes):
+			fail(*it, fmt.Errorf("it changed since it was listed (last message %s); not deleted", last))
+			continue
+		case !plan.cutoff.IsZero() && !again.LastAt.Before(plan.cutoff): // a zip's time behind its last turn
+			fail(*it, fmt.Errorf("its last message, %s, is newer than it looked; not deleted", last))
 			continue
 		}
-		ready, checked = append(ready, it), append(checked, paths)
+		it.LastAt, it.LastUUID = again.LastAt, again.LastUUID // recorded exactly, never by a zip's file time
+		ready, checked = append(ready, *it), append(checked, paths)
 		entries = append(entries, archive.DeletedEntry{ID: it.ID, Buckets: it.Buckets, LastUUID: it.LastUUID, LastAt: it.LastAt,
 			DeletedAt: after(now, listed, it.ID)})
 	}
@@ -663,6 +701,9 @@ func notNewer(e archive.DeletedEntry, path string) bool {
 // ageRuleEvery is how often the age rule runs on one computer: it dates every
 // archived conversation.
 const ageRuleEvery = 24 * time.Hour
+
+// ageRuleBudget bounds the sweep's age rule, as it does pages; tests shrink it.
+var ageRuleBudget = quietRenderBudget
 
 // pruneLastPath records when the age rule last ran on this computer.
 func pruneLastPath(root string) string {

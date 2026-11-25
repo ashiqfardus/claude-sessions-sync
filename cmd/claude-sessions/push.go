@@ -474,7 +474,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		if !quiet || opts.Sweep {
 			budget := time.Duration(0)
 			if quiet { // the sweep
-				budget = quietRenderBudget
+				budget = ageRuleBudget
 			}
 			if ret, err := archive.LoadRetention(dest); err != nil {
 				logf("WARN: keep-days: %v", err)

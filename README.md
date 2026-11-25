@@ -599,10 +599,12 @@ claude-sessions prune <conversation id> --yes
   most once a day, in the sweep or a `push` from a terminal, never in the hooks, and
   logs `PRUNE: <id> (<project>, last message <date>, <size>)` for each conversation it
   deletes. So as not to fetch the whole archive from a folder that downloads files on
-  demand, it dates a zipped conversation by when it was zipped, and reads a transcript
-  only when its file is old enough: it may delete a conversation a little later than
-  `prune --older-than` would, never sooner. The sweep's run stops after 45 seconds and
-  the next day's carries on from there. `doctor`'s `prune` line shows the setting and
+  demand, it picks conversations by their files' times, a zipped one by when it was
+  zipped, and reads a transcript only when its file is old enough. Each one it picks is
+  then dated from its own last message, as `prune` dates it, before it is deleted: it
+  may delete a conversation a little later than `prune --older-than` would, never
+  sooner. The sweep's run stops after 45 seconds and the next day's carries on from
+  there. `doctor`'s `prune` line shows the setting and
   when it last ran there.
 - **Every computer must be updated first.** An older version would upload a pruned
   conversation again, so `prune --yes` and the age rule delete nothing until every
