@@ -33,6 +33,8 @@ const plural = (n) => number(n) + ' conversation' + (n === 1 ? '' : 's')
 const and = (names) => new Intl.ListFormat('en-GB', { type: 'conjunction' }).format(names)
 const titleOf = (r) => r.title || 'Conversation ' + r.id.slice(0, 8)
 const plain = (e) => (e && e.plain ? e.message : GENERIC)
+// pathPart says whether a bucket or id can go into /read/ as it is: no separator, never "." or "..".
+const pathPart = (s) => typeof s === 'string' && /^[A-Za-z0-9._-]+$/.test(s) && !/^\.+$/.test(s)
 
 // size is the mockup's form: MB with one decimal, GB from 1 GB, KB below 0.05 MB.
 function size(n) {
@@ -68,7 +70,10 @@ register('conversations', {
     if (first.problem) return first
 
     const provider = (summary && summary.archive && summary.archive.provider) || ''
-    const holdouts = (retention && Array.isArray(retention.holdouts) && retention.holdouts) || []
+    // The server's prune refuses while a computer holds out; when that can't be checked, so does the page.
+    const unchecked = !retention || retention.problem || !Array.isArray(retention.holdouts)
+    const holdouts = unchecked ? [] : retention.holdouts
+    const blocked = unchecked || holdouts.length > 0
     const search = slot('q'), since = slot('since'), until = slot('until')
     const line = slot('summary'), fix = slot('fix'), rowsEl = slot('rows'), all = slot('select-all')
     const tableBox = rowsEl.closest('.table-box'), pages = slot('pages')
@@ -165,6 +170,7 @@ register('conversations', {
         slot('range').textContent = `${number(from + 1)} to ${number(from + shown.length)} of ${number(view.total)}`
         pager(slot('pager'), { page: view.page, pages: view.pages, onGo: (p) => { state.page = String(p); save(); load() } })
       }
+      if (!view.error && !view.problem && view.unreadable > 0) line.append(` ${plural(view.unreadable)} couldn't be read, so results may be incomplete.`)
       rowsEl.replaceChildren(...shown.map(row))
       mark()
     }
@@ -179,7 +185,7 @@ register('conversations', {
     function row(r) {
       const title = titleOf(r)
       const badge = (cls, paths, text) => h('span', { class: 'badge ' + cls }, icon(12, ...paths), text)
-      const href = '/read/' + encodeURIComponent((r.buckets || [])[0] || '') + '/' + encodeURIComponent(r.id)
+      const bucket = (r.buckets || [])[0]
       return h('tr', null,
         h('td', null, h('input', { type: 'checkbox', class: 'check', 'aria-label': 'Select: ' + title, onchange: (e) => tick(r, e.target.checked) })),
         h('td', null, h('span', { class: 'title-cell' }, h('strong', null, title), h('code', { class: 'muted' }, r.id.slice(0, 8)))),
@@ -192,9 +198,9 @@ register('conversations', {
           r.kept && badge('green', KEEP, 'Kept'),
           r.forked && badge('amber', FORK, 'Forked'),
           r.inUse && h('span', { class: 'muted small' }, 'In use'))),
-        h('td', { class: 'r' }, r.readable
-          ? h('a', { class: 'btn sm ghost', href, target: '_blank', rel: 'noopener', 'aria-label': 'Read: ' + title }, 'Read')
-          : [h('button', { type: 'button', class: 'btn sm ghost', disabled: true }, 'Read'), h('span', { class: 'muted small block' }, 'No page yet')]))
+        h('td', { class: 'r' }, r.readable && pathPart(bucket) && pathPart(r.id)
+          ? h('a', { class: 'btn sm ghost', href: '/read/' + bucket + '/' + r.id, target: '_blank', rel: 'noopener', 'aria-label': 'Read: ' + title }, 'Read')
+          : [h('button', { type: 'button', class: 'btn sm ghost', disabled: true, 'aria-label': `Read: ${title} (no page yet)` }, 'Read'), h('span', { class: 'muted small block' }, 'No page yet')]))
     }
 
     function tick(r, on) {
@@ -213,12 +219,14 @@ register('conversations', {
       })
       all.checked = n > 0 && n === shown.length
       all.indeterminate = n > 0 && n < shown.length
-      bar.hidden = !n
       let bytes = 0
       for (const r of selected.values()) bytes += r.size
-      if (n) slot('selected').textContent = `${number(n)} selected, ${size(bytes)}`
+      const text = n ? `${number(n)} selected, ${size(bytes)}` : ''
+      if (n) slot('selected').textContent = text
+      slot('selected-say').textContent = text // a live region outside the bar, which is hidden until now
+      bar.hidden = !n
       keepBtn.disabled = busy
-      delBtn.disabled = busy || holdouts.length > 0
+      delBtn.disabled = busy || blocked
     }
 
     all.addEventListener('change', () => {
@@ -227,9 +235,11 @@ register('conversations', {
       mark()
     })
     slot('clear').addEventListener('click', () => { selected.clear(); mark(); all.focus() })
-    if (holdouts.length) {
-      slot('wait-text').textContent = `Deleting waits until ${and(holdouts)} ${holdouts.length === 1 ? 'updates' : 'update'}.`
+    if (blocked) {
+      slot('wait-text').textContent = unchecked ? "Deleting is paused: the other computers can't be checked right now."
+        : `Deleting waits until ${and(holdouts)} ${holdouts.length === 1 ? 'updates' : 'update'}.`
       slot('wait').hidden = false
+      delBtn.setAttribute('aria-describedby', 'conv-wait')
     }
 
     // After an action the bar is gone: focus goes to the control after it.
@@ -261,11 +271,12 @@ register('conversations', {
     })
 
     delBtn.addEventListener('click', async () => {
-      const rows = [...selected.values()], ids = rows.map((r) => r.id)
+      const rows = [...selected.values()], ids = rows.map((r) => r.id), kept = rows.filter((r) => r.kept).length
       const title = 'Delete ' + plural(ids.length)
       // Provider wording only when the provider is known (Ruling P25).
       const body = `They are removed from the archive in ${provider || 'your sync folder'}. Your computers keep their own copies` +
-        (provider === 'Google Drive' ? ', and Google Drive keeps the files in its trash for 30 days.' : '.')
+        (provider === 'Google Drive' ? ', and Google Drive keeps the files in its trash for 30 days.' : '.') +
+        (kept ? ` ${number(kept)} of these ${kept === 1 ? 'is' : 'are'} on Never delete and will be skipped.` : '')
       if (!await confirmDialog({ title, body, items: rows.map(titleOf), confirm: title, danger: true })) return
       busy = true
       mark()
@@ -277,8 +288,8 @@ register('conversations', {
       }
       busy = false
       // A run that fails partway still says what it deleted (Ruling P44).
-      const res = st.result || {}, n = res.deleted || 0, kept = (res.plan && res.plan.kept) || 0
-      let text = `Deleted ${plural(n)} from the archive` + (kept ? `. ${plural(kept)} on Never delete ${kept === 1 ? 'was' : 'were'} skipped` : '')
+      const res = st.result || {}, n = res.deleted || 0, skipped = (res.plan && res.plan.kept) || 0
+      let text = `Deleted ${plural(n)} from the archive` + (skipped ? `. ${plural(skipped)} on Never delete ${skipped === 1 ? 'was' : 'were'} skipped` : '')
       if (!st.ok) text = (n ? text + '. ' : '') + (st.error || GENERIC)
       if (!signal.aborted) await load()
       toast(text, n ? { action: { label: 'Restore', run: () => restore(ids) } } : undefined)
