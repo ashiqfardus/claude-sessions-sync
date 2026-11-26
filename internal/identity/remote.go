@@ -127,6 +127,10 @@ func SameRemote(a, b string) bool {
 	return normaliseRemote(a) == normaliseRemote(b)
 }
 
+// NormalRemote is a remote as SameRemote compares it: host and path, lower case, as in
+// github.com/o/r.
+func NormalRemote(u string) string { return normaliseRemote(u) }
+
 // hostPort matches a leading host with an explicit port, e.g. "github.com:22/".
 // A port is a transport detail, not part of the repository's identity.
 var hostPort = regexp.MustCompile(`^([^/:]+):\d+(/|$)`)

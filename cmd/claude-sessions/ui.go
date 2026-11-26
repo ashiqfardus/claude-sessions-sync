@@ -319,12 +319,20 @@ func (u *uiServer) routes() []panel.Route {
 		{Method: get, Path: "/api/jobs/current", Handler: func(w http.ResponseWriter, r *http.Request) { sendJSON(w, currentJob(u.jobs)) }},
 		{Method: get, Path: "/api/jobs/events", Handler: u.jobs.ServeEvents},
 		{Method: get, Path: "/api/log", Handler: u.apiLog},
+		{Method: get, Path: "/api/projects", Handler: u.apiProjects},
+		{Method: get, Path: "/api/conversations", Handler: u.apiConversations},
 		{Method: get, Path: "/read/", Prefix: true, Handler: u.readPage},
 	}
 }
 
 func sendJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
+}
+
+func sendStatus(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
 }
 
