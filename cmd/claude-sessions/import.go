@@ -243,6 +243,17 @@ func runImport(s streams, o importOpts) (importResult, error) {
 		remaps, remapNotes = remapMoves(workRes.Prev, workRes.ByMachine)
 		workMoves = append(workMoves, remaps...)
 	}
+	// Said as they are placed, before any conversation: a real run unpacks them first,
+	// and may take minutes over it.
+	for _, n := range append(workRes.Notes, remapNotes...) {
+		fmt.Fprintln(s.Out, printable(n)) // they name files and folders the archive chose
+	}
+	if len(workRes.Placed) > 0 {
+		fmt.Fprintln(s.Out, "  to place them elsewhere: claude-sessions config map-folder '<path from above>' '<local folder>', or claude-sessions config work-placement home|machine")
+	}
+	if len(workRes.Notes)+len(remapNotes) > 0 || len(workRes.Placed) > 0 {
+		fmt.Fprintln(s.Out)
+	}
 	if hb.on() { // only then is each bucket listed for the count
 		hb.reading("conversations", conversationCount(dest, buckets))
 	}
@@ -523,17 +534,11 @@ func runImport(s streams, o importOpts) (importResult, error) {
 		fmt.Fprintf(s.Out, ", %d updated", updated)
 	}
 	fmt.Fprintf(s.Out, ". %d same layout, %d not found, %d ambiguous.\n", sameLayout, notFound, ambiguous)
-	for _, n := range append(workRes.Notes, remapNotes...) {
-		fmt.Fprintln(s.Out, printable(n)) // they name files and folders the archive chose
-	}
 	if o.NoWork {
 		fmt.Fprintln(s.Out, noWorkNote)
 	}
 	if o.NoProfile {
 		fmt.Fprintln(s.Out, noProfileNote)
-	}
-	if len(workRes.Placed) > 0 {
-		fmt.Fprintln(s.Out, "  to place them elsewhere: claude-sessions config map-folder '<path from above>' '<local folder>', or claude-sessions config work-placement home|machine")
 	}
 	if o.Repoint {
 		verb := "repointed"

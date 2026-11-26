@@ -896,6 +896,7 @@ type workRestoreResult struct {
 	Placed, ByMachine            map[string]string
 	Prev                         map[string][]string
 	Filed, Kept, Beside, Refused int
+	FiledBytes                   int64
 	Excluded                     int // folders and files left alone: excluded here
 	Notes                        []string
 	Made                         map[string]bool // the folders files land in, with dryRun would
@@ -1173,6 +1174,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				case os.IsNotExist(err) || err == nil && update && st.Mode().IsRegular() && mine(dst, st) && !same(st):
 					if write(dst) {
 						n.Filed++
+						n.FiledBytes += fi.Size()
 					}
 				case err != nil || !update || !st.Mode().IsRegular() || mine(dst, st) || st.Size() == fi.Size() && sameContent(src, dst):
 					n.Kept++ // add-only; never through a link
@@ -1264,7 +1266,9 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 					if _, ok := over[f.Rel]; ok {
 						lost[u+"/"+f.Rel] = true
 					}
-					if fi, err := os.Lstat(f.Path); err == nil && !dryRun {
+					if dryRun { // unpacked by none: counted as its index has it, as the real run counts it
+						file("", u+"/"+f.Rel, packEntryInfo{f})
+					} else if fi, err := os.Lstat(f.Path); err == nil {
 						file(f.Path, u+"/"+f.Rel, fi)
 					}
 				}
@@ -1300,8 +1304,12 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 		if where == "" {
 			where = "none placed"
 		}
-		res.Notes = append(res.Notes, fmt.Sprintf("work folders from %s: %s (%d file(s) %s, %d kept, %d beside, %d refused, %d excluded here)",
-			s.Machine, where, n.Filed, would("filed"), n.Kept, n.Beside, n.Refused, n.Excluded))
+		size := ""
+		if n.Filed > 0 { // as it lands, unpacked
+			size = "; " + mb(n.FiledBytes) + " " + would("filed")
+		}
+		res.Notes = append(res.Notes, fmt.Sprintf("work folders from %s: %s (%d file(s) %s, %d kept, %d beside, %d refused, %d excluded here%s)",
+			s.Machine, where, n.Filed, would("filed"), n.Kept, n.Beside, n.Refused, n.Excluded, size))
 		res.Notes = append(res.Notes, notes...)
 	}
 	if !dryRun {
@@ -1312,6 +1320,16 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 	res.Prev = held.Prev
 	return moves, res
 }
+
+// packEntryInfo is a pack entry as the pack's index has it: a dry run unpacks none.
+type packEntryInfo struct{ f work.PackFile }
+
+func (p packEntryInfo) Name() string       { return filepath.Base(p.f.Rel) }
+func (p packEntryInfo) Size() int64        { return p.f.Size }
+func (p packEntryInfo) Mode() fs.FileMode  { return 0o644 }
+func (p packEntryInfo) ModTime() time.Time { return p.f.ModTime }
+func (p packEntryInfo) IsDir() bool        { return false }
+func (p packEntryInfo) Sys() any           { return nil }
 
 // packOf returns the unit that name - "/"-separated, below a work folder's archive
 // copy - is the pack of: a top-level <unit>.cspack.zip, the unit a plain name.

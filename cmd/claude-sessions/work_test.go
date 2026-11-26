@@ -2387,8 +2387,11 @@ func TestImportPackWithOverlay(t *testing.T) {
 	setTime(t, stale, time.Now().Add(-30*24*time.Hour))
 	tmp := t.TempDir()
 
+	// The dry run counts what lands, the pack's entries with the loose files, as the
+	// real run does; it used to count the loose file alone.
 	dry := b.tmpRun(t, homeB, tmp, "import", "--no-plugins", "--dry-run")
-	if !strings.Contains(dry, "would unpack 5 file(s) from "+filepath.Join(w, "run1")) || !strings.Contains(dry, "(1 file(s) would be filed") {
+	if !strings.Contains(dry, "would unpack 5 file(s) from "+filepath.Join(w, "run1")) ||
+		!regexp.MustCompile(`\(6 file\(s\) would be filed, 0 kept, 0 beside, 0 refused, 0 excluded here; \d+\.\d MB would be filed\)`).MatchString(dry) {
 		t.Fatalf("dry run output: %s", dry)
 	}
 	if _, err := os.Stat(filepath.Join(homeB, "SQL")); !os.IsNotExist(err) {
@@ -2400,7 +2403,7 @@ func TestImportPackWithOverlay(t *testing.T) {
 	if got := filesUnderDir(t, placed); len(got) != 6 {
 		t.Fatalf("restored %v", got)
 	}
-	if !strings.Contains(out, "(6 file(s) filed, 0 kept, 0 beside, 0 refused") {
+	if !regexp.MustCompile(`\(6 file\(s\) filed, 0 kept, 0 beside, 0 refused, 0 excluded here; \d+\.\d MB filed\)`).MatchString(out) {
 		t.Fatalf("output: %s", out)
 	}
 	if left, _ := os.ReadDir(tmp); len(left) != 0 {
