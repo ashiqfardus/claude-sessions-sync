@@ -289,9 +289,6 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 	slowRead := hintIfSlowTo(hintTo)
 	defer slowRead()
 	excludes, republished := archive.RenderExcludesDropped(root, dest, nil, !dryRun)
-	for _, p := range republished {
-		logf("RENDER: %s is published again (another computer ran render --include %s); run render --exclude %s to withdraw it", p, p, p)
-	}
 
 	res := pushResult{Archive: dest, DryRun: dryRun}
 	shard := archive.Shard{
@@ -313,6 +310,10 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 	shard.RelatedIndexed = true
 	pushed := pushedBefore(dest, shard.Machine)
 	slowRead()
+	// After the hint is stopped: nothing else may write to s.Err while it can fire.
+	for _, p := range republished {
+		logf("RENDER: %s is published again (another computer ran render --include %s); run render --exclude %s to withdraw it", p, p, p)
+	}
 	repointed := loadRepointed(root)
 	repointedWas := len(repointed)
 	held, holders, zips := loadHeld(root), sessionHolders(dest), loadZipCompared(root)
