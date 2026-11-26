@@ -125,7 +125,7 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 	if replaced > 0 {
 		res.Hook = fmt.Sprintf("replaced %d existing entr(y/ies)", replaced)
 	}
-	fmt.Fprintf(s.Out, "  hook      SessionEnd (%s)\n", res.Hook)
+	fmt.Fprintf(s.Out, "  hook      SessionEnd + Stop (%s)\n", res.Hook) // claude.ourHooks
 
 	every := o.Every
 	if every <= 0 {
