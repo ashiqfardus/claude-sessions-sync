@@ -251,6 +251,21 @@ func shardRemote(t *testing.T, dest, bucket string) string {
 	return shards["you-mac"].Projects[bucket].Remote
 }
 
+// archivedPaths is each archived bucket and the path recorded for it, a line each.
+func archivedPaths(t *testing.T, dest string) string {
+	t.Helper()
+	projects, err := projectsOf(dest)
+	if err != nil {
+		return err.Error()
+	}
+	var lines []string
+	for b, p := range projects {
+		lines = append(lines, b+"  "+p.Path)
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n")
+}
+
 // C1: a project kept by its remote, on the one computer that has it, stays kept once its
 // checkout is deleted, moved or unplugged, or its remote changes. The age rule must not
 // then delete it. A deleted checkout keeps the remote its bucket last read; a changed
@@ -272,7 +287,7 @@ func TestKeptByRemoteStaysKeptOnceItsFolderIsGone(t *testing.T) {
 		claudeDir, dest, repo, bucket := webApp2(t)
 		for _, args := range [][]string{{"keep", repo}, {"keep-days", "90"}} {
 			if out, err := captured(t, func() error { return cmdConfig(append([]string{"--claude-dir", claudeDir}, args...)) }); err != nil {
-				t.Fatalf("config %v: %v\n%s", args, err, out)
+				t.Fatalf("config %v: %v\n%s\narchived projects:\n%s", args, err, out, archivedPaths(t, dest))
 			}
 		}
 		c.change(repo)
@@ -1228,7 +1243,8 @@ func localConv(t *testing.T, claudeDir, repo, id string, at time.Time, uuids ...
 // with the last one's time.
 func appendTurn(t *testing.T, p, repo string, at time.Time, uuids ...string) {
 	t.Helper()
-	writeFile(t, p, mustReadFile(t, p)+strings.ReplaceAll(turns(at, uuids...), "/Users/you/dev/web-app", filepath.ToSlash(repo)))
+	cwd, _ := json.Marshal(repo) // as Claude Code writes it: "C:\\dev\\app" on Windows, never C:/dev/app
+	writeFile(t, p, mustReadFile(t, p)+strings.ReplaceAll(turns(at, uuids...), `"/Users/you/dev/web-app"`, string(cwd)))
 	last := at.Add(time.Duration(len(uuids)-1) * time.Minute)
 	if err := os.Chtimes(p, last, last); err != nil {
 		t.Fatal(err)
