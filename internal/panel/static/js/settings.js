@@ -111,8 +111,9 @@ register('settings', {
     const slot = (name) => el.querySelector(`[data-slot="${name}"]`)
     // Change folder is in the card that the no-archive state replaces: found before that.
     const card = slot('archive'), changeFolder = slot('change-folder'), nameInput = slot('name'), renameBtn = slot('rename'), pre = slot('log')
+    const everyHint = slot('every-hint')
     let pendingEvery = null // a Scheduled backup choice not yet set up, kept across reloads
-    const every = combo(slot('every'), { options: [], value: 30, onChange: (n) => { pendingEvery = n } })
+    const every = combo(slot('every'), { options: [], value: 30, onChange: (n) => { pendingEvery = n; hintEvery() } })
     let v, cfg, me = '', home = '', sep = '/', log = null, diffs = [], profileRead = false, projects = [], shownCard = card, healthN = 0
     const tilde = (p) => (home && (p === home || p.startsWith(home + sep)) ? '~' + p.slice(home.length) : p)
 
@@ -228,6 +229,7 @@ register('settings', {
       every.options = [...EVERY, ...[saved, shown].filter((n, i, a) => !EVERY.some(([m]) => m === n) && a.indexOf(n) === i).map((n) => [n, `Every ${n} minutes`])]
         .map(([value, label]) => ({ value, label }))
       every.value = shown
+      hintEvery()
 
       const k = v.profileDiffs || 0
       slot('profile-line').textContent = k ? `${plural(k, 'file')} ${k === 1 ? 'differs' : 'differ'} between your computers. Each keeps its own until you choose.`
@@ -251,6 +253,16 @@ register('settings', {
       // Oldest first, as in the file and as the full check writes; the newest is in view.
       pre.textContent = !log ? "The log can't be read right now." : log.length ? log.join('\n') : 'Nothing in the log yet.'
       setTimeout(() => { pre.scrollTop = pre.scrollHeight }) // after the router shows the screen
+    }
+
+    // Only Set up again applies a new Scheduled backup choice: say so while one differs from the saved.
+    function hintEvery() {
+      const on = pendingEvery != null && pendingEvery !== (cfg.sweepEvery || 30)
+      if (on === !everyHint.hidden) return
+      everyHint.hidden = !on
+      const text = everyHint.querySelector('span')
+      text.textContent = ''
+      if (on) setTimeout(() => { text.textContent = 'Not applied yet. Choose Set up again to use this schedule.' }) // after it is shown, so it is announced
     }
 
     function auto(kind, text) {
