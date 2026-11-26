@@ -43,7 +43,7 @@ func cmdUI(args []string) error {
 	}
 	if err := u.start(os.Stdout); err != nil {
 		if *fromShortcut {
-			u.logf("UI: %v", err) // a windowless start has no console: the log is the only place to say why
+			u.logf("PANEL: %v", err) // a windowless start has no console: the log is the only place to say why
 		}
 		return err
 	}
@@ -95,6 +95,8 @@ type uiServer struct {
 	lastBeat     time.Time
 	stopAfterJob bool
 	lastClean    *cleanSummary
+
+	health healthFlight // one doctor at a time (Ruling P15)
 }
 
 func newUIServer(o uiOpts) (*uiServer, error) {
@@ -159,7 +161,7 @@ func (u *uiServer) run(l net.Listener, out io.Writer) error {
 		fmt.Fprintf(out, "Open this address once: %s\n", url)
 	} else {
 		if path, err := panel.WriteRedirect(url); err != nil {
-			u.logf("UI: the browser was not opened: %v", err)
+			u.logf("PANEL: the browser was not opened: %v", err)
 		} else {
 			// Deleted when its key is used, after 60 s, or at exit, whichever comes first.
 			gone := func() { os.Remove(path) }
@@ -171,7 +173,7 @@ func (u *uiServer) run(l net.Listener, out io.Writer) error {
 				}
 			})
 			if err := openBrowser(path); err != nil {
-				u.logf("UI: the browser was not opened: %v", err)
+				u.logf("PANEL: the browser was not opened: %v", err)
 			}
 		}
 		fmt.Fprintf(out, "The panel is open at http://127.0.0.1:%d/ - press Ctrl-C to stop it.\nIf your browser did not open, paste this address once: %s\n", u.panel.Port(), url)
@@ -321,6 +323,14 @@ func (u *uiServer) routes() []panel.Route {
 		{Method: get, Path: "/api/log", Handler: u.apiLog},
 		{Method: get, Path: "/api/projects", Handler: u.apiProjects},
 		{Method: get, Path: "/api/conversations", Handler: u.apiConversations},
+		{Method: get, Path: "/api/summary", Handler: u.apiSummary},
+		{Method: get, Path: "/api/storage", Handler: u.apiStorage},
+		{Method: get, Path: "/api/health", Handler: u.apiHealth},
+		{Method: get, Path: "/api/activity", Handler: func(w http.ResponseWriter, r *http.Request) { sendJSON(w, queryActivity(u.root)) }},
+		{Method: get, Path: "/api/retention", Handler: u.withArchive(func(dest string) any { return queryRetention(dest) })},
+		{Method: get, Path: "/api/deleted", Handler: u.withArchive(func(dest string) any { return queryDeleted(u.root, dest) })},
+		{Method: get, Path: "/api/settings", Handler: u.apiSettings},
+		{Method: get, Path: "/api/profile", Handler: u.withArchive(func(dest string) any { return queryProfile(dest) })},
 		{Method: get, Path: "/read/", Prefix: true, Handler: u.readPage},
 	}
 }
