@@ -283,6 +283,8 @@ p.status{white-space:normal}
 .where-table code{overflow-wrap:anywhere}
 .bring-options .opt:has(>input:disabled){color:var(--muted);cursor:not-allowed}
 .bring-options .input:disabled{background:var(--surface-2);cursor:not-allowed}
+.bring-options .input[aria-invalid=true],.restore-field .input[aria-invalid=true]{border-color:var(--red)}
+#bring-result [role=alert],#restore-result [role=alert]{color:var(--red)}
 
 /* Settings */
 .name-field{flex:1 1 240px}

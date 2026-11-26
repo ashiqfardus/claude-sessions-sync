@@ -277,6 +277,7 @@
     <a href="#/overview" class="back">Back to Overview</a>
     <h1 tabindex="-1">Bring in work from another computer</h1>
     <p class="lead">Copies the conversations and work folders your other computers backed up, and files them under your projects here, so you can continue them. Nothing on this computer is replaced unless you tick it below.</p>
+    <span class="sr" role="status" data-slot="say"></span>
   </header>
 
   <section aria-labelledby="where-h" class="section">
@@ -303,7 +304,7 @@
         <summary><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>Advanced</summary>
         <div class="stack advanced-body">
           <div class="row fields">
-            <div class="field search-root"><label for="root">Look for your projects in</label><input id="root" class="input mono" type="text" placeholder="Your home and your projects' folders" data-slot="root"></div>
+            <div class="field search-root"><label for="root">Look for your projects in</label><span class="muted small" id="root-hint">A full path, such as ~/dev or /Users/you/dev</span><input id="root" class="input mono" type="text" placeholder="Your home and your projects' folders" aria-describedby="root-hint" data-slot="root"></div>
             <button type="button" class="btn" data-slot="root-choose">Choose folder</button>
             <div class="depth" data-slot="depth" data-label="Folders deep"></div>
           </div>
@@ -316,7 +317,7 @@
         <button type="button" class="btn primary" data-slot="bring">Bring in</button>
         <button type="button" class="btn" data-slot="preview">Preview first</button>
         <span class="progress grow bring-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Bringing in work" data-slot="progress" hidden><span></span></span>
-        <span class="muted grow num" role="status" data-slot="result">Preview first to see exactly what changes.</span>
+        <span class="muted grow num" id="bring-result" data-slot="result">Preview first to see exactly what changes.</span>
       </div>
     </section>
 
@@ -324,13 +325,13 @@
       <h2 id="folder-h">From a folder instead</h2>
       <p class="muted">Have conversation files from somewhere else, such as an old backup? File them under a project here.</p>
       <div class="row fields">
-        <div class="field restore-field"><label for="src">Folder with the conversation files</label><input id="src" class="input mono" type="text" data-slot="source"></div>
-        <div class="field restore-field"><label for="dst">Project they belong to here</label><input id="dst" class="input mono" type="text" data-slot="project-path"></div>
+        <div class="field restore-field"><label for="src">Folder with the conversation files</label><span class="muted small" id="src-hint">A full path, such as ~/Downloads/old-backup/web-app</span><input id="src" class="input mono" type="text" aria-describedby="src-hint" data-slot="source"></div>
+        <div class="field restore-field"><label for="dst">Project they belong to here</label><span class="muted small" id="dst-hint">A full path, such as ~/dev/web-app</span><input id="dst" class="input mono" type="text" aria-describedby="dst-hint" data-slot="project-path"></div>
         <div class="field restore-field"><label for="old">The project's old path, if it moved (optional)</label><input id="old" class="input mono" type="text" placeholder="/Users/old-name/dev/web-app" data-slot="rewrite-from"></div>
       </div>
       <label class="opt"><input type="checkbox" class="check" data-slot="restore-update"><span>Update conversations that are already here</span></label>
       <label class="opt"><input type="checkbox" class="check" data-slot="restore-bare-name"><span>Also update the project's old folder name inside conversations<small>Also changes that name where it appears on its own in conversations, such as in code and prose.</small></span></label>
-      <div class="row"><button type="button" class="btn primary" data-slot="restore">File them here</button><button type="button" class="btn" data-slot="restore-preview">Preview first</button><span class="muted grow num" role="status" data-slot="restore-result"></span></div>
+      <div class="row"><button type="button" class="btn primary" data-slot="restore">File them here</button><button type="button" class="btn" data-slot="restore-preview">Preview first</button><span class="muted grow num" id="restore-result" data-slot="restore-result"></span></div>
     </section>
   </div>
 </template>
