@@ -102,6 +102,7 @@
     <div class="search-fields">
       <div class="look-in" data-slot="look" data-label="Look in"></div>
       <div class="messages-from" data-slot="role" data-label="Messages from"></div>
+      <div class="stop-after" data-slot="limit" data-label="Stop after"></div>
       <div class="field date-field"><label for="f-since">From</label><input id="f-since" class="input" type="date" data-slot="since"></div>
       <div class="field date-field"><label for="f-until">To</label><input id="f-until" class="input" type="date" data-slot="until"></div>
     </div>
@@ -113,14 +114,16 @@
   </details>
 
   <div class="row spread">
-    <p class="muted num" data-slot="summary"></p>
+    <p class="muted num" role="status" data-slot="summary"></p>
+    <div class="row" data-slot="fix"></div>
   </div>
 
   <div role="region" aria-label="Selected conversations" class="selection slide" data-slot="selection" hidden>
-    <span class="num selection-count" data-slot="selected"></span>
+    <span class="num selection-count" role="status" data-slot="selected"></span>
     <button type="button" class="btn sm on-dark" data-slot="keep">Add to Never delete</button>
     <button type="button" class="btn sm on-dark on-dark-danger" data-slot="delete">Delete from archive</button>
     <button type="button" class="btn sm ghost on-dark-quiet" data-slot="clear">Clear</button>
+    <p class="status small full-line" data-slot="wait" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span><span data-slot="wait-text"></span> <a href="#/settings">See computers</a></span></p>
   </div>
 
   <div class="panel table-box">

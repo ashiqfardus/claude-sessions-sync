@@ -288,6 +288,39 @@ func TestRouterMatchesTheShell(t *testing.T) {
 	}
 }
 
+// Each screen module registers the name the router imports it by (Ruling P31), and every
+// slot('<name>') it reads is a data-slot in its own template: a missing one stops the
+// screen with only the generic sentence, and index.html is merged by hand.
+func TestScreensRegisterTheirName(t *testing.T) {
+	files := staticFiles(t)
+	m := regexp.MustCompile(`SCREENS\s*=\s*\[([^\]]*)\]`).FindStringSubmatch(files["static/js/app.js"])
+	if m == nil {
+		t.Fatal("app.js has no SCREENS list")
+	}
+	shell := files["static/index.html"]
+	for _, q := range regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(m[1], -1) {
+		name := q[1]
+		js, ok := files["static/js/"+name+".js"]
+		if !ok {
+			// shortcut: screens still being built (T19-T23) may be missing; make this an error once all have merged.
+			t.Logf("js/%s.js is not built yet", name)
+			continue
+		}
+		if !strings.Contains(js, "register('"+name+"',") {
+			t.Errorf("js/%s.js does not call register('%s', ...)", name, name)
+		}
+		tm := regexp.MustCompile(`(?s)<template id="t-` + name + `">(.*?)</template>`).FindStringSubmatch(shell)
+		if tm == nil {
+			continue // TestRouterMatchesTheShell reports it
+		}
+		for _, s := range regexp.MustCompile(`\bslot\('([a-z-]+)'\)`).FindAllStringSubmatch(js, -1) {
+			if !strings.Contains(tm[1], `data-slot="`+s[1]+`"`) {
+				t.Errorf("js/%s.js reads slot('%s'), which t-%s does not have", name, s[1], name)
+			}
+		}
+	}
+}
+
 // The sidebar's values (Ruling P11) agree across rail.js, the separator's ARIA range
 // and the stylesheet's first width.
 func TestRailMatchesTheSeparator(t *testing.T) {
