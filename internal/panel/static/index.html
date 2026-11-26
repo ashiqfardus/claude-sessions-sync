@@ -177,9 +177,13 @@
           <div class="grow stack gap-3 way-text">
             <h3>Remove duplicate copies</h3>
             <p class="muted">The same conversation stored twice, once from each computer.</p>
-            <p class="medium" data-slot="dup-line"></p>
+            <p class="medium" role="status" data-slot="dup-line"></p>
+            <p class="status warn small slide" data-slot="dup-wait" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span><span data-slot="dup-wait-text"></span> <a href="#/settings">See computers</a></span></p>
           </div>
-          <button type="button" class="btn" data-slot="check">Check now</button>
+          <div class="row">
+            <button type="button" class="btn danger" data-slot="remove" hidden></button>
+            <button type="button" class="btn" data-slot="check">Check now</button>
+          </div>
         </li>
         <li class="way">
           <div class="grow stack gap-3 way-text">
@@ -197,7 +201,7 @@
         <h2 id="safe-h">Protected and deleted</h2>
         <ul class="panel rows">
           <li><span class="grow" data-slot="kept-line"></span><a href="#/delete" class="btn sm">Manage</a></li>
-          <li><span class="grow" data-slot="deleted-line"></span><a href="#/delete" class="btn sm">Restore</a></li>
+          <li><span class="grow" data-slot="deleted-line"></span><a href="#/delete" class="btn sm" data-slot="restore-link">Restore</a></li>
         </ul>
       </section>
 
@@ -210,6 +214,7 @@
             <tbody data-slot="projects"></tbody>
           </table>
         </div>
+        <p class="panel pad muted" data-slot="no-projects" hidden>Nothing is in the archive yet.</p>
       </section>
     </div>
   </div>
@@ -230,6 +235,7 @@
           <div class="auto-age" data-slot="auto-age" data-label="Delete conversations not used for"></div>
           <button type="button" class="btn primary" data-slot="save">Save</button>
         </div>
+        <div class="row auto-note" data-slot="auto-note" hidden><p class="status warn small" role="status"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span data-slot="auto-note-text"></span></p><button type="button" class="btn sm" data-slot="auto-preview">Show what would be deleted</button></div>
         <p class="muted small">Checked once a day during the automatic backup. Anything you protect below is never deleted.</p>
       </section>
 
@@ -242,11 +248,12 @@
         </div>
         <p class="muted small">Or tick conversations on the <a href="#/conversations">Conversations</a> page and choose Delete from archive.</p>
         <div class="preview slide" data-slot="preview" hidden>
-          <p class="note red preview-summary" data-slot="summary"></p>
+          <p class="note red preview-summary" role="status" data-slot="summary"></p>
           <ul class="rows preview-items" data-slot="items"></ul>
           <div class="row preview-actions">
             <button type="button" class="btn danger" data-slot="delete"></button>
             <button type="button" class="btn" data-slot="cancel">Cancel</button>
+            <p id="delete-wait" class="status warn small full-line" data-slot="wait" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span><span data-slot="wait-text"></span> <a href="#/settings">See computers</a></span></p>
           </div>
         </div>
       </section>

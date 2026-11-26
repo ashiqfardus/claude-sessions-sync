@@ -268,6 +268,9 @@ p.status{white-space:normal}
 .ruled{border-top:1px solid var(--line-soft)}
 .ruled>li{padding:10px 0}
 .keep-add{flex:1 1 280px}
+.ruled .grow,.preview-items .grow{overflow-wrap:anywhere} /* a title or path may be one long word */
+.auto-note{gap:8px 12px}
+.way-text .status>svg,.auto-note .status>svg,.preview-actions .status>svg{flex:none} /* a note that wraps keeps its icon whole */
 
 /* Bring in */
 .where-table{min-width:760px}
