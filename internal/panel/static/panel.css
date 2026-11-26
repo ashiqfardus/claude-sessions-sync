@@ -42,7 +42,7 @@ code,.mono{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px}
 .head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
 .back{font-weight:500;font-size:12.5px;text-decoration:none}
 h1{margin:0;font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.01em}
-h1[tabindex="-1"]:focus{outline:none} /* the router moves focus here for screen readers; a heading is not a control, so no ring */
+h1[tabindex="-1"]:focus,h2[tabindex="-1"]:focus{outline:none} /* the router (and a screen, after its control is gone) moves focus here for screen readers; a heading is not a control, so no ring */
 h2{margin:0;font-size:15px;line-height:1.35;font-weight:600}
 h3{margin:0;font-size:13.5px;font-weight:600}
 p{margin:0}

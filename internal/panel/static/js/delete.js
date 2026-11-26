@@ -77,6 +77,13 @@ register('delete', {
     let saved = inRange(first.keepDays) ? first.keepDays : 0
     const auto = combo(slot('auto-age'), { options: [{ value: '0', label: 'Never, keep everything' }, ...ages(saved)], value: String(saved) })
     const save = slot('save'), note = slot('auto-note')
+    const grace = (days) => `Deleting conversations not used for ${ageLabel(days)} starts a day after each computer's next automatic backup.`
+    // The note stays for the grace day after the setting changed; a server without keepDaysSetAt never shows it here.
+    const setAt = Date.parse(first.keepDaysSetAt)
+    if (saved && new Date(setAt).getFullYear() >= 2000 && Date.now() < setAt + 864e5) {
+      note.hidden = false
+      slot('auto-note-text').textContent = grace(saved)
+    }
     save.addEventListener('click', async () => {
       const days = Number(auto.value)
       if (days && !inRange(days)) return // only the choices above can be picked
@@ -91,7 +98,7 @@ register('delete', {
       // A new setting waits a day on every computer: the grace day is shared.
       note.hidden = !days
       slot('auto-note-text').textContent = ''
-      if (days) setTimeout(() => { slot('auto-note-text').textContent = `Deleting conversations not used for ${ageLabel(days)} starts a day after each computer's next automatic backup.` })
+      if (days) setTimeout(() => { slot('auto-note-text').textContent = grace(days) })
     })
 
     // --- Choose now ------------------------------------------------------------
@@ -111,7 +118,7 @@ register('delete', {
     const show = slot('show'), box = slot('preview'), list = slot('items'), sum = slot('summary'), del = slot('delete')
     let shown = null // the preview: {sel, items, kept, plan}
     const off = new Set() // the ids unticked
-    let deleting = false
+    let deleting = '' // while the delete runs, what the summary says instead
 
     // pause is why deleting can't run, or '': a computer that would upload them again,
     // or holdouts that can't be checked (fail closed, as Conversations does).
@@ -133,10 +140,10 @@ register('delete', {
       const why = pause()
       slot('wait-text').textContent = why
       slot('wait').hidden = !why || !shown.items.length
-      del.disabled = !n || !!why || deleting
+      del.disabled = !n || !!why || !!deleting
       if (why) del.setAttribute('aria-describedby', 'delete-wait')
       else del.removeAttribute('aria-describedby')
-      return text
+      return deleting || text
     }
 
     // The preview is prune without yes. Its age and project go with the delete too, so a
@@ -176,10 +183,10 @@ register('delete', {
       if (!ids.length) return
       const body = `They are removed from the archive in ${provider || 'your sync folder'}, from every computer's folder. Your computers keep their own copies.`
       if (!await confirmDialog({ title: label + '?', body, items: on.map(titleOf), confirm: label, danger: true })) return
-      deleting = true
+      deleting = `Deleting ${plural(ids.length)}…`
       sum.textContent = count()
       const st = await run('prune', { ...shown.sel, ids, yes: true })
-      deleting = false
+      deleting = ''
       // A run that fails partway still says what it deleted (Ruling P44).
       const n = (st.result && st.result.deleted) || 0, left = ids.length - n
       let text = n ? `Deleted ${plural(n)} from the archive` : 'Nothing was deleted'
@@ -200,10 +207,12 @@ register('delete', {
 
     async function restoreAll(ids) {
       const st = await run('prune-undo', { ids })
-      if (!st.ok) return toast(st.error || GENERIC)
-      const n = st.result && Array.isArray(st.result.undone) ? st.result.undone.length : ids.length
-      toast(`Restored ${plural(n)}. Each comes back at the next backup of a computer that still has it.`)
-      if (!signal.aborted) reloadDeleted()
+      if (!st.ok) toast(st.error || GENERIC)
+      else toast(`Restored ${plural(st.result && Array.isArray(st.result.undone) ? st.result.undone.length : ids.length)}. Each comes back at the next backup of a computer that still has it.`)
+      if (signal.aborted) return
+      if (st.ok) await reloadDeleted()
+      // Focus left with the toast's Restore button: it goes to the list Restore changed, not the page.
+      if (document.activeElement === el || document.activeElement === document.body) goneHeading.focus()
     }
 
     // --- Never delete ----------------------------------------------------------
@@ -279,7 +288,8 @@ register('delete', {
 
     // --- Deleted recently ------------------------------------------------------
 
-    const goneList = slot('deleted')
+    const goneList = slot('deleted'), goneHeading = el.querySelector('#gone-h')
+    goneHeading.tabIndex = -1 // where focus goes after a Restore from the toast
 
     // paintDeleted takes the list, {problem} or {error} (Ruling P56).
     function paintDeleted(items) {
