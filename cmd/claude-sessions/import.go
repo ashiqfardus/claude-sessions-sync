@@ -224,17 +224,26 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	if cerr != nil {
 		wcfg.WorkBackup = "off"
 	}
+	// On a drive that downloads each file as it is opened, what follows reads for
+	// minutes without a line: a terminal is told how far it has got.
+	hb := startHeartbeat(s.Err)
+	defer hb.stop()
+
 	// --no-work leaves all of this empty: no placement, no moves, no held record.
 	var workMoves []rewrite.Move
 	var workRes workRestoreResult
 	var remapNotes []string
 	if !o.NoWork {
+		hb.reading("work folders", 0)
 		workMoves, workRes = restoreWork(root, dest, shards, wcfg, o.DryRun, o.Update, false)
 		// A folder placed elsewhere since an earlier import repoints from where it was, until
 		// a --repoint has moved every conversation off it (spec §7a).
 		var remaps []rewrite.Move
 		remaps, remapNotes = remapMoves(workRes.Prev, workRes.ByMachine)
 		workMoves = append(workMoves, remaps...)
+	}
+	if hb.on() { // only then is each bucket listed for the count
+		hb.reading("conversations", conversationCount(dest, buckets))
 	}
 	resolve := func(bucket string, p archive.Project) identity.Match {
 		if local, ok := cfg.Mapped(bucket); ok {
@@ -436,7 +445,7 @@ func runImport(s streams, o importOpts) (importResult, error) {
 		res, err := restoreInto(root, archived, match.Path, rewriteFrom, moves,
 			restoreOpts{BareName: o.BareName, DryRun: o.DryRun, Update: o.Update,
 				Owner: p.Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", bucket), Archive: dest, FormerNames: former,
-				Imported: imported})
+				Imported: imported, Progress: hb.step})
 		if errors.Is(err, errRecord) {
 			return importResult{}, err // never file what cannot be recorded
 		}
@@ -475,6 +484,7 @@ func runImport(s streams, o importOpts) (importResult, error) {
 			fmt.Fprintf(s.Out, "    ! continued here and elsewhere - %s (resume either)\n", d)
 		}
 	}
+	hb.stop()
 	rows = append(rows, workRows(workRes.ByMachine)...)
 
 	// Conversations already here are rewritten only when asked: that edits the user's
@@ -631,6 +641,32 @@ func newestCwd(dir string) string {
 	}
 	s, _ := claude.ScanHead(newest, headScanLines)
 	return s.Cwd
+}
+
+// conversationCount is how many conversations restoreInto takes up in these archived
+// buckets: each loose transcript, and each zip with none beside it.
+func conversationCount(dest string, buckets []string) int {
+	n := 0
+	for _, b := range buckets {
+		if !safeBucketName(b) {
+			continue
+		}
+		dir := filepath.Join(archive.ProjectsDir(dest), b)
+		loose := map[string]bool{}
+		ents, _ := os.ReadDir(dir)
+		for _, e := range ents {
+			if e.Type().IsRegular() && isTranscriptName(e.Name()) {
+				n++
+				loose[strings.ToLower(strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())))] = true
+			}
+		}
+		for id := range convzip.Find(dir) {
+			if !loose[id] {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 func hasTranscripts(dir string) bool {

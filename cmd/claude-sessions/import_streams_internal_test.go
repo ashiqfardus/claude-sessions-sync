@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 )
 
 // syncBuffer is a bytes.Buffer the hint's timer may write while the test reads it.
@@ -138,4 +142,127 @@ func TestSamePathIgnoresSlashDirection(t *testing.T) {
 			t.Errorf("samePath(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
 		}
 	}
+}
+
+// On a terminal, the heartbeat says how far the read has got at most once per
+// interval, however often it steps, and nothing once stopped.
+func TestHeartbeatSaysHowFarAtMostOncePerInterval(t *testing.T) {
+	hook(t, &isTerminal, func(io.Writer) bool { return true })
+	hook(t, &heartbeatEvery, 25*time.Millisecond)
+	var out syncBuffer
+	h := startHeartbeat(&out)
+	time.Sleep(70 * time.Millisecond)
+	h.reading("work folders", 0)
+	time.Sleep(70 * time.Millisecond)
+	h.reading("conversations", 3657)
+	start := time.Now()
+	steps := 0
+	for time.Since(start) < 150*time.Millisecond {
+		h.step()
+		steps++
+	}
+	h.stop()
+	elapsed := time.Since(start) + 140*time.Millisecond
+	got := out.String()
+	time.Sleep(60 * time.Millisecond)
+	if out.String() != got {
+		t.Errorf("the heartbeat wrote after stop:\n%s", out.String())
+	}
+
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if max := int(elapsed/heartbeatEvery) + 1; len(lines) < 3 || len(lines) > max {
+		t.Fatalf("%d line(s) in %v at one per %v, %d steps:\n%s", len(lines), elapsed, heartbeatEvery, steps, got)
+	}
+	re := regexp.MustCompile(`^still reading the archive(: work folders|: \d+ of 3657 conversations)? \(\d+s\)$`)
+	for _, l := range lines {
+		if !re.MatchString(l) {
+			t.Errorf("line %q is not a heartbeat", l)
+		}
+	}
+	if !strings.Contains(got, "still reading the archive (0s)") || !strings.Contains(got, ": work folders (0s)") ||
+		!regexp.MustCompile(`: [1-9]\d* of 3657 conversations`).MatchString(got) {
+		t.Errorf("a stage is missing:\n%s", got)
+	}
+}
+
+// Not on a terminal - a pipe, a file, the panel's buffer - import prints no heartbeat,
+// so scripted output and the goldens stay as they were.
+func TestHeartbeatOnlyOnATerminal(t *testing.T) {
+	f, err := os.Create(filepath.Join(t.TempDir(), "stderr.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	for name, x := range map[string]io.Writer{"file": f, "pipe": w, "buffer": &bytes.Buffer{}} {
+		if isTerminal(x) {
+			t.Errorf("a %s counts as a terminal", name)
+		}
+	}
+
+	hook(t, &heartbeatEvery, time.Microsecond)
+	claudeDir, dest, search := heartbeatArchive(t, 30)
+	var out bytes.Buffer
+	if _, err := runImport(streams{&out, f}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1, DryRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(f.Name()); strings.Contains(string(b)+out.String(), "still reading") {
+		t.Errorf("a heartbeat with no terminal:\n%s%s", b, out.String())
+	}
+}
+
+// import counts each archived conversation, loose or zipped, against all of them.
+func TestImportHeartbeatCountsConversations(t *testing.T) {
+	hook(t, &isTerminal, func(io.Writer) bool { return true })
+	hook(t, &heartbeatEvery, time.Microsecond)
+	claudeDir, dest, search := heartbeatArchive(t, 40)
+	buckets, _ := archive.BucketNames(dest)
+	for i := 0; i < 5; i++ { // zipped ones count once each, as loose ones do
+		if _, err := convzip.Zip(filepath.Join(archive.ProjectsDir(dest), buckets[0]), fmt.Sprintf("11111111-1111-1111-1111-%012d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(convzip.Find(filepath.Join(archive.ProjectsDir(dest), buckets[0]))) != 5 {
+		t.Fatal("fixture: not zipped")
+	}
+	var out bytes.Buffer
+	var errs syncBuffer
+	if _, err := runImport(streams{&out, &errs}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1, DryRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`still reading the archive: \d+ of 40 conversations \(\d+s\)\n`).MatchString(errs.String()) ||
+		regexp.MustCompile(`: (4[1-9]|[5-9]\d|\d{3,}) of 40`).MatchString(errs.String()) {
+		t.Errorf("no count of 40 conversations, or one past it:\n%.2000s", errs.String())
+	}
+	if strings.Contains(out.String(), "still reading") {
+		t.Errorf("a heartbeat on the output:\n%s", out.String())
+	}
+}
+
+// heartbeatArchive is an archive of n conversations of one project, here at search.
+func heartbeatArchive(t *testing.T, n int) (claudeDir, dest, search string) {
+	t.Helper()
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "LAP-2")
+	root := t.TempDir()
+	claudeDir, dest, search = filepath.Join(root, ".claude"), filepath.Join(root, "archive"), filepath.Join(root, "dev")
+	proj := filepath.Join(search, "web-app")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bucket := claude.Slug(proj)
+	cwd, _ := json.Marshal(proj)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("11111111-1111-1111-1111-%012d", i)
+		writeFile(t, filepath.Join(archive.ProjectsDir(dest), bucket, id+".jsonl"),
+			`{"type":"user","cwd":`+string(cwd)+`,"sessionId":"`+id+`","message":{"role":"user","content":"hi"}}`+"\n")
+	}
+	manifest, _ := json.Marshal(map[string]any{"schemaVersion": 1, "machine": "LAP-1",
+		"projects": map[string]any{bucket: map[string]string{"path": proj, "leaf": "web-app"}}})
+	writeFile(t, filepath.Join(dest, "manifest", "LAP-1.json"), string(manifest))
+	return claudeDir, dest, search
 }

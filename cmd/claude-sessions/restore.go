@@ -66,6 +66,9 @@ type restoreOpts struct {
 	// Imported is the record of transcripts filed from elsewhere, noted as each one
 	// is filed; nil records nothing.
 	Imported *importRecord
+
+	// Progress, when set, is called as each archived conversation is taken up.
+	Progress func()
 }
 
 const updateHelp = "also refresh sessions already here that continued on another machine, and memory files that are newer in the archive"
@@ -299,6 +302,9 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 
 	filed := loadFiledForks(filedForksPath(root, res.Bucket))
 	for i, c := range convs {
+		if opts.Progress != nil {
+			opts.Progress()
+		}
 		if i > 0 {
 			convs[i-1].close() // its extract goes as soon as it is filed
 		}
