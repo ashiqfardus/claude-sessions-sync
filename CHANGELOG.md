@@ -5,6 +5,33 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **`import --no-profile` brings your conversations without your rules and skills.** It
+  leaves CLAUDE.md, skills, agents, commands and the other profile files here as they
+  are, as `--no-work` leaves work folders and `--no-plugins` leaves plugins. Plugins
+  still follow `--no-plugins`. It cannot be combined with `--profile-only` or
+  `--update-profile`.
+- **`import` says how far it has got on a slow archive folder.** On a drive that
+  downloads each file when it is opened, such as Google Drive streaming, `import` and
+  `import --dry-run` could read for many minutes with nothing on the screen. In a
+  terminal, a line such as `still reading the archive: 812 of 3657 conversations
+  (2m10s)` now appears at most every 12 seconds. Piped or scripted output is unchanged.
+
+### Fixed
+- **`import --dry-run` read as if it had already filed conversations.** It said "N
+  conversation(s) here still point at other machines' work folders". A dry run now says
+  "after this import, N conversation(s) would still point at other machines' work
+  folders; run claude-sessions import --repoint then".
+- **A remote Go cannot read as a URL, with nothing after its host, kept its password
+  in printed labels.** Since 0.7.1, `config keep` and the panel showed
+  `https://user:p%zz@host` as it was written; 0.7.0 showed `https://host`. The
+  password is dropped again, and an `@` in a path, as in `https://host/o/100%/r@v2.git`,
+  still stays.
+- **The panel's Health gave the wrong reason when this computer's settings file could
+  not be read.** It said compressing old conversations waits until every computer's
+  record in the archive can be read. It now says this computer's settings file can't be
+  read and to choose the archive folder again.
+
 ## [0.7.1] - 2026-11-26
 
 ### Fixed
