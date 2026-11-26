@@ -232,6 +232,40 @@ func TestRenderKeepsPageOfUnreadableZip(t *testing.T) {
 	}
 }
 
+// The listing of a page kept for an unreadable zip dates it by the zip, which Zip dates
+// by the conversation's last activity, not by when the page was last written.
+func TestRenderDatesAKeptPageByItsZip(t *testing.T) {
+	dest := t.TempDir()
+	bucket := filepath.Join(dest, "projects", "e--work-api")
+	tp := filepath.Join(bucket, zipID+".jsonl")
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"type":"user","timestamp":"2026-08-30T09:00:00.000Z","message":{"role":"user","content":"a zipped question"}}` + "\n"
+	if err := os.WriteFile(tp, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	last := time.Date(2026, 8, 30, 9, 0, 0, 0, time.UTC)
+	os.Chtimes(tp, last, last)
+	if _, err := Archive(dest, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := convzip.Zip(bucket, zipID); err != nil {
+		t.Fatal(err)
+	}
+	garble(t, convzip.Path(bucket, zipID))
+	written := time.Date(2030, 1, 2, 3, 4, 0, 0, time.UTC) // the page, written since
+	os.Chtimes(filepath.Join(dest, "html", "e--work-api", zipID+".html"), written, written)
+
+	if res, err := Archive(dest, Options{}); err != nil || res.Failed != 1 {
+		t.Fatalf("render = %+v, %v; want the unreadable zip failed", res, err)
+	}
+	idx := string(mustRead(t, filepath.Join(dest, "html", "index.html")))
+	if want := last.Local().Format("2006-01-02 15:04"); !strings.Contains(idx, want) || strings.Contains(idx, written.Local().Format("2006-01-02")) {
+		t.Errorf("the kept page is not dated %s, its last activity:\n%s", want, idx)
+	}
+}
+
 // A template change still reaches a zipped conversation: its page is rendered again
 // from the zip, within the budget like any page, and the zip is left as it was.
 func TestRenderRerendersZippedOnTemplateBump(t *testing.T) {

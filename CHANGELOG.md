@@ -52,6 +52,8 @@ All notable changes to this project are documented here. This project follows
 - **A shortcut that could not be made printed the tool's error over several lines.**
   `install` now prints it on its one `shortcut  FAILED:` line, and `install --json`
   gives the same text.
+- **The archive's index dated a conversation whose zip could not be read by when its
+  page was last written,** not by when it was last used. It is now dated by its zip.
 
 ## [0.7.0] - 2026-11-26
 

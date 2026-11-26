@@ -289,10 +289,15 @@ func Archive(dest string, opts Options) (Result, error) {
 			if prev.Version == templateVersion { // an older template's page is not current
 				next.Pages[key] = ps
 			}
+			// Dated as Zip dates the zip, by the last activity, not when the page was written.
+			updated := pst.ModTime()
+			if zst, err := os.Lstat(zp); err == nil {
+				updated = zst.ModTime()
+			}
 			entries = append(entries, indexEntry{
 				Project: project, Bucket: bucket, ID: id,
 				Href:    pageHref(bucket, id),
-				Updated: pst.ModTime(), Size: ps.Size, Prompt: ps.Prompt,
+				Updated: updated.Local(), Size: ps.Size, Prompt: ps.Prompt,
 			})
 		}
 	}
