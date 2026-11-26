@@ -268,6 +268,9 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 		if n := archive.RemoveOrphanTemps(dest); n > 0 {
 			logf("CLEAN: removed %d temporary file(s) left by an interrupted run", n)
 		}
+		if n := archive.RemoveOwnTemps(claude.ProjectsDir(root)); n > 0 {
+			logf("CLEAN: removed %d temporary file(s) an interrupted run left in %s", n, claude.ProjectsDir(root))
+		}
 		removeStaleExtracts(time.Now())
 		pinMachineName(root)
 	}
@@ -1390,6 +1393,21 @@ type heldStat struct {
 	In      string    `json:"in"`
 	InSize  int64     `json:"inSize"`
 	InMTime time.Time `json:"inMtime"`
+	// Also are the copies holding the files of its folder that In's lacks, as they then
+	// were. Any of them changing has it compared again, as In changing does.
+	Also []heldIn `json:"also,omitempty"`
+}
+
+// heldIn is another bucket's copy as push compared with it: see copyStat.
+type heldIn struct {
+	In    string    `json:"in"`
+	Size  int64     `json:"size"`
+	MTime time.Time `json:"mtime"`
+}
+
+// copies are In and Also.
+func (s heldStat) copies() []heldIn {
+	return append([]heldIn{{In: s.In, Size: s.InSize, MTime: s.InMTime}}, s.Also...)
 }
 
 // heldRecord remembers, by "bucket/id", the transcripts push leaves to another
@@ -1428,27 +1446,34 @@ func (h *heldRecord) save(root string) error {
 	return archive.WriteFileAtomic(heldPath(root), append(data, '\n'), 0o644)
 }
 
-// hit reports whether the transcript and the copy that held it are both unchanged
+// hit reports whether the transcript and the copies that held it are all unchanged
 // since push found it held. A copy that changed - replaced by a fork, say - is compared
 // again.
 func (h *heldRecord) hit(dest, bucket, id string, src os.FileInfo) bool {
 	if !h.known(bucket, id, src) {
 		return false
 	}
-	s := h.m[bucket+"/"+id]
-	size, mtime, ok := copyStat(dest, s.In, id)
-	return ok && size == s.InSize && archive.SameMTime(mtime, s.InMTime)
+	for _, c := range h.m[bucket+"/"+id].copies() {
+		if size, mtime, ok := copyStat(dest, c.In, id); !ok || size != c.Size || !archive.SameMTime(mtime, c.MTime) {
+			return false
+		}
+	}
+	return true
 }
 
-// leftTo reports whether the transcript is unchanged since push left it to a copy that
-// is still archived. That copy may have grown since: it is only replaced by one with
-// more.
+// leftTo reports whether the transcript is unchanged since push left it to copies that
+// are all still archived. They may have grown since: a copy is only replaced by one
+// with more.
 func (h *heldRecord) leftTo(dest, bucket, id string, src os.FileInfo) bool {
 	if !h.known(bucket, id, src) {
 		return false
 	}
-	in := h.m[bucket+"/"+id].In
-	return archivedCopy(dest, in, id) != "" || zippedCopy(dest, in, id) != ""
+	for _, c := range h.m[bucket+"/"+id].copies() {
+		if archivedCopy(dest, c.In, id) == "" && zippedCopy(dest, c.In, id) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // known reports whether the transcript is unchanged since push found it held: its
@@ -1461,8 +1486,14 @@ func (h *heldRecord) known(bucket, id string, src os.FileInfo) bool {
 	return ok && s.Size == src.Size() && archive.SameMTime(s.MTime, src.ModTime())
 }
 
-// covers reports whether one of the others holds every turn of the transcript at path,
-// and everything in its own folder, and records which.
+// covers reports whether the others hold every turn of the transcript at path, and
+// everything in its own folder, and records which. One of them holds the whole
+// transcript; each file of the folder may be in any of them: a session continued on two
+// machines, and imported here from both, has both copies' subagents in its folder.
+//
+// Only push trusts such a union, and only to leave a copy unwritten. clean deletes a
+// copy for one other copy that holds it in whole, never for several: two copies must
+// never justify each other's deletion.
 func (h *heldRecord) covers(dest, bucket, id, path string, src os.FileInfo, others []string) bool {
 	if h == nil {
 		return false
@@ -1472,6 +1503,10 @@ func (h *heldRecord) covers(dest, bucket, id, path string, src os.FileInfo, othe
 		delete(h.m, key)
 		h.dirty = true
 	}
+	dir := filepath.Join(filepath.Dir(path), id)
+	var seen []heldIn
+	var folders []string
+	whole := -1 // the first of seen holding every turn of the transcript
 	for _, other := range others {
 		size, mtime, ok := copyStat(dest, other, id)
 		if !ok {
@@ -1482,19 +1517,39 @@ func (h *heldRecord) covers(dest, bucket, id, path string, src os.FileInfo, othe
 		if err != nil {
 			continue
 		}
+		defer done()
+		c, folder := heldIn{In: other, Size: size, MTime: mtime}, filepath.Join(filepath.Dir(p), id)
 		// The folder too: a copy archived by a build that left subagents behind
 		// lacks this one's.
-		r := claude.Compare(path, p)
-		held := (r == claude.Same || r == claude.Behind) &&
-			folderHeld(filepath.Join(filepath.Dir(path), id), filepath.Join(filepath.Dir(p), id)) == nil
-		done()
-		if held {
-			h.m[key] = heldStat{Size: src.Size(), MTime: src.ModTime(), In: other, InSize: size, InMTime: mtime}
-			h.dirty = true
-			return true
+		if r := claude.Compare(path, p); r == claude.Same || r == claude.Behind {
+			if folderHeld(dir, folder) == nil {
+				h.m[key] = heldStat{Size: src.Size(), MTime: src.ModTime(), In: other, InSize: size, InMTime: mtime}
+				h.dirty = true
+				return true
+			}
+			if whole < 0 {
+				whole = len(seen)
+			}
+		}
+		seen, folders = append(seen, c), append(folders, folder)
+	}
+	if whole < 0 {
+		return false
+	}
+	seen[0], seen[whole] = seen[whole], seen[0]
+	folders[0], folders[whole] = folders[whole], folders[0]
+	used, err := folderHeldBy(dir, folders)
+	if err != nil {
+		return false
+	}
+	s := heldStat{Size: src.Size(), MTime: src.ModTime(), In: seen[0].In, InSize: seen[0].Size, InMTime: seen[0].MTime}
+	for i := 1; i < len(seen); i++ {
+		if used[i] {
+			s.Also = append(s.Also, seen[i])
 		}
 	}
-	return false
+	h.m[key], h.dirty = s, true
+	return true
 }
 
 // archivedCopy is the archived transcript of session id in bucket, "" unless it is a
@@ -1552,6 +1607,9 @@ func zipHolds(zp, id, path string, src os.FileInfo) bool {
 	}
 	dir := filepath.Join(filepath.Dir(path), id)
 	for _, rel := range claude.SessionFiles(dir) {
+		if archive.IsOwnTemp(filepath.Base(rel)) {
+			continue // no part of it, as in folderHeld
+		}
 		if st, err := os.Stat(filepath.Join(dir, rel)); err == nil && !same(id+"/"+filepath.ToSlash(rel), st) {
 			return false
 		}
@@ -1622,6 +1680,9 @@ func archiveExtras(bucketDir, destBucket, id string, extras []string, dryRun boo
 		}
 	}
 	for _, rel := range extras {
+		if archive.IsOwnTemp(filepath.Base(rel)) {
+			continue // half a copy an interrupted run left: never archived
+		}
 		srcPath := filepath.Join(bucketDir, id, rel)
 		srcInfo, err := os.Stat(srcPath)
 		if err != nil {

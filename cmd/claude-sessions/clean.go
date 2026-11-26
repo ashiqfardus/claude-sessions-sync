@@ -323,8 +323,8 @@ func coveredFolder(dest, bucket, keeper, id string) bool {
 			ok = false
 			return filepath.SkipAll
 		}
-		if !d.Type().IsRegular() {
-			return nil // a folder is walked; a link is removed, not what it names
+		if !d.Type().IsRegular() || archive.IsOwnTemp(d.Name()) {
+			return nil // a folder is walked; a link is removed, not what it names; a temp file is no part of it
 		}
 		rel, _ := filepath.Rel(dir, p)
 		if st, err := os.Lstat(filepath.Join(other, rel)); err != nil || !st.Mode().IsRegular() {
@@ -382,35 +382,58 @@ func (c dupCopy) verify(dest string) error {
 
 // folderHeld reports what other, the folder of another copy of a session, lacks of
 // dir, this copy's folder: a subagent's turn, or another file there - saved tool
-// output, copied byte for byte - at its size. A missing dir lacks nothing.
+// output, copied byte for byte - at its size. A missing dir lacks nothing, and a temp
+// file an interrupted run left in dir is no part of it.
 func folderHeld(dir, other string) error {
+	_, err := folderHeldBy(dir, []string{other})
+	return err
+}
+
+// folderHeldBy is folderHeld with each file of dir held by any one of others, and
+// reports which of them held a file those before it did not. Only push takes a folder
+// held by more than one: see heldRecord.covers.
+func folderHeldBy(dir string, others []string) (used []bool, err error) {
+	used = make([]bool, len(others))
 	if _, err := os.Lstat(dir); err != nil {
-		return nil // no folder of its own
+		return used, nil // no folder of its own
 	}
 	if !archive.IsRealDir(dir) {
-		return fmt.Errorf("is not compared with %s, which is not a plain folder", dir)
+		return used, fmt.Errorf("is not compared with %s, which is not a plain folder", dir)
 	}
-	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.Type().IsRegular() {
+		if !d.Type().IsRegular() || archive.IsOwnTemp(d.Name()) {
 			return nil
 		}
 		rel, _ := filepath.Rel(dir, p)
-		kept, err := os.Lstat(filepath.Join(other, rel))
-		if err != nil || !kept.Mode().IsRegular() {
-			return fmt.Errorf("has no %s", filepath.ToSlash(rel))
-		}
-		if strings.EqualFold(filepath.Ext(p), ".jsonl") {
-			if !claude.HoldsAll(filepath.Join(other, rel), p) {
-				return fmt.Errorf("lacks turns of %s", filepath.ToSlash(rel))
+		lack := fmt.Errorf("has no %s", filepath.ToSlash(rel)) // with no others too
+		for i, other := range others {
+			kept, err := os.Lstat(filepath.Join(other, rel))
+			switch {
+			case err != nil || !kept.Mode().IsRegular():
+				err = fmt.Errorf("has no %s", filepath.ToSlash(rel))
+			case strings.EqualFold(filepath.Ext(p), ".jsonl"):
+				if !claude.HoldsAll(filepath.Join(other, rel), p) {
+					err = fmt.Errorf("lacks turns of %s", filepath.ToSlash(rel))
+				}
+			default:
+				if info, ierr := d.Info(); ierr != nil || kept.Size() < info.Size() {
+					err = fmt.Errorf("has a smaller %s", filepath.ToSlash(rel))
+				}
 			}
-		} else if info, err := d.Info(); err != nil || kept.Size() < info.Size() {
-			return fmt.Errorf("has a smaller %s", filepath.ToSlash(rel))
+			if err == nil {
+				used[i] = true
+				return nil
+			}
+			if i == 0 {
+				lack = err
+			}
 		}
-		return nil
+		return lack
 	})
+	return used, err
 }
 
 // delete removes the copy: its own folder first, then the transcript, then its page, so

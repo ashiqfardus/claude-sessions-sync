@@ -234,3 +234,33 @@ func RemoveOrphanTemps(dest string) int {
 	}
 	return removed
 }
+
+// IsOwnTemp reports whether name is one this tool's os.CreateTemp calls give a file
+// while it is written: ".tmp-", the pattern, then "-" and the digits CreateTemp puts
+// for "*". One a crash left is half a copy, never a conversation's own file.
+func IsOwnTemp(name string) bool {
+	rest, ok := strings.CutPrefix(name, ".tmp-")
+	i := strings.LastIndexByte(rest, '-')
+	if !ok || i < 0 || i == len(rest)-1 {
+		return false
+	}
+	return strings.Trim(rest[i+1:], "0123456789") == ""
+}
+
+// RemoveOwnTemps deletes, at any depth under dir, the files IsOwnTemp names that are
+// over OrphanTempAge old, returning how many. It is for ~/.claude/projects, which only
+// this machine writes: run it under the lock. Links are neither followed nor removed.
+func RemoveOwnTemps(dir string) int {
+	removed := 0
+	cutoff := time.Now().Add(-OrphanTempAge)
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() || !IsOwnTemp(d.Name()) {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && info.ModTime().Before(cutoff) && os.Remove(path) == nil {
+			removed++
+		}
+		return nil
+	})
+	return removed
+}

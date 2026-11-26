@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -290,5 +291,191 @@ func TestDoctorTrustsAHeldCopyThatGrew(t *testing.T) {
 	later(t, macCopy)
 	if out := win.doctor(t); strings.Contains(out, "not in the archive") {
 		t.Errorf("doctor reports the session as unarchived because MAC's copy grew:\n%s", out)
+	}
+}
+
+// archivedTemps lists the ".tmp-" files anywhere in the archive.
+func archivedTemps(t *testing.T, archive string) []string {
+	t.Helper()
+	var out []string
+	filepath.WalkDir(archive, func(p string, d os.DirEntry, err error) error {
+		if err == nil && strings.HasPrefix(d.Name(), ".tmp-") {
+			out = append(out, p)
+		}
+		return nil
+	})
+	return out
+}
+
+// A power cut during import left a half-written subagent in the session's folder: the
+// copy WIN imported from still holds the session, which is not archived again - nor
+// that file with it.
+func TestALeftoverTempDoesNotUnholdAnImportedSession(t *testing.T) {
+	archive, _, win, _, winRepo := importedOnWin(t)
+	mustWrite(t, filepath.Join(filepath.Dir(win.session(winRepo)), forkSession, "subagents", ".tmp-agent-a1.jsonl-4159126922"), "{\"half")
+	win.run(t, "push", "--no-html")
+	if got := archived(t, archive, winRepo); got != "" {
+		t.Fatalf("WIN archived the session it imported again, for a temp file:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(archive, "projects", claude.Slug(winRepo), forkSession)); err == nil {
+		t.Error("WIN archived the imported session's folder again")
+	}
+	if tmps := archivedTemps(t, archive); len(tmps) > 0 {
+		t.Errorf("a temp file reached the archive: %v", tmps)
+	}
+}
+
+// Nor does one travel with a session push does archive, from a full push or the hook.
+func TestPushNeverArchivesATempFile(t *testing.T) {
+	archive := t.TempDir()
+	mac := newMachine(t, "MAC", archive)
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "u1"))
+	sub := filepath.Join(filepath.Dir(mac.session(repo)), forkSession, "subagents")
+	mustWrite(t, filepath.Join(sub, "agent-a1.jsonl"), sessionLines(repo, "s1"))
+	mustWrite(t, filepath.Join(sub, ".tmp-agent-a2.jsonl-77"), "{\"half")
+	mac.run(t, "push", "--no-html")
+	if _, err := os.Stat(filepath.Join(archive, "projects", claude.Slug(repo), forkSession, "subagents", "agent-a1.jsonl")); err != nil {
+		t.Fatalf("the subagent was not archived: %v", err)
+	}
+	f, _ := os.OpenFile(mac.session(repo), os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString(sessionLines(repo, "u2"))
+	f.Close()
+	later(t, mac.session(repo))
+	mac.hook(t, mac.session(repo))
+	if !strings.Contains(archived(t, archive, repo), `"u2"`) {
+		t.Fatal("setup: the hook did not archive the new turn")
+	}
+	if tmps := archivedTemps(t, archive); len(tmps) > 0 {
+		t.Errorf("a temp file reached the archive: %v", tmps)
+	}
+}
+
+// Push and import remove the temp files an interrupted run left in the projects folder
+// over an hour ago. Younger ones may be mid-write, and other names are not ours: both
+// stay, as does everything with a dry run.
+func TestPushAndImportRemoveLeftoverTemps(t *testing.T) {
+	archive := t.TempDir()
+	mac := newMachine(t, "MAC", archive)
+	repo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	mustWrite(t, mac.session(repo), sessionLines(repo, "u1"))
+	sub := filepath.Join(filepath.Dir(mac.session(repo)), forkSession, "subagents")
+	old, young, foreign := filepath.Join(sub, ".tmp-agent-a1.jsonl-1"), filepath.Join(sub, ".tmp-agent-a2.jsonl-2"), filepath.Join(sub, ".tmp-notes")
+	for _, p := range []string{old, young, foreign} {
+		mustWrite(t, p, "{\"half")
+	}
+	aged(t, old)
+	aged(t, foreign)
+	mac.run(t, "push", "--no-html", "--dry-run")
+	if _, err := os.Stat(old); err != nil {
+		t.Fatal("a dry run removed a file")
+	}
+	mac.run(t, "push", "--no-html")
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("push left the old temp file")
+	}
+	for _, p := range []string{young, foreign} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("push removed %s", filepath.Base(p))
+		}
+	}
+
+	again := filepath.Join(filepath.Dir(mac.session(repo)), ".tmp-"+forkSession+".jsonl-3")
+	mustWrite(t, again, "{\"half")
+	aged(t, again)
+	mac.run(t, "import", "--search-root", filepath.Dir(repo), "--no-plugins")
+	if _, err := os.Stat(again); !os.IsNotExist(err) {
+		t.Error("import left the old temp file")
+	}
+	if _, err := os.Stat(young); err != nil {
+		t.Error("import removed the young temp file")
+	}
+}
+
+// An archived copy holding a temp file an interrupted run left there is still deleted
+// for one that holds the rest of it: the temp file is no part of the session.
+func TestCleanIgnoresATempFileInACopy(t *testing.T) {
+	archive, _, win, macRepo, _ := continuedOnWin(t)
+	mustWrite(t, filepath.Join(archive, "projects", claude.Slug(macRepo), forkSession, "subagents", ".tmp-agent-a2.jsonl-5"), "{\"half")
+	if out := win.run(t, "clean"); !strings.Contains(out, "Would delete 1 duplicate") {
+		t.Fatalf("clean keeps MAC's copy for a temp file:\n%s", out)
+	}
+	if out, err := win.clean(t, "--yes"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if archived(t, archive, macRepo) != "" {
+		t.Error("clean --yes kept MAC's copy for a temp file")
+	}
+}
+
+// A session continued on MAC and on WIN, each with a subagent of its own, and imported
+// on NEW from both: NEW's folder holds both subagents, and neither copy holds them all.
+// NEW archives none of it, and clean deletes neither copy. Once the copy holding a part
+// changes, NEW compares again, and archives its own copy if that part is gone.
+func TestImportedFromTwoCopiesIsNotArchivedAgain(t *testing.T) {
+	archive := t.TempDir()
+	mac, win, lap := newMachine(t, "MAC", archive), newMachine(t, "WIN", archive), newMachine(t, "NEW", archive)
+	macRepo := gitRepo(t, filepath.Join(t.TempDir(), "dev", "api"))
+	winRepo := gitRepo(t, filepath.Join(t.TempDir(), "work", "api"))
+	newRepo := gitRepo(t, filepath.Join(t.TempDir(), "code", "api"))
+	mustWrite(t, mac.session(macRepo), sessionLines(macRepo, "u1", "m1"))
+	mustWrite(t, filepath.Join(filepath.Dir(mac.session(macRepo)), forkSession, "subagents", "agent-a1.jsonl"), sessionLines(macRepo, "s1"))
+	mustWrite(t, win.session(winRepo), sessionLines(winRepo, "u1", "m1"))
+	mustWrite(t, filepath.Join(filepath.Dir(win.session(winRepo)), forkSession, "subagents", "agent-b1.jsonl"), sessionLines(winRepo, "t1"))
+	mac.run(t, "push", "--no-html")
+	win.run(t, "push", "--no-html")
+	if archived(t, archive, macRepo) == "" || archived(t, archive, winRepo) == "" {
+		t.Fatal("setup: MAC's and WIN's copies are not both archived")
+	}
+	away(t, macRepo, func() {
+		away(t, winRepo, func() { lap.run(t, "import", "--search-root", filepath.Dir(newRepo), "--no-plugins") })
+	})
+	local := filepath.Join(filepath.Dir(lap.session(newRepo)), forkSession, "subagents")
+	for _, a := range []string{"agent-a1.jsonl", "agent-b1.jsonl"} {
+		if _, err := os.Stat(filepath.Join(local, a)); err != nil {
+			t.Fatalf("setup: NEW's import did not bring %s: %v", a, err)
+		}
+	}
+
+	lap.run(t, "push", "--no-html")
+	lap.run(t, "push", "--no-html") // and again, from what it remembered
+	if got := archived(t, archive, newRepo); got != "" {
+		t.Fatalf("NEW archived the session it imported from two copies again:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(archive, "projects", claude.Slug(newRepo), forkSession)); err == nil {
+		t.Error("NEW archived the session's folder again")
+	}
+	if out := lap.run(t, "clean", "--yes"); !strings.Contains(out, "No duplicate copies") {
+		t.Errorf("clean found a duplicate where each copy holds a part:\n%s", out)
+	}
+	if archived(t, archive, macRepo) == "" || archived(t, archive, winRepo) == "" {
+		t.Fatal("clean deleted a copy that holds a part of the session")
+	}
+
+	var held map[string]struct {
+		In   string `json:"in"`
+		Also []struct {
+			In string `json:"in"`
+		} `json:"also"`
+	}
+	if err := json.Unmarshal([]byte(mustRead(t, filepath.Join(lap.claudeDir, "session-sync-base", "held.json"))), &held); err != nil {
+		t.Fatal(err)
+	}
+	h := held[claude.Slug(newRepo)+"/"+forkSession]
+	if h.In == "" || len(h.Also) != 1 {
+		t.Fatalf("held.json does not record both copies: %+v", h)
+	}
+	// The copy that holds only a part loses it, and is replaced: NEW must not trust what
+	// it found before.
+	part := filepath.Join(archive, "projects", h.Also[0].In, forkSession)
+	if err := os.RemoveAll(part); err != nil {
+		t.Fatal(err)
+	}
+	later(t, filepath.Join(archive, "projects", h.Also[0].In, forkSession+".jsonl"))
+	lap.run(t, "push", "--no-html")
+	for _, a := range []string{"agent-a1.jsonl", "agent-b1.jsonl"} {
+		if _, err := os.Stat(filepath.Join(archive, "projects", claude.Slug(newRepo), forkSession, "subagents", a)); err != nil {
+			t.Errorf("NEW did not archive %s once the copy holding it changed: %v", a, err)
+		}
 	}
 }

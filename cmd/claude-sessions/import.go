@@ -169,6 +169,9 @@ func runImport(s streams, o importOpts) (importResult, error) {
 		return importResult{}, err
 	}
 	defer lock.Release()
+	if !o.DryRun {
+		removeLocalTemps(s.Out, root)
+	}
 
 	searchRoots := defaultSearchRoots(manifest, o.SearchRoot)
 	// One walk of the search roots answers every project, instead of one walk each.
@@ -581,6 +584,15 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	return result, nil
 }
 
+// removeLocalTemps deletes the temp files an interrupted run left in the projects
+// folder over an hour ago: half a copy each, which push would otherwise take for a
+// file no archived copy holds. Under the lock.
+func removeLocalTemps(w io.Writer, root string) {
+	if n := archive.RemoveOwnTemps(claude.ProjectsDir(root)); n > 0 {
+		fmt.Fprintf(w, "removed %d temporary file(s) an interrupted run left in %s\n\n", n, claude.ProjectsDir(root))
+	}
+}
+
 // nonNil is l, or an empty list for nil: JSON encodes it as [], not null.
 func nonNil[T any](l []T) []T {
 	if l == nil {
@@ -810,6 +822,9 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 		return nil, err
 	}
 	defer lock.Release()
+	if !o.DryRun {
+		removeLocalTemps(s.Out, root)
+	}
 
 	projectsDir := claude.ProjectsDir(root)
 	manifest, _, _ := archive.Merged(dest)

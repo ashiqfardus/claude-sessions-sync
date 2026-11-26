@@ -6,6 +6,25 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **A new computer's first `push` could upload copies of the conversations it had just
+  imported.** `push` never archives an imported conversation that another computer's
+  copy already holds, but two cases slipped through. On one laptop the first push
+  uploaded about 1.7 GB of copies.
+  - A power cut or a killed `import` can leave a half-written temporary file
+    (`.tmp-…`) in a conversation's folder. `push` took it for a file no other copy had,
+    archived the whole conversation again, and uploaded the temporary file with it.
+    Temporary files are now ignored, never uploaded, and `push` and `import` delete
+    the ones over an hour old from `~/.claude/projects`.
+  - A conversation continued on two computers is in two archive folders, each with
+    its own subagents. `import` brings both sets into one folder here, and no single
+    archived copy held them all, so `push` uploaded it again. A conversation is now
+    left alone when one copy holds every turn and each file of its folder is in some
+    copy. `clean` still deletes a copy only for one other copy that holds all of it.
+
+  `claude-sessions clean` lists the copies already uploaded this way in the first case,
+  and `clean --yes` deletes them. Of each conversation stored twice it deletes one copy
+  and keeps the other, which holds all of it. A copy from the second case holds more
+  than any other single copy, so `clean` keeps it, and may not free that space yet.
 - **A plugin that fails to install now says why, and is tried twice.** The import showed
   only the first line of claude's output ("Adding marketplace..."), hiding the real error,
   and a slow network could fail an install that worked a moment later. It now retries once
