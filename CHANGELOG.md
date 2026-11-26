@@ -43,6 +43,10 @@ All notable changes to this project are documented here. This project follows
   the conversations it still has on its next push, and the HTML pages are rendered once
   more for it. A conversation already gone from the computer that backed it up keeps its
   old title in INDEX.md and the panel.
+- **A project at the root of a drive was listed as `\`.** The panel showed the
+  conversations of a project at `E:\` under the name `\`, and put every drive root of
+  every Windows computer in that one project. It now shows `E:\`, and a project at `/`
+  shows `/`. The name is corrected on that Windows computer's next push.
 
 ## [0.7.2] - 2026-11-26
 

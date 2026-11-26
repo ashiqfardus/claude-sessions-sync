@@ -647,7 +647,7 @@ func projectIdentity(b claude.Bucket, cwdFromNewest string, statePaths []string)
 	}
 
 	if entry.Path != "" {
-		entry.Leaf = filepath.Base(entry.Path)
+		entry.Leaf = projectLeaf(entry.Path)
 		// Read from .git/config; never execute git in a directory we merely found.
 		entry.Remote = identity.Remote(entry.Path)
 	}

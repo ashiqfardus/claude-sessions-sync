@@ -155,7 +155,7 @@ func runImport(s streams, o importOpts) (importResult, error) {
 			continue
 		}
 		if cwd := newestCwd(filepath.Join(archive.ProjectsDir(dest), name)); cwd != "" {
-			manifest[name] = archive.Project{Path: cwd, Leaf: rewrite.LastSegment(cwd), Source: archive.FromTranscript}
+			manifest[name] = archive.Project{Path: cwd, Leaf: projectLeaf(cwd), Source: archive.FromTranscript}
 		}
 	}
 	if len(manifest) == 0 {

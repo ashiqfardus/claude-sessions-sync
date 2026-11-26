@@ -605,8 +605,8 @@ func queryDeleted(root, dest string) []deletedItem {
 		}
 		// No project groups it: the folder of the path a manifest, or the index, records.
 		for _, p := range append(paths, indexed[id].Project) {
-			if p = strings.TrimRight(p, `/\`); it.Project == "" && p != "" {
-				it.Project = p[strings.LastIndexAny(p, `/\`)+1:]
+			if it.Project == "" {
+				it.Project = projectLeaf(p)
 			}
 		}
 		items = append(items, it)
@@ -728,8 +728,8 @@ func logActivity(rest string) (text, pruned string) {
 		}
 		text = "Deleted " + convTitle("", id) + " from the archive"
 		if p, _, ok := strings.Cut(strings.TrimPrefix(more, "("), ", last message "); ok { // (<path>, last message ...)
-			if p = strings.TrimRight(p, `/\`); p != "" {
-				text = "Deleted a conversation in " + p[strings.LastIndexAny(p, `/\`)+1:] + " from the archive"
+			if p != "" {
+				text = "Deleted a conversation in " + projectLeaf(p) + " from the archive"
 			}
 		}
 		return text, strings.ToLower(id)

@@ -35,6 +35,20 @@ func projectsOf(dest string) (map[string]archive.Project, error) {
 	return projects, nil
 }
 
+// projectLeaf is the folder name a project at path p is listed and matched by: its last
+// segment, from either OS, or for a root the root itself. filepath.Base made a Windows
+// drive root "\", which the panel listed as a project.
+func projectLeaf(p string) string {
+	t := strings.TrimRight(p, `/\`)
+	switch {
+	case t == "" && p != "":
+		return "/"
+	case len(t) == 2 && t[1] == ':':
+		return t + `\`
+	}
+	return rewrite.LastSegment(t)
+}
+
 // identityOf is what the keep list stores for a project: its remote, else its folder
 // name.
 func identityOf(p archive.Project) archive.KeepEntry {
