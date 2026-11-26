@@ -6,6 +6,7 @@ Installing on <OS>
   archive   <ARCHIVE> (session-sync.json)
   binary    <CLAUDE>/bin/claude-sessions
   hook      SessionEnd + Stop (new)
+  shortcut  /x/claude-sessions panel.app
   sweep     <MECH>: every 30 minutes
 
 Done. Sessions on this machine now archive automatically.

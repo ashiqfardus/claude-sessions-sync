@@ -6,6 +6,7 @@ Installing on <OS>
   archive   <ARCHIVE> (session-sync.json)
   binary    <CLAUDE>/bin/claude-sessions
   hook      SessionEnd + Stop (replaced 2 existing entr(y/ies))
+  shortcut  /x/claude-sessions panel.app
   sweep     removed (only after replies)
 
 Done. Sessions on this machine now archive automatically.

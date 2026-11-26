@@ -19,6 +19,8 @@ import (
 // The scheduled sweep's calls, replaced by tests that must not register a real job.
 var (
 	installSweep      = hostagent.Install
+	installShortcut   = hostagent.InstallShortcut
+	uninstallShortcut = hostagent.UninstallShortcut
 	uninstallSweep    = hostagent.Uninstall
 	legacySweep       = hostagent.LegacySweep
 	removeLegacySweep = hostagent.RemoveLegacySweep
@@ -57,11 +59,13 @@ type installOpts struct {
 
 // installResult is what install did, as its lines say it.
 type installResult struct {
-	Archive     string `json:"archive"`
-	Binary      string `json:"binary"`
-	Hook        string `json:"hook"`        // "new", or how many existing entries it replaced
-	Sweep       string `json:"sweep"`       // the job registered; with --no-sweep "skipped (--no-sweep)", or "removed (only after replies)" for one installed earlier
-	SweepFailed string `json:"sweepFailed"` // why the sweep could not be registered, or with --no-sweep removed
+	Archive        string `json:"archive"`
+	Binary         string `json:"binary"`
+	Hook           string `json:"hook"`                     // "new", or how many existing entries it replaced
+	Sweep          string `json:"sweep"`                    // the job registered; with --no-sweep "skipped (--no-sweep)", or "removed (only after replies)" for one installed earlier
+	SweepFailed    string `json:"sweepFailed"`              // why the sweep could not be registered, or with --no-sweep removed
+	Shortcut       string `json:"shortcut"`                 // where the panel shortcut is, or "" if it could not be made
+	ShortcutFailed string `json:"shortcutFailed,omitempty"` // why it could not be made; never fails the install
 }
 
 // runInstall installs the hooks and the sweep, printing on s.Out as the CLI does.
@@ -126,6 +130,22 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 		res.Hook = fmt.Sprintf("replaced %d existing entr(y/ies)", replaced)
 	}
 	fmt.Fprintf(s.Out, "  hook      SessionEnd + Stop (%s)\n", res.Hook) // claude.ourHooks
+
+	// Before the sweep, whose failure returns early: the shortcut does not depend on it.
+	// Windows runs the windowless copy, which --no-sweep must not skip.
+	var serr error
+	if runtime.GOOS == "windows" {
+		_, serr = installWindowless(binary)
+	}
+	if serr == nil {
+		res.Shortcut, serr = installShortcut(sweepJob(root, binary))
+	}
+	if serr != nil {
+		res.Shortcut, res.ShortcutFailed = "", serr.Error()
+		fmt.Fprintf(s.Out, "  shortcut  FAILED: %v\n", serr)
+	} else {
+		fmt.Fprintf(s.Out, "  shortcut  %s\n", res.Shortcut)
+	}
 
 	every := o.Every
 	if every <= 0 {
@@ -225,6 +245,7 @@ type uninstallOpts struct {
 type uninstallResult struct {
 	HookEntries int    `json:"hookEntries"` // hook entries removed
 	Sweep       string `json:"sweep"`       // "removed", "none registered for <profile>" or "FAILED: <why>"
+	Shortcut    string `json:"shortcut"`    // "removed", "none" or "FAILED: <why>"
 }
 
 // runUninstall removes the hooks and the sweep, printing on s.Out as the CLI does.
@@ -259,6 +280,17 @@ func runUninstall(s streams, o uninstallOpts) (uninstallResult, error) {
 			return res, err
 		}
 	}
+
+	removedLnk, lerr := uninstallShortcut(sweepJob(root, ""))
+	switch {
+	case lerr != nil:
+		res.Shortcut = fmt.Sprintf("FAILED: %v", lerr)
+	case removedLnk:
+		res.Shortcut = "removed"
+	default:
+		res.Shortcut = "none"
+	}
+	fmt.Fprintf(s.Out, "  shortcut  %s\n", res.Shortcut)
 
 	// The archive and the binary are left alone on purpose: the archive is the user's
 	// data, and removing the binary would delete the program that is running.

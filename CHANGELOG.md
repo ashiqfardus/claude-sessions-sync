@@ -11,6 +11,7 @@ age rule wait until all of them have, and `doctor` names any they wait for.
 ### Added
 - `doctor` checks that the archive folder keeps file times and can replace a file by renaming, and recognises GNOME's Google Drive view, which is not a normal folder.
 - The README explains which sync apps work on Linux.
+- `install` adds a claude-sessions panel shortcut (Start menu, ~/Applications, or the Linux app menu) that opens the panel and closes it 10 minutes after its last tab; `uninstall` removes it.
 - `import --profile-only` brings in only the newer rules and skills.
 - **`render --include <project>`** publishes a project's pages again, on every computer.
 - **`claude-sessions prune` deletes chosen conversations from the archive.** Choose them

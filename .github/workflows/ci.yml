@@ -198,6 +198,15 @@ jobs:
 
           grep -q "hook      SessionEnd" install.log || { echo "FAIL: no hook reported"; exit 1; }
 
+          # The panel shortcut: made, and on Windows aimed at the windowless copy.
+          lnk=$(sed -n 's/^  shortcut  //p' install.log)
+          case "$lnk" in FAILED*|"") echo "FAIL: shortcut: ${lnk:-no line}"; exit 1;; esac
+          [ -e "$lnk" ] || { echo "FAIL: shortcut missing at $lnk"; exit 1; }
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            target=$(CS_P="$lnk" powershell -NoProfile -NonInteractive -Command '(New-Object -ComObject WScript.Shell).CreateShortcut($env:CS_P).TargetPath' | tr -d '\r')
+            case "$target" in *claude-sessionsw.exe) ;; *) echo "FAIL: shortcut targets $target"; exit 1;; esac
+          fi
+
           # Record whether the scheduler registered, for the informational step below.
           sweep=registered
           if grep -q "sweep     FAILED" install.log; then
@@ -251,6 +260,7 @@ jobs:
           echo "::group::uninstall"
           ./cs uninstall --claude-dir "$profile" | tee uninstall.log
           echo "::endgroup::"
+          [ ! -e "$lnk" ] || { echo "FAIL: shortcut still at $lnk"; exit 1; }
 
           # Everything that was not ours must have survived both operations.
           python3 - "$profile/settings.json" <<'PY'

@@ -64,6 +64,8 @@ func installEnv(t *testing.T) (root, dest, home string) {
 		return hostagent.Status{Installed: true, Mechanism: "<MECH>", Detail: "every 30 minutes"}, nil
 	})
 	hook(t, &uninstallSweep, func(hostagent.Job) (bool, error) { return true, nil })
+	hook(t, &installShortcut, func(hostagent.Job) (string, error) { return "/x/claude-sessions panel.app", nil })
+	hook(t, &uninstallShortcut, func(hostagent.Job) (bool, error) { return true, nil })
 	hook(t, &legacySweep, func() (string, bool) { return "", false })
 	return root, dest, home
 }
@@ -193,5 +195,25 @@ func TestUninstallSavesNoSweep(t *testing.T) {
 		if cfg.SweepEvery != c.every || cfg.Destination == "" {
 			t.Errorf("%s: after uninstall, sweepEvery = %d (want %d), destination %q", c.name, cfg.SweepEvery, c.every, cfg.Destination)
 		}
+	}
+}
+
+// A shortcut that cannot be made says so and leaves the install standing.
+func TestInstallShortcutFailureDoesNotFailInstall(t *testing.T) {
+	root, _, _ := installEnv(t)
+	hook(t, &installShortcut, func(hostagent.Job) (string, error) { return "", errors.New("no osacompile") })
+	hook(t, &uninstallShortcut, func(hostagent.Job) (bool, error) { return false, errors.New("busy") })
+	var buf bytes.Buffer
+	res, err := runInstall(streams{&buf, &buf}, installOpts{ClaudeDir: root})
+	if err != nil || res.ShortcutFailed != "no osacompile" || res.Shortcut != "" {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	if !strings.Contains(buf.String(), "  shortcut  FAILED: no osacompile\n") || !strings.Contains(buf.String(), "Done.") {
+		t.Errorf("output:\n%s", buf.String())
+	}
+	buf.Reset()
+	ures, err := runUninstall(streams{&buf, &buf}, uninstallOpts{ClaudeDir: root, KeepLegacy: true})
+	if err != nil || ures.Shortcut != "FAILED: busy" || !strings.Contains(buf.String(), "  shortcut  FAILED: busy\n") {
+		t.Errorf("uninstall %+v err %v\n%s", ures, err, buf.String())
 	}
 }
