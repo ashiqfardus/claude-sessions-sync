@@ -802,8 +802,30 @@ func TestUndoWithoutIDsIsAnUndo(t *testing.T) {
 	if st := runAction(t, u, cookie, "prune-undo", map[string]any{}); st.OK {
 		t.Fatal("prune-undo with no ids succeeded")
 	}
-	if log := mustReadFile(t, filepath.Join(e.root, "session-sync.log")); !strings.Contains(log, "ERROR: prune-undo: usage: claude-sessions prune --undo") {
+	if log := mustReadFile(t, filepath.Join(e.root, "session-sync.log")); !strings.Contains(log, "PANEL: prune-undo: usage: claude-sessions prune --undo") {
 		t.Errorf("prune-undo with no ids did not fail as an undo:\n%s", log)
+	}
+}
+
+// A refused action is no backup: its log line is PANEL:, which Activity never shows
+// (Ruling P55), not ERROR:, which Activity reads as a backup that did not finish.
+func TestRefusedActionIsNoFailedBackup(t *testing.T) {
+	isolateUI(t)
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "LAP-1")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	e := parityFixture(t)
+	u, cookie := actionPanel(t, e.root)
+	if st := runAction(t, u, cookie, "config", map[string]any{"action": "keep", "args": []string{"no-such-project"}}); st.OK {
+		t.Fatal("keeping a project not archived succeeded")
+	}
+	log := mustReadFile(t, filepath.Join(e.root, "session-sync.log"))
+	if !strings.Contains(log, "PANEL: config: ") {
+		t.Errorf("the refusal is not logged as PANEL:\n%s", log)
+	}
+	for _, it := range queryActivity(e.root) {
+		if strings.Contains(it.Text, "did not finish") {
+			t.Errorf("Activity says %q for a refused config keep", it.Text)
+		}
 	}
 }
 

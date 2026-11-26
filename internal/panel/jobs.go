@@ -127,9 +127,9 @@ func (r *Runner) run(j *Job, fn func(io.Writer) (any, error)) {
 	}()
 	text := ""
 	if stack != nil {
-		r.logf("ERROR: %s: %v\n%s", j.action, err, stack) // the stack goes to the log only
+		r.logf("PANEL: %s: %v\n%s", j.action, err, stack) // the stack goes to the log only
 	} else if err != nil {
-		r.logf("ERROR: %s: %v", j.action, err)
+		r.logf("PANEL: %s: %v", j.action, err)
 	}
 	if err != nil {
 		text = r.plain(err)
@@ -316,7 +316,7 @@ func (r *Runner) ServeEvents(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if err := rc.Flush(); err != nil {
-		r.flushFailed.Do(func() { r.logf("ERROR: job events: cannot stream: %v", err) })
+		r.flushFailed.Do(func() { r.logf("PANEL: job events: cannot stream: %v", err) })
 		return
 	}
 	ping := time.NewTicker(jobPingEvery)
@@ -354,7 +354,7 @@ func (r *Runner) ServeEvents(w http.ResponseWriter, req *http.Request) {
 		if !running {
 			data, err := json.Marshal(done)
 			if err != nil {
-				r.logf("ERROR: %s: result: %v", j.action, err)
+				r.logf("PANEL: %s: result: %v", j.action, err)
 				done.Result = nil
 				data, _ = json.Marshal(done)
 			}
