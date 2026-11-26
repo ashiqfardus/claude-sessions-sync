@@ -150,19 +150,21 @@ func TestHeartbeatSaysHowFarAtMostOncePerInterval(t *testing.T) {
 	hook(t, &isTerminal, func(io.Writer) bool { return true })
 	hook(t, &heartbeatEvery, 25*time.Millisecond)
 	var out syncBuffer
-	h := startHeartbeat(&out)
-	time.Sleep(70 * time.Millisecond)
-	h.reading("work folders", 0)
-	time.Sleep(70 * time.Millisecond)
-	h.reading("conversations", 3657)
 	start := time.Now()
+	h := startHeartbeat(&out)
+	waitForText(t, &out, "still reading the archive (")
+	h.reading("work folders", 0)
+	waitForText(t, &out, ": work folders (")
+	h.reading("conversations", 3657)
 	steps := 0
-	for time.Since(start) < 150*time.Millisecond {
+	for spin := time.Now(); time.Since(spin) < 100*time.Millisecond || !strings.Contains(out.String(), " of 3657 conversations"); steps++ {
 		h.step()
-		steps++
+		if time.Since(spin) > 5*time.Second {
+			break
+		}
 	}
 	h.stop()
-	elapsed := time.Since(start) + 140*time.Millisecond
+	elapsed := time.Since(start)
 	got := out.String()
 	time.Sleep(60 * time.Millisecond)
 	if out.String() != got {
@@ -170,7 +172,7 @@ func TestHeartbeatSaysHowFarAtMostOncePerInterval(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
-	if max := int(elapsed/heartbeatEvery) + 1; len(lines) < 3 || len(lines) > max {
+	if max := int(elapsed / heartbeatEvery); len(lines) < 3 || len(lines) > max {
 		t.Fatalf("%d line(s) in %v at one per %v, %d steps:\n%s", len(lines), elapsed, heartbeatEvery, steps, got)
 	}
 	re := regexp.MustCompile(`^still reading the archive(: work folders|: \d+ of 3657 conversations)? \(\d+s\)$`)
@@ -179,9 +181,18 @@ func TestHeartbeatSaysHowFarAtMostOncePerInterval(t *testing.T) {
 			t.Errorf("line %q is not a heartbeat", l)
 		}
 	}
-	if !strings.Contains(got, "still reading the archive (0s)") || !strings.Contains(got, ": work folders (0s)") ||
-		!regexp.MustCompile(`: [1-9]\d* of 3657 conversations`).MatchString(got) {
-		t.Errorf("a stage is missing:\n%s", got)
+	if !regexp.MustCompile(`: [1-9]\d* of 3657 conversations`).MatchString(got) {
+		t.Errorf("no count past 0:\n%s", got)
+	}
+}
+
+// waitForText waits up to 5 seconds for w to hold want.
+func waitForText(t *testing.T, w *syncBuffer, want string) {
+	t.Helper()
+	for end := time.Now().Add(5 * time.Second); !strings.Contains(w.String(), want); time.Sleep(time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatalf("no %q in:\n%s", want, w.String())
+		}
 	}
 }
 
@@ -216,10 +227,11 @@ func TestHeartbeatOnlyOnATerminal(t *testing.T) {
 	}
 }
 
-// import counts each archived conversation, loose or zipped, against all of them.
+// import counts each archived conversation, loose or zipped, against all of them. The
+// import is held inside the count, at its first zip, until a line is due.
 func TestImportHeartbeatCountsConversations(t *testing.T) {
 	hook(t, &isTerminal, func(io.Writer) bool { return true })
-	hook(t, &heartbeatEvery, time.Microsecond)
+	hook(t, &heartbeatEvery, time.Millisecond)
 	claudeDir, dest, search := heartbeatArchive(t, 40)
 	buckets, _ := archive.BucketNames(dest)
 	for i := 0; i < 5; i++ { // zipped ones count once each, as loose ones do
@@ -232,7 +244,12 @@ func TestImportHeartbeatCountsConversations(t *testing.T) {
 	}
 	var out bytes.Buffer
 	var errs syncBuffer
-	if _, err := runImport(streams{&out, &errs}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1, DryRun: true}); err != nil {
+	realM := materialize
+	hook(t, &materialize, func(bucketDir, id, tmp string) (string, func(), error) {
+		waitForText(t, &errs, " of 40 conversations (")
+		return realM(bucketDir, id, tmp)
+	})
+	if _, err := runImport(streams{&out, &errs}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if !regexp.MustCompile(`still reading the archive: \d+ of 40 conversations \(\d+s\)\n`).MatchString(errs.String()) ||
@@ -265,4 +282,62 @@ func heartbeatArchive(t *testing.T, n int) (claudeDir, dest, search string) {
 		"projects": map[string]any{bucket: map[string]string{"path": proj, "leaf": "web-app"}}})
 	writeFile(t, filepath.Join(dest, "manifest", "LAP-1.json"), string(manifest))
 	return claudeDir, dest, search
+}
+
+// A dry run opens no conversation's zip and lists no conversation's folder: on a drive
+// that downloads each file as it is opened, those reads were most of a dry run's time,
+// and nothing it prints comes from them. A real run still reads both, and files what
+// the dry run said it would.
+func TestImportDryRunOpensNoConversation(t *testing.T) {
+	claudeDir, dest, search := heartbeatArchive(t, 6)
+	buckets, _ := archive.BucketNames(dest)
+	dir := filepath.Join(archive.ProjectsDir(dest), buckets[0])
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("11111111-1111-1111-1111-%012d", i)
+		writeFile(t, filepath.Join(dir, id, "subagents", "agent-1.jsonl"), "{}\n")
+		if i < 3 {
+			if _, err := convzip.Zip(dir, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	indexes, unpacked := zipReads(t)
+	var listed []string
+	realList := listSessionFiles
+	hook(t, &listSessionFiles, func(d string) []string {
+		listed = append(listed, d)
+		return realList(d)
+	})
+	run := func(dry bool) string {
+		var out bytes.Buffer
+		if _, err := runImport(streams{&out, &out}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1, DryRun: dry}); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	dry := run(true)
+	if len(*indexes)+len(*unpacked)+len(listed) > 0 {
+		t.Errorf("a dry run read conversations: zip indexes %v, unpacked %v, folders listed %v", *indexes, *unpacked, listed)
+	}
+	if !strings.Contains(dry, ": 6 filed, 0 already present") || !strings.Contains(dry, "6 transcript(s) filed.") {
+		t.Errorf("the dry run's counts changed:\n%s", dry)
+	}
+
+	real := run(false)
+	if len(*indexes) < 3 || len(*unpacked) < 3 || len(listed) < 6 {
+		t.Errorf("a real run read less: zip indexes %v, unpacked %v, folders listed %v", *indexes, *unpacked, listed)
+	}
+	if !strings.Contains(real, ": 6 filed, 0 already present") {
+		t.Errorf("the real run did not file what the dry run said:\n%s", real)
+	}
+	here := filepath.Join(claude.ProjectsDir(claudeDir), filepath.Base(dir))
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("11111111-1111-1111-1111-%012d", i)
+		for _, rel := range []string{id + ".jsonl", filepath.Join(id, "subagents", "agent-1.jsonl")} {
+			if _, err := os.Stat(filepath.Join(here, rel)); err != nil {
+				t.Errorf("the real run did not file %s: %v", rel, err)
+			}
+		}
+	}
 }

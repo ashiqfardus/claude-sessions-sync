@@ -281,20 +281,22 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 
 	// What may land here - each transcript not here yet, and each subagent transcript -
 	// is journaled first, in one fsync'd write: a run killed at any point leaves each of
-	// them counted as filed in whole. Each session's files are listed once, here.
-	var landing []string
-	for _, c := range convs {
-		if dst := filepath.Join(res.Bucket, c.name); archive.StatOrNil(dst) == nil {
-			landing = append(landing, dst)
-		}
-		c.files = c.folderFiles()
-		for _, rel := range c.files {
-			if dst := filepath.Join(res.Bucket, c.id(), rel); archive.StatOrNil(dst) == nil {
+	// them counted as filed in whole. Each session's files are listed once, here. A dry
+	// run files none of them, so it lists no folder and opens no zip for them: on a
+	// drive that downloads each file as it is opened, that was most of its time.
+	if !opts.DryRun {
+		var landing []string
+		for _, c := range convs {
+			if dst := filepath.Join(res.Bucket, c.name); archive.StatOrNil(dst) == nil {
 				landing = append(landing, dst)
 			}
+			c.files = c.folderFiles()
+			for _, rel := range c.files {
+				if dst := filepath.Join(res.Bucket, c.id(), rel); archive.StatOrNil(dst) == nil {
+					landing = append(landing, dst)
+				}
+			}
 		}
-	}
-	if !opts.DryRun {
 		if err := opts.Imported.pend(landing...); err != nil {
 			return res, err
 		}
@@ -512,11 +514,14 @@ type archivedConv struct {
 
 func (c *archivedConv) id() string { return strings.TrimSuffix(c.name, filepath.Ext(c.name)) }
 
+// listSessionFiles lists a conversation's folder; tests count the calls.
+var listSessionFiles = claude.SessionFiles
+
 // folderFiles lists the conversation's folder: the loose one's files and a zip's entries
 // under it, read from the zip's index alone. An index that cannot be read lists none;
 // the zip is then read, and the reason said, only if the conversation is filed.
 func (c *archivedConv) folderFiles() []string {
-	files := claude.SessionFiles(filepath.Join(c.source, c.id()))
+	files := listSessionFiles(filepath.Join(c.source, c.id()))
 	if c.zip == "" {
 		return files
 	}
@@ -524,7 +529,7 @@ func (c *archivedConv) folderFiles() []string {
 	for _, f := range files {
 		seen[f] = true
 	}
-	ents, _ := convzip.Entries(c.zip)
+	ents, _ := readZipIndex(c.zip)
 	for name := range ents {
 		rel, ok := strings.CutPrefix(name, c.id()+"/")
 		rel = filepath.FromSlash(rel)
