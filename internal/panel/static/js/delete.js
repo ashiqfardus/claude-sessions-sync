@@ -13,7 +13,7 @@ const titleOf = (it) => it.prompt || 'Conversation ' + it.id.slice(0, 8)
 // nameOf is a deleted conversation's title, or its project when only that is known: the
 // server reads the title from this computer's own copy, never the archive's.
 const nameOf = (it) => (it.title && it.title !== 'Conversation ' + it.id.slice(0, 8) ? it.title
-  : it.project ? 'Conversation in ' + it.project : it.here ? 'A conversation' : 'A conversation from another computer')
+  : it.project ? 'Conversation in ' + it.project + ' (' + String(it.id || '').slice(0, 8) + ')' : it.here ? 'A conversation' : 'A conversation from another computer')
 // refocus puts focus back on btn when disabling a button dropped it to the page.
 const refocus = (btn) => { if (document.activeElement === document.body && btn.isConnected && !btn.hidden) btn.focus() }
 const PAUSED = "Deleting is paused: the other computers can't be checked right now."
