@@ -741,12 +741,15 @@ func otherVersions(dest string) []string {
 }
 
 // zipCheck says whether push zips idle conversations, and if it waits, for whom.
+// zipConfigUnread is the zips check's advice when session-sync.json cannot be read; the
+// panel's Health tells that case by it.
+const zipConfigUnread = "Push zips nothing until it can read session-sync.json, which may say zip-sessions off."
+
 func zipCheck(root, dest string) check {
 	cfg, err := archive.LoadConfig(root)
 	switch {
 	case err != nil: // push zips nothing then: the file may hold zip-sessions off
-		return check{"zips", levelWarn, "idle conversations are not zipped: " + err.Error(),
-			"Push zips nothing until it can read session-sync.json, which may say zip-sessions off."}
+		return check{"zips", levelWarn, "idle conversations are not zipped: " + err.Error(), zipConfigUnread}
 	case !cfg.ZipOn():
 		return check{"zips", levelInfo, "off: idle conversations stay loose", "`claude-sessions config zip-sessions on` zips them again; existing zips stay readable either way."}
 	}

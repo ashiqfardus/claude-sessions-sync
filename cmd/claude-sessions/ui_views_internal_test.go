@@ -1055,3 +1055,21 @@ func TestPlainWordsSingular(t *testing.T) {
 		}
 	}
 }
+
+// push zips nothing while this computer's session-sync.json cannot be read. Health says
+// that file is why, not another computer's record, and how to write it again.
+func TestHealthZipsSaysWhenThisComputersSettingsCannotBeRead(t *testing.T) {
+	root, dest := t.TempDir(), t.TempDir()
+	writeFile(t, archive.ConfigPath(root), "{not json")
+	it := plainCheck(zipCheck(root, dest))
+	if it.Level != "warn" || !strings.Contains(it.Text, "this computer's settings file can't be read") ||
+		strings.Contains(it.Text, "every computer's record") || it.FixLabel != "Choose folder" || it.FixHref != toSettings {
+		t.Errorf("unreadable settings gave %+v", it)
+	}
+
+	writeFile(t, archive.ConfigPath(root), "{}")
+	writeFile(t, filepath.Join(archive.ManifestDir(dest), "LAP-9.json"), "{")
+	if it := plainCheck(zipCheck(root, dest)); !strings.Contains(it.Text, "every computer's record") {
+		t.Errorf("an unreadable manifest gave %+v", it)
+	}
+}

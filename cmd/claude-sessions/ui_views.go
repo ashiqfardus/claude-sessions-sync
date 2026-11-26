@@ -1029,6 +1029,9 @@ var plainChecks = map[string]func(c check) healthItem{
 			return say(c, "Compressing old conversations is off.", "Manage storage", toStorage)
 		case c.Level == levelOK:
 			return say(c, "Conversations nobody has used for 30 days are compressed.", "", "")
+		case c.Advice == zipConfigUnread:
+			return say(c, "Old conversations aren't compressed: this computer's settings file can't be read, and it may say not to. "+
+				"Choose the archive folder again to write a new one, then check your settings.", "Choose folder", toSettings)
 		case strings.Contains(c.Detail, "read zips: "):
 			return say(c, "Compressing old conversations waits until claude-sessions is updated on "+listAfter(c.Detail, "read zips: ")+".", "See computers", toSettings)
 		}
