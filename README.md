@@ -163,6 +163,47 @@ each step.
 
 ---
 
+## The panel
+
+If you would rather not type commands, run `claude-sessions ui`. It starts a page on
+your own computer and opens it in your browser. The page backs up, brings in, searches
+and deletes, shows storage and the health of the archive, and changes the settings.
+Its Commands page lists every command and option and where in the panel to find it.
+
+```sh
+claude-sessions ui                # start the panel and open the browser
+claude-sessions ui --no-open      # print the address instead of opening it
+claude-sessions ui --port 8765    # use this port (default: a free one)
+```
+
+- **This computer only.** The panel listens on `127.0.0.1`, so nothing else on your
+  network can reach it, and it refuses requests that name any other host.
+- **The address works once.** The address the panel prints or opens carries a one-time
+  key. The first browser to use it gets a cookie and goes on to the plain address. A
+  copy of the address pasted somewhere else shows "already used". Run `ui` again for a
+  new one. If the panel is already running, a second `claude-sessions ui` opens a new
+  tab on it instead of starting another.
+- **Every action is the CLI's own.** A button runs the same code as the command, with
+  the same checks and the same lock, so it cannot do what the command refuses.
+  Deleting, in Storage, Delete old conversations and Conversations, waits for every
+  computer to run this version and push once, as `prune` does. Paths you type must be
+  full paths. The panel's health check is a light one that reads no conversations;
+  "Run full check" runs the full `doctor`.
+- **Only one action at a time.** If one is running, another says "Another action is
+  running".
+- **`completion`, and `ui`'s own options** (`--no-open`, `--port`, `--from-shortcut`),
+  are terminal only.
+- **Stopping.** Press Ctrl-C in the terminal, or choose "Stop the panel" in Settings.
+  Ctrl-C stops it at once. "Stop the panel" stops it at once too, unless a job is
+  running: then it stops when the job finishes. Closing the tab does not stop it.
+- **The shortcut.** `install` adds a "claude-sessions panel" shortcut (the Start menu on
+  Windows, `~/Applications` on macOS, the app menu on Linux). It opens the panel and
+  stops it 10 minutes after the last tab closes, never during a job. On Windows it
+  starts the copy of the program that has no console window. `uninstall` removes it,
+  and so does turning off automatic backup in the panel.
+
+---
+
 # Step-by-step guide
 
 ## Before you start: a synced folder
@@ -211,6 +252,8 @@ a real account.
 | Nextcloud, ownCloud | The official apps |
 | Syncthing | No cloud: your computers sync directly |
 | iCloud, Box | No Linux app |
+
+The panel shortcut that `install` adds goes in the app menu here.
 
 Every computer must use the same folder. To move the archive, copy it to the new
 place, then run `claude-sessions config set-destination <folder>` on each computer.
@@ -810,6 +853,10 @@ the archive. Run `claude-sessions push` by hand to see the error, and read
 
 **`import` says a project is ambiguous or not found.** Use the `config map` command it
 prints (Step 8c).
+
+**The panel says "The panel has stopped".** The program behind it exited, from Ctrl-C,
+Stop the panel, or the shortcut's 10 minutes. Run `claude-sessions ui` again (or use the
+shortcut) and the page carries on.
 
 **`ls` shows nothing.** Claude Code files a session under the folder it *started* in.
 The tool follows `CLAUDE_CONFIG_DIR` if you set it; `--claude-dir` points it at any

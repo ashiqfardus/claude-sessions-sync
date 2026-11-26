@@ -18,6 +18,7 @@ plain, and say what you did after each step.
   explained it.
 - Never delete or move the user's files, conversations or archive folder.
 - Never run `prune --yes` or set `keep-days` unless the user asked for it.
+- Never use the panel to delete anything the user did not ask to delete.
 - Never paste secrets (tokens, passwords) into commands or messages. If a step needs one,
   ask the user to enter it themselves.
 - The archive holds full conversations and work files. Only ever suggest a folder that
@@ -100,6 +101,10 @@ folder.
 Run `claude-sessions install`. It adds a Claude Code hook, plus a scheduled sweep every
 30 minutes. Tell the user to restart Claude Code, or run `/hooks`, so open sessions pick
 up the hook.
+
+`install` also adds a "claude-sessions panel" shortcut. If the user would rather not use
+the terminal, tell them about it and about `claude-sessions ui`, which opens the same
+things in their browser.
 
 Claude Code deletes conversations after 30 days by default. Ask whether to keep them:
 if yes, add `"cleanupPeriodDays": 3650` to `~/.claude/settings.json`. Edit the JSON

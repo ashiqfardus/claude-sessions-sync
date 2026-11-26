@@ -6,9 +6,32 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 Upgrading: update every computer and let each push once. Zipping, `prune --yes` and the
-age rule wait until all of them have, and `doctor` names any they wait for.
+age rule wait until all of them have, and `doctor` names any they wait for. The
+panel's compression and deleting wait for every computer too, as the CLI does.
 
 ### Added
+- **`claude-sessions ui` opens a panel in your browser.** It runs on `127.0.0.1` only and
+  opens through a one-time address; `--no-open` prints it, `--port <n>` picks the port,
+  and a second `ui` opens a new tab on the running panel. Every action runs the CLI's own
+  code, one at a time. Ctrl-C stops it at once; "Stop the panel" does too, or after the
+  running job. Screens:
+  - Overview: every computer, Back up now and Preview backup, health (a light check;
+    "Run full check" runs `doctor`), storage and recent activity.
+  - Conversations: search with filters, a paged table, Read, and Never delete or delete
+    for the ticked ones.
+  - Storage: usage, compress, duplicates, delete old conversations, Never delete and
+    recently deleted, and the biggest projects.
+  - Delete old conversations: delete automatically, choose now, Never delete and Restore.
+  - Bring in: where each project goes, what to bring in, Advanced, Preview, and From a
+    folder (`restore`).
+  - Settings: archive folder, computers, work folders, folder mappings, automatic backup,
+    rules and skills (including bringing in only rules and skills), readable pages, the
+    full backup file, log, About and Stop the panel.
+  - Commands: every command and option and where to find it in the panel. `completion` and
+    `ui`'s own launch options stay in the terminal.
+- `--json` on `pull`, `restore`, `clean`, `prune`, `backup`, `config`, `install`,
+  `uninstall` and `machines --forget`. `import --json` now lists work folders too, as
+  rows with `kind: "work"`, each naming its computer.
 - `doctor` checks that the archive folder keeps file times and can replace a file by renaming, and recognises GNOME's Google Drive view, which is not a normal folder.
 - The README explains which sync apps work on Linux.
 - `install` adds a claude-sessions panel shortcut (Start menu, ~/Applications, or the Linux app menu) that opens the panel and closes it 10 minutes after its last tab; `uninstall` removes it.
