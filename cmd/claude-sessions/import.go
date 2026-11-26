@@ -134,6 +134,7 @@ func runImport(s streams, o importOpts) (importResult, error) {
 			fmt.Fprintln(s.Out, "No rules or skills here are older than the archive's.")
 		}
 		printProfile(s.Out, p, o.DryRun)
+		printPluginSummary(s.Out, p)
 		return importResult{Rows: []importRow{}, Profile: p}, nil
 	}
 
@@ -576,6 +577,7 @@ func runImport(s streams, o importOpts) (importResult, error) {
 		fmt.Fprintln(s.Out, "\nFor anything not placed, say where it lives here once, then run import again:")
 		fmt.Fprintln(s.Out, "  claude-sessions config map <bucket> '<local folder>'")
 	}
+	printPluginSummary(s.Out, profile)
 	return result, nil
 }
 

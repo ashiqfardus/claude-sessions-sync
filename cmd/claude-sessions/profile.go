@@ -467,24 +467,72 @@ func pluginInstallArgs(id string, markets map[string]json.RawMessage) ([]string,
 // pluginInstallTimeout bounds one install: it clones a repository.
 const pluginInstallTimeout = 3 * time.Minute
 
-func runPluginInstall(bin string, args []string, root string) string {
+// installPluginOnce is one `claude plugin install` run; a variable so tests can fake it.
+var installPluginOnce = func(bin string, args []string, root string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), pluginInstallTimeout)
 	defer cancel()
 	cmd := hostagent.CommandContext(ctx, bin, args...)
 	cmd.Env = pluginEnv(root, claude.IsDefaultRoot(root), os.Environ())
 	cmd.Dir = root // not the caller's folder, whose .claude/settings.json would apply
 	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// pluginRetryDelay is the wait before the one retry: a clone that fails while the
+// network is busy usually works a moment later.
+var pluginRetryDelay = 5 * time.Second
+
+func runPluginInstall(bin string, args []string, root string) string {
+	out, err := installPluginOnce(bin, args, root)
+	if err != nil {
+		time.Sleep(pluginRetryDelay)
+		out, err = installPluginOnce(bin, args, root)
+	}
 	if err == nil {
 		return "installed"
 	}
-	msg := strings.TrimSpace(string(out))
-	if i := strings.IndexByte(msg, '\n'); i >= 0 {
-		msg = msg[:i]
+	return "failed: " + pluginErrorLine(out, err)
+}
+
+// pluginErrorLine picks the line worth showing from a failed install's output: the
+// last line that mentions an error or failure, else the last non-empty line (the
+// first is usually a progress line like "Adding marketplace...").
+func pluginErrorLine(out string, err error) string {
+	var last, bad string
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		last = l
+		if low := strings.ToLower(l); strings.Contains(low, "error") || strings.Contains(low, "fail") {
+			bad = l
+		}
 	}
-	if msg == "" {
-		msg = err.Error()
+	if bad != "" {
+		last = bad
 	}
-	return "failed: " + msg
+	if last == "" {
+		last = err.Error()
+	}
+	if r := []rune(last); len(r) > 200 {
+		last = string(r[:200]) + "..."
+	}
+	return last
+}
+
+// printPluginSummary ends the import output with one line when plugins failed. Import
+// still exits 0: its job is the conversations, and the commands above finish the rest.
+func printPluginSummary(w io.Writer, res profileResult) {
+	n := 0
+	for _, p := range res.Plugins {
+		if p.Status != "installed" && p.Status != "would install" {
+			n++
+		}
+	}
+	if n > 0 {
+		fmt.Fprintf(w, "! %d plugin(s) not installed; run the commands above, one at a time\n", n)
+	}
 }
 
 // pluginEnv points `claude` at the profile being imported into. The default profile is

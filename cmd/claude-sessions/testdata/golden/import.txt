@@ -4,7 +4,7 @@ exit 0
 archive      <ARCHIVE> (session-sync.json)
 search roots <LAP2-HOME>/dev
 
-work folders from LAP-1: <HOME>/reports/q3 -> <LAP2-HOME>/reports/q3 (2 file(s) filed, 0 kept, 0 beside, 0 refused, 0 excluded here; 0.0 MB filed)
+work folders from LAP-1: <HOME>/reports/q3 -> <LAP2-HOME>/reports/q3 (2 file(s) filed, 0 kept, 0 beside, 0 refused, 0 excluded here; 15 bytes filed)
   to place them elsewhere: claude-sessions config map-folder '<path from above>' '<local folder>', or claude-sessions config work-placement home|machine
 
 + <HOME-SLUG> -> <LAP2-HOME> (matched by home folder): 1 filed, 0 already present

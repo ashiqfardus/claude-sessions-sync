@@ -5,6 +5,15 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **A plugin that fails to install now says why, and is tried twice.** The import showed
+  only the first line of claude's output ("Adding marketplace..."), hiding the real error,
+  and a slow network could fail an install that worked a moment later. It now retries once
+  after 5 seconds, shows the line that names the error, and ends with one line counting
+  the plugins left to install by hand.
+- **Small work folders no longer show "0.0 MB filed".** Sizes under 0.1 MB print in KB, and
+  under 1 KB in bytes.
+
 ## [0.7.2] - 2026-11-26
 
 ### Added

@@ -1306,7 +1306,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 		}
 		size := ""
 		if n.Filed > 0 { // as it lands, unpacked
-			size = "; " + mb(n.FiledBytes) + " " + would("filed")
+			size = "; " + sizeText(n.FiledBytes) + " " + would("filed")
 		}
 		res.Notes = append(res.Notes, fmt.Sprintf("work folders from %s: %s (%d file(s) %s, %d kept, %d beside, %d refused, %d excluded here%s)",
 			s.Machine, where, n.Filed, would("filed"), n.Kept, n.Beside, n.Refused, n.Excluded, size))
@@ -1874,4 +1874,15 @@ func repointFile(p, dir, backup string, rules []rewrite.Rule, st fs.FileInfo) er
 		return errLive
 	}
 	return os.Rename(tmp, p)
+}
+
+// sizeText is mb() with a smaller unit for small sizes, so a tiny folder is not "0.0 MB".
+func sizeText(n int64) string {
+	switch {
+	case n >= 1<<20/10:
+		return mb(n)
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d bytes", n)
 }

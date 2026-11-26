@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -51,6 +52,65 @@ func TestPluginInstallArgsRefusesUnsafeValues(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("%s: got %q, want %q", c.id, got, c.want)
+		}
+	}
+}
+
+func TestPluginErrorLinePicksTheUsefulLine(t *testing.T) {
+	e := errors.New("exit 1")
+	if g := pluginErrorLine("Adding marketplace...\nCloning...\nError: Failed to clone repository\ndone", e); g != "Error: Failed to clone repository" {
+		t.Errorf("got %q", g)
+	}
+	if g := pluginErrorLine("Adding marketplace...\n\nstuff happened\n", e); g != "stuff happened" {
+		t.Errorf("got %q", g)
+	}
+	if g := pluginErrorLine("", e); g != "exit 1" {
+		t.Errorf("got %q", g)
+	}
+	if g := pluginErrorLine(strings.Repeat("x", 500), e); len([]rune(g)) > 205 {
+		t.Errorf("not trimmed: %d", len(g))
+	}
+}
+
+func TestRunPluginInstallRetriesOnce(t *testing.T) {
+	oldRun, oldDelay := installPluginOnce, pluginRetryDelay
+	defer func() { installPluginOnce, pluginRetryDelay = oldRun, oldDelay }()
+	pluginRetryDelay = 0
+	calls := 0
+	installPluginOnce = func(string, []string, string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "Adding marketplace...\nerror: network", errors.New("x")
+		}
+		return "", nil
+	}
+	if got := runPluginInstall("claude", nil, ""); got != "installed" || calls != 2 {
+		t.Errorf("got %q after %d calls", got, calls)
+	}
+	calls = 0
+	installPluginOnce = func(string, []string, string) (string, error) {
+		calls++
+		return "Adding marketplace...\nerror: network", errors.New("x")
+	}
+	if got := runPluginInstall("claude", nil, ""); got != "failed: error: network" || calls != 2 {
+		t.Errorf("got %q after %d calls", got, calls)
+	}
+}
+
+func TestPluginSummaryAndSizeText(t *testing.T) {
+	var b strings.Builder
+	printPluginSummary(&b, profileResult{Plugins: []pluginRun{{Status: "installed"}, {Status: "failed: x"}, {Status: "claude is not on PATH"}}})
+	if b.String() != "! 2 plugin(s) not installed; run the commands above, one at a time\n" {
+		t.Errorf("got %q", b.String())
+	}
+	b.Reset()
+	printPluginSummary(&b, profileResult{Plugins: []pluginRun{{Status: "installed"}}})
+	if b.Len() != 0 {
+		t.Errorf("printed %q", b.String())
+	}
+	for n, want := range map[int64]string{0: "0 bytes", 1023: "1023 bytes", 12 << 10: "12 KB", 464<<20 + 1<<19: "464.5 MB", 200 << 10: "0.2 MB"} {
+		if got := sizeText(n); got != want {
+			t.Errorf("sizeText(%d)=%q want %q", n, got, want)
 		}
 	}
 }
