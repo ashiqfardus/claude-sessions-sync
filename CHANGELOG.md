@@ -39,6 +39,9 @@ All notable changes to this project are documented here. This project follows
   problem, and `doctor --json` prints that report.
 - **`config unkeep <remote>` for a remote not on the keep list answered "no archived
   project has the path ..."** It now says the remote is not on the keep list.
+- **A Windows folder written `C:/x` in one place and `C:\x` in another counted as two
+  folders,** as for a project with only memory files, whose path comes from
+  `~/.claude.json`. Paths now compare with either slash.
 
 ## [0.7.0] - 2026-11-26
 

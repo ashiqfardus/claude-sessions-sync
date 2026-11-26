@@ -121,3 +121,21 @@ func captureBoth(t *testing.T, fn func() error) (stdout, stderr string) {
 	}
 	return stdout, stderr
 }
+
+// ~/.claude.json can give a memory-only bucket C:/x where a transcript says C:\x: one
+// folder, compared from any computer.
+func TestSamePathIgnoresSlashDirection(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{`C:/Users/you/dev/web-app`, `C:\Users\you\dev\web-app`, true},
+		{`c:\users\you\dev\web-app\`, `C:/Users/you/dev/web-app`, true},
+		{`C:\Users\you\dev\web-app`, `C:\Users\you\dev\api`, false},
+		{"/Users/you/dev/web-app", "/Users/you/dev/web-app/", true},
+	} {
+		if got := samePath(c.a, c.b); got != c.want {
+			t.Errorf("samePath(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}

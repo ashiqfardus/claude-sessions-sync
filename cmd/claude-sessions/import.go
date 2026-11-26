@@ -912,6 +912,8 @@ func mapHint(bucket string) string {
 	return fmt.Sprintf("fix: claude-sessions config map %s '<local folder>'", bucket)
 }
 
+// samePath compares two paths of any computer's, so either slash, as Windows takes them.
 func samePath(a, b string) bool {
-	return strings.EqualFold(strings.TrimRight(a, `\/`), strings.TrimRight(b, `\/`))
+	slash := func(p string) string { return strings.TrimRight(strings.ReplaceAll(p, `\`, "/"), "/") }
+	return strings.EqualFold(slash(a), slash(b))
 }
