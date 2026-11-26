@@ -10,6 +10,16 @@ All notable changes to this project are documented here. This project follows
   release download says `0.7.0` and a `go install` build said `v0.7.0`, so `doctor` and
   the panel's Health named the other computer. They now count as the same version, and
   a `go install` build reports itself without the `v`.
+- **A kept remote whose path holds a space or a non-ASCII letter could not be unkept by
+  its label.** `config keep` printed `https://host/o/%C3%BC/repo.git` for a remote
+  stored as `https://tok@host/o/ü/repo.git`, and `config unkeep` with that label, or
+  the panel's Stop protecting, answered "not kept". The label now keeps the path as
+  written.
+- **Two different repositories could count as one.** For a remote Go cannot read as a
+  URL (a `/` in a password, a bad `%`) with an `@` in its path, everything before the
+  last `@` was taken for a password, so `https://host/o/100%/r@v2.git` and another
+  remote ending `@v2.git` both became `v2`. Only an `@` before a host and a `/` now ends
+  the credentials.
 
 ## [0.7.0] - 2026-11-26
 

@@ -133,6 +133,10 @@ func TestNormalRemoteDropsCredentials(t *testing.T) {
 		"https://user:p?ss@hosta/x":                   "hosta/x",          // a ? in the password
 		"/data/a@b:c/repo":                            "/data/a@b/c/repo", // a path, not scp form
 		"/data/z@b:c/repo":                            "/data/z@b/c/repo",
+		// Go cannot read these URLs, and the path holds an @: only an @ before host/
+		// ends the credentials, so the two stay apart.
+		"https://user:to/ken@host/o/r@v2.git": "host/o/r@v2",
+		"https://host/o/100%/r@v2.git":        "host/o/100%/r@v2",
 	} {
 		if got := NormalRemote(in); got != want {
 			t.Errorf("NormalRemote(%q) = %q, want %q", in, got, want)
@@ -154,6 +158,40 @@ func TestNormalRemoteDropsCredentials(t *testing.T) {
 	if SameRemote("/data/a@b:c/repo", "/data/z@b:c/repo") {
 		t.Error("two paths that differ before an @ are the same remote")
 	}
+	if SameRemote("https://user:to/ken@host/o/r@v2.git", "https://host/o/100%/r@v2.git") {
+		t.Error("two unreadable URLs ending @v2 are the same remote")
+	}
+}
+
+// remoteCorpus is every remote form these tests use, plus paths that a URL encoder
+// would rewrite.
+var remoteCorpus = []string{
+	"git@github.com:example/web-app.git", "https://github.com/example/web-app.git",
+	"https://github.com/example/web-app", "git@github.com:example/web-app",
+	"https://user:token@github.com/o/r.git", "HTTPS://GitHub.com/O/R.git",
+	"ssh://git@github.com:22/o/r.git", "git@gitlab.com:o/r.git",
+	"https://github.com/o/r.git/", "git@github.com:1234/repo.git",
+	"https://user:tok@x@github.com/o/r.git", "https://user:tok/x@github.com/o/r.git",
+	"https://github.com/o/r.git?access_token=tok", "ssh://user:tok@github.com:22/o/r.git",
+	"user:tok@x@github.com:o/r.git", "user:tok/x@github.com:o/r.git",
+	"git@github.com:o/r@v2.git", "https://host/a#b.git", "/srv/git/repo.git",
+	"https://user:p?ss@hosta/x", "/data/a@b:c/repo", "https://you:tok@github.com/o/r.git",
+	"https://tok@github.com/o/r.git", "user:tok@github.com:o/r.git",
+	"https://gitea.example/ü/repo.git", "https://user:tok@gitea.example/ü/repo.git",
+	"file:///srv/git/my repo.git", "https://tok@host/o/my repo.git",
+	"https://host/o/my%20repo.git", "https://tok@host/o/my%20repo.git?x=1",
+	"https://tok@host/o/ü/repo.git#frag", "https://user:to/ken@host/o/r@v2.git",
+	"https://host/o/100%/r@v2.git", "https://user:to/ken@host:8443/o/ü.git?q=1",
+}
+
+// A label printed from a stored remote must name that remote again, or `config unkeep
+// <label>` and the panel's Stop protecting answer "not kept".
+func TestRedactRemoteStaysTheSameRemote(t *testing.T) {
+	for _, x := range remoteCorpus {
+		if r := RedactRemote(x); !SameRemote(r, x) {
+			t.Errorf("RedactRemote(%q) = %q, which is not the same remote: %q against %q", x, r, NormalRemote(r), NormalRemote(x))
+		}
+	}
 }
 
 func TestRedactRemote(t *testing.T) {
@@ -167,6 +205,11 @@ func TestRedactRemote(t *testing.T) {
 		"https://user:tok/x@github.com/o/r.git":       "https://github.com/o/r.git",
 		"user:tok@github.com:o/r.git":                 "github.com:o/r.git",
 		"/data/a@b:c/repo":                            "/data/a@b:c/repo",
+		// The path stays as written, never percent-encoded.
+		"https://user:tok@gitea.example/ü/repo.git": "https://gitea.example/ü/repo.git",
+		"https://tok@host/o/my repo.git?x=1#frag":   "https://host/o/my repo.git#frag",
+		"https://user:to/ken@host/o/r@v2.git":       "https://host/o/r@v2.git",
+		"https://user:to/ken@host:8443/o/ü.git?q=1": "https://host:8443/o/ü.git",
 	} {
 		if got := RedactRemote(in); got != want {
 			t.Errorf("RedactRemote(%q) = %q, want %q", in, got, want)

@@ -164,25 +164,51 @@ func RedactRemote(u string) string {
 	p, err := url.Parse(u)
 	if err != nil { // as in normaliseRemote
 		rest := u[i+3:]
-		if j := strings.LastIndex(rest, "@"); j >= 0 {
-			rest = rest[j+1:]
-		}
+		rest = rest[credEnd(rest)+1:]
 		rest, _, _ = strings.Cut(rest, "?")
 		return u[:i+3] + rest
 	}
-	changed := false
-	if p.User != nil {
-		if _, pw := p.User.Password(); pw || p.Scheme == "http" || p.Scheme == "https" {
-			p.User, changed = nil, true
-		}
+	// Cut the string as written, as url.Parse splits it, rather than re-encode it with
+	// p.String(): a path written ü or with a space must still compare equal.
+	s, frag, hasFrag := strings.Cut(u, "#")
+	if hasFrag {
+		frag = "#" + frag
 	}
 	if p.RawQuery != "" || p.ForceQuery {
-		p.RawQuery, p.ForceQuery, changed = "", false, true
+		s, _, _ = strings.Cut(s, "?")
 	}
-	if !changed {
-		return u
+	if p.User != nil {
+		if _, pw := p.User.Password(); pw || p.Scheme == "http" || p.Scheme == "https" {
+			// A user means s is scheme://authority/path, its user before the last @ of
+			// the authority.
+			auth, path := s[i+3:], ""
+			if j := strings.Index(auth, "/"); j >= 0 {
+				auth, path = auth[:j], auth[j:]
+			}
+			s = s[:i+3] + auth[strings.LastIndex(auth, "@")+1:] + path
+		}
 	}
-	return p.String()
+	return s + frag
+}
+
+// credEnd is where the credentials of a URL Go cannot read end, given what follows
+// its "://": at the first @ followed by a host and a /, as in user:to/ken@host/o/r, so
+// an @ in the path, as in host/o/r@v2, stays. -1 when there are none.
+//
+// shortcut: a remote with no path after its host (user:p/w@host) keeps its password;
+// no git remote names a repository without a path.
+func credEnd(rest string) int {
+	for j := 0; ; {
+		k := strings.Index(rest[j:], "@")
+		if k < 0 {
+			return -1
+		}
+		j += k
+		if seg, _, slash := strings.Cut(rest[j+1:], "/"); slash && !strings.Contains(seg, "@") {
+			return j
+		}
+		j++
+	}
 }
 
 // hostPort matches a leading host with an explicit port, e.g. "github.com:22/".
@@ -204,12 +230,9 @@ func normaliseRemote(u string) string {
 				u += "#" + p.EscapedFragment() // to git, part of the path
 			}
 		} else {
-			// Not a URL Go reads, as with a / or ? in a password: what precedes the last @
-			// is taken for credentials.
+			// Not a URL Go reads, as with a / or ? in a password: see credEnd.
 			u = u[i+3:]
-			if j := strings.LastIndex(u, "@"); j >= 0 {
-				u = u[j+1:]
-			}
+			u = u[credEnd(u)+1:]
 			u, _, _ = strings.Cut(u, "?")
 			// Drop an explicit port before the scp-style colon is rewritten, or
 			// ssh://host:22/ would turn into host/22/. Only a URL has a port: in scp
