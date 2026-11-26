@@ -49,7 +49,7 @@ func cmdDoctor(args []string) error {
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	archiveDir := fs.String("archive", "", "override the synced destination folder")
 	asJSON := fs.Bool("json", false, "machine-readable output")
-	noProbe := fs.Bool("no-write-probe", false, "skip the archive write test (which creates and deletes one file)")
+	noProbe := fs.Bool("no-write-probe", false, "skip the archive write test (which writes two files in a hidden folder and removes it)")
 	exclude := fs.String("exclude", "", "additional render exclusions to take into account, on top of the config")
 	if err := parseFlags(fs, args, false); err != nil {
 		return err

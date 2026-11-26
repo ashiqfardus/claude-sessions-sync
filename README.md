@@ -236,7 +236,8 @@ would be a "backup" that never leaves the computer.
 
 The archive folder must be a real folder on disk that your sync app keeps in sync in
 both directions, and it must let the tool replace a file by renaming and keep file
-times. `claude-sessions doctor` checks both.
+times. `claude-sessions doctor` checks both, and `config set-destination` and
+`install --archive` refuse a folder that fails either.
 
 Google Drive has no desktop app on Linux. Use **Insync** (paid, the closest to Drive
 for desktop) or **rclone**: either `rclone bisync` on a systemd timer (the first run
@@ -398,7 +399,8 @@ that opens no console window), a launchd agent on macOS, and a systemd user time
 
 `install` backs up `settings.json` first (keeping the three newest backups) and leaves
 every other setting and every other tool's hooks alone. `install --archive <folder>`
-sets the destination at the same time; `install --no-sweep` skips the sweep.
+sets the destination at the same time; `install --no-sweep` skips the sweep, and
+removes one installed earlier.
 
 **Then restart Claude Code**, or run `/hooks` inside it, so open sessions pick up the
 hooks. Run `doctor` again: the hook and sweep lines should now be `+`.
@@ -1100,9 +1102,11 @@ profile other than `~/.claude` (the tool already follows `CLAUDE_CONFIG_DIR`).
 `--archive <path>` reads or writes another archive than the saved one on `push`,
 `pull`, `import`, `render`, `doctor`, `machines`, `clean`, `prune`, `install`, `ls`, `search` and
 `stats` (on the last three it implies `--archived`). `--json` gives machine-readable
-output on `push`, `import`, `render`, `doctor`, `machines`, `ls`, `search` and
-`stats`. Flags can go before or after other arguments; `--help` on any command lists
-its flags. `grep` is another name for `search`, and `-v` or `--version` for `version`.
+output on `push`, `pull`, `import`, `restore`, `render`, `clean`, `prune`, `backup`,
+`doctor`, `machines` (`--forget` too), `config`, `install`, `uninstall`, `ls`, `search`
+and `stats`; `import --profile-only --json` prints one object rather than rows. Flags
+can go before or after other arguments; `--help` on any command lists its flags. `grep`
+is another name for `search`, and `-v` or `--version` for `version`.
 
 ### Flags
 
@@ -1126,7 +1130,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `--from-hook` | `push` | Used by the per-reply hook: copy only the session named on stdin |
 | `--sweep` | `push` | Used by the sweep: marks its log line for `doctor` |
 | `--every <minutes>` | `install` | How often the sweep runs (default 30) |
-| `--no-sweep` | `install` | Install the hooks only |
+| `--no-sweep` | `install` | Install the hooks only, and remove a sweep installed earlier |
 | `--archive <folder>` | `install` | Set the destination while installing |
 | `--keep-powershell-hook` | `install`, `uninstall` | Leave the older PowerShell version's hook in place (on by default for `uninstall`) |
 | `--replace-powershell-sweep` | `install` | Also remove the older PowerShell version's scheduled task |
@@ -1147,7 +1151,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `settings.json`, `retention` | Whether `settings.json` parses; whether `cleanupPeriodDays` is unset or under 90 days |
 | `bucket naming` | Information only: `CLAUDE_CODE_PROJECT_DIR_NAME` is set, so project names are not path-based |
 | `local buckets` | Information only: projects here with memory but no sessions |
-| `archive`, `archive writable`, `archive config` | The archive is reachable and writable (`--no-write-probe` skips the test file), and whether its path is saved or only auto-detected |
+| `archive`, `archive writable`, `archive config` | The archive is reachable and writable (`--no-write-probe` skips the test, which writes two files in a hidden folder and removes it), and whether its path is saved or only auto-detected |
 | `archive files` | Reading the start of one archived file took over 3 seconds: the folder downloads files only when they are opened. After an archive check gave up with no slow read seen: how to make a cloud folder available offline, or that the folder is not responding |
 | `archive checks` | The archive checks skipped after one did not finish in 20 seconds |
 | `manifest`, `manifest format` | Archived projects `import` could not place, ignored manifest files (unreadable, or a sync app's conflict copy), and an archive still in the PowerShell tools' format |

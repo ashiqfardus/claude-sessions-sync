@@ -31,8 +31,14 @@ panel's compression and deleting wait for every computer too, as the CLI does.
     `ui`'s own launch options stay in the terminal.
 - `--json` on `pull`, `restore`, `clean`, `prune`, `backup`, `config`, `install`,
   `uninstall` and `machines --forget`. `import --json` now lists work folders too, as
-  rows with `kind: "work"`, each naming its computer.
-- `doctor` checks that the archive folder keeps file times and can replace a file by renaming, and recognises GNOME's Google Drive view, which is not a normal folder.
+  rows with `kind: "work"`, and each row names its computer (`machine`). `config
+  --json` gives the lines it would have printed (`lines`), and for `show` the settings
+  with their defaults filled in (`view`). `install` saves the sweep's interval in
+  `session-sync.json` (`sweepEvery`, -1 with `--no-sweep`), and `config show --json`
+  reports it.
+- `doctor` checks that the archive folder keeps file times and can replace a file by renaming, and recognises GNOME's Google Drive view, which is not a normal folder. `config set-destination` and `install --archive` refuse a folder that fails these checks.
+- With no archive folder saved, the tool also finds one in `~/Nextcloud`, `~/ownCloud`
+  and Insync's `~/Insync/<account>/Google Drive` or `My Drive`.
 - The README explains which sync apps work on Linux.
 - `install` adds a claude-sessions panel shortcut (Start menu, ~/Applications, or the Linux app menu) that opens the panel and closes it 10 minutes after its last tab; `uninstall` removes it.
 - `import --profile-only` brings in only the newer rules and skills.
@@ -83,19 +89,15 @@ panel's compression and deleting wait for every computer too, as the CLI does.
   records the hour of the last full push, in UTC, and changes only when that hour does,
   so a sync app keeps no extra version of it per reply. A computer on an older version
   shows "-".
-- `pull --json`, `restore --json`, `clean --json`, `prune --json` and `backup --json`;
-  `import --json` also lists each computer's work folders (`kind: "work"`) and each
-  project's computer (`machine`).
-- **`config`, `install` and `uninstall` take `--json`.** `config` prints the lines it
-  would have printed, and for `show` the settings with their defaults filled in.
-  `install` saves the sweep's interval in `session-sync.json` (`sweepEvery`, -1 with
-  `--no-sweep`), and `config show --json` reports it.
 
 ### Fixed
 - **`install` named one hook of two.** It said `hook      SessionEnd (new)`, but it adds a
   Stop hook too, which backs up after each reply; `uninstall` then removed 2 entries. It
   now says `SessionEnd + Stop`.
 - **`install --no-sweep` also removes a background sweep installed earlier.**
+- **A git remote holding a token with `@`, `/` or `?` in it, or a query, now matches
+  the same repository's plain remote** wherever remotes are compared: `import`, `config
+  keep`, `prune --project` and the panel.
 - **`doctor` sat silent on a sync folder that streams files.** Where Google Drive
   downloads each file only when it is opened, `doctor` printed nothing, not even a
   header, and waited minutes on the archive. It now prints its header and then each
