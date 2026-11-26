@@ -186,6 +186,16 @@ type Session struct {
 // Reads index/<machine>.json, falling back to sessions embedded in a shard written by
 // an older version so an existing archive keeps its listing.
 func AllSessions(dest string) ([]Session, error) {
+	shards, _, err := ReadShards(dest)
+	if err != nil {
+		return nil, err
+	}
+	return SessionsOf(dest, shards), nil
+}
+
+// SessionsOf is AllSessions with the shards already read, for a caller that reads them
+// once for several views.
+func SessionsOf(dest string, shards map[string]Shard) []Session {
 	byMachine := map[string][]Session{}
 
 	if entries, err := os.ReadDir(IndexDir(dest)); err == nil {
@@ -205,10 +215,6 @@ func AllSessions(dest string) ([]Session, error) {
 		}
 	}
 
-	shards, _, err := ReadShards(dest)
-	if err != nil {
-		return nil, err
-	}
 	for _, s := range shards {
 		if _, ok := byMachine[s.Machine]; !ok && len(s.Sessions) > 0 {
 			byMachine[s.Machine] = s.Sessions
@@ -226,7 +232,7 @@ func AllSessions(dest string) ([]Session, error) {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
-	return out, nil
+	return out
 }
 
 // WriteSessionIndex stores this machine's index rows.
@@ -461,13 +467,19 @@ const legacyMachine = "(projects.json)"
 // An unreadable projects.json is reported in the bad list, not returned as an error:
 // it used to fail every push, silently under --quiet.
 func Merged(dest string) (map[string]Project, []string, error) {
-	out := map[string]Project{}
-
 	shards, bad, err := ReadShards(dest)
 	if err != nil {
 		return nil, bad, err
 	}
+	out, lbad := MergeShards(dest, shards)
+	return out, append(bad, lbad...), nil
+}
 
+// MergeShards is Merged with the shards already read. Its bad list holds projects.json
+// when that cannot be read.
+func MergeShards(dest string, shards map[string]Shard) (map[string]Project, []string) {
+	out := map[string]Project{}
+	var bad []string
 	legacy, err := ReadLegacy(dest)
 	if err != nil {
 		bad = append(bad, "projects.json")
@@ -496,7 +508,7 @@ func Merged(dest string) (map[string]Project, []string, error) {
 			}
 		}
 	}
-	return out, bad, nil
+	return out, bad
 }
 
 // BucketNames lists the bucket folders actually present in the archive, which is not

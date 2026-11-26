@@ -117,3 +117,25 @@ func TestSameRemoteEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+// A token in a remote must never reach what NormalRemote gives, which the panel shows.
+func TestNormalRemoteDropsCredentials(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://user:tok@x@github.com/o/r.git":       "github.com/o/r",
+		"https://user:tok/x@github.com/o/r.git":       "github.com/o/r",
+		"https://github.com/o/r.git?access_token=tok": "github.com/o/r",
+		"ssh://user:tok@github.com:22/o/r.git":        "github.com/o/r",
+		"user:tok@x@github.com:o/r.git":               "github.com/o/r",
+		"user:tok/x@github.com:o/r.git":               "github.com/o/r",
+		"git@github.com:o/r@v2.git":                   "github.com/o/r@v2",
+		"https://host/a#b.git":                        "host/a#b",
+		"/srv/git/repo.git":                           "/srv/git/repo",
+	} {
+		if got := NormalRemote(in); got != want {
+			t.Errorf("NormalRemote(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if !SameRemote("https://user:tok/x@github.com/o/r.git", "git@github.com:o/r") {
+		t.Error("a remote with a token is not the same as without")
+	}
+}

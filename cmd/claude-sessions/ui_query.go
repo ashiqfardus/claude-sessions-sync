@@ -41,12 +41,17 @@ type projectOption struct {
 	Paths   []machinePath `json:"paths"`
 }
 
-// queryProjects lists every project, sorted by name, and gives each bucket's key.
+// queryProjects lists every project, sorted by name, and gives each bucket's key. homes
+// are the folders it names Home folder; nil takes each computer's own from its shard.
 func queryProjects(dest string, homes []string) ([]projectOption, map[string]string, error) {
-	projects, _, err := archive.Merged(dest)
+	shards, _, err := archive.ReadShards(dest)
 	if err != nil {
 		return nil, nil, err
 	}
+	if homes == nil {
+		homes = homesOf(shards)
+	}
+	projects, _ := archive.MergeShards(dest, shards)
 	opts, keys := groupProjects(projects, homes)
 	for i := range opts {
 		opts[i].Arg = projectArg(projects, opts[i])
@@ -124,6 +129,7 @@ func groupProjects(projects map[string]archive.Project, homes []string) ([]proje
 		sameLeaf[strings.ToLower(g.leaf)]++
 	}
 	opts := make([]projectOption, 0, len(groups))
+	homeOn := make([][]string, 0, len(groups)) // the computers whose home folder each option is
 	for _, g := range groups {
 		o := g.opt
 		sort.Strings(o.Buckets)
@@ -134,11 +140,14 @@ func groupProjects(projects map[string]archive.Project, homes []string) ([]proje
 		if o.Paths == nil {
 			o.Paths = []machinePath{}
 		}
-		home := slices.ContainsFunc(o.Paths, func(mp machinePath) bool {
-			return slices.ContainsFunc(homes, func(h string) bool { return samePath(mp.Path, h) })
-		})
+		var on []string
+		for _, mp := range o.Paths {
+			if slices.ContainsFunc(homes, func(h string) bool { return samePath(mp.Path, h) }) && !slices.Contains(on, mp.Machine) {
+				on = append(on, mp.Machine)
+			}
+		}
 		switch o.Name = g.leaf; {
-		case home:
+		case len(on) > 0:
 			o.Name = "Home folder"
 		case g.leaf == "":
 			o.Name = g.remote
@@ -147,7 +156,16 @@ func groupProjects(projects map[string]archive.Project, homes []string) ([]proje
 		case sameLeaf[strings.ToLower(g.leaf)] > 1:
 			o.Name += " (no git remote)"
 		}
-		opts = append(opts, o)
+		opts, homeOn = append(opts, o), append(homeOn, on)
+	}
+	homesNamed := 0
+	for _, on := range homeOn {
+		homesNamed += min(len(on), 1)
+	}
+	for i, on := range homeOn {
+		if homesNamed > 1 && len(on) > 0 {
+			opts[i].Name += " (" + strings.Join(on, ", ") + ")" // two computers' home folders by different names
+		}
 	}
 	sort.Slice(opts, func(i, j int) bool {
 		a, b := strings.ToLower(opts[i].Name), strings.ToLower(opts[j].Name)
@@ -156,16 +174,23 @@ func groupProjects(projects map[string]archive.Project, homes []string) ([]proje
 	return opts, keys
 }
 
-// projectArg is the first of o's paths that matchProject resolves to o: every bucket of
-// o and, beyond them, only buckets with no remote whose folder name two remote projects
-// share (Ruling P10). "" when none does.
+// projectArg is the first of o's paths, then folder names, that matchProject resolves to
+// o: every bucket of o and, beyond them, only buckets with no remote whose folder name two
+// remote projects share (Ruling P10). "" when none does.
 func projectArg(projects map[string]archive.Project, o projectOption) string {
+	var args []string
 	for _, b := range o.Buckets {
-		path := projects[b].Path
-		if path == "" {
-			continue
+		if p := projects[b].Path; p != "" {
+			args = append(args, p)
 		}
-		_, got, err := matchProject(projects, path)
+	}
+	for _, b := range o.Buckets { // a bucket no computer recorded a path for
+		if l := projects[b].Leaf; l != "" && !slices.Contains(args, l) {
+			args = append(args, l)
+		}
+	}
+	for _, arg := range args {
+		_, got, err := matchProject(projects, arg)
 		if err != nil {
 			continue
 		}
@@ -174,15 +199,14 @@ func projectArg(projects map[string]archive.Project, o projectOption) string {
 			return !slices.Contains(o.Buckets, b) && strings.TrimSpace(projects[b].Remote) != ""
 		})
 		if !missing && !other {
-			return path
+			return arg
 		}
 	}
 	return ""
 }
 
-// shardHomes is every computer's home folder, which the project list names Home folder.
-func shardHomes(dest string) []string {
-	shards, _, _ := archive.ReadShards(dest)
+// homesOf is every computer's home folder, which the project list names Home folder.
+func homesOf(shards map[string]archive.Shard) []string {
 	var homes []string
 	for _, s := range shards {
 		if s.Home != "" {
@@ -196,7 +220,8 @@ func shardHomes(dest string) []string {
 //   - Machine is "", a computer's name, or "*many" (more than one).
 //   - Age is "", 7d, 30d, over90d or over1y; State "", compressed, kept, forked or inuse.
 //   - Look is archive (the default) or local, this computer's profile.
-//   - Limit is search's: 0 is every match. The route makes it 50 when not given.
+//   - Limit is how many matching conversations search stops at: 0 for all. The route
+//     makes it 50 when not given.
 //   - Page counts from 1. Per is 10 by default, at most 100.
 type convQuery struct {
 	Text, Project, Machine, Age, State, Look, Role, Since, Until string
@@ -299,16 +324,19 @@ func queryConversations(root, dest string, q convQuery, now time.Time) (convPage
 		return convPage{}, errors.New("no archive destination: run `claude-sessions config set-destination <folder>`")
 	}
 	var pg convPage
+	var shards map[string]archive.Shard
 	keys, names := map[string]string{}, map[string]string{}
 	isKept := func(string, []string) bool { return false }
 	if dest != "" {
-		projects, bad, err := archive.Merged(dest)
+		var bad []string
+		shards, bad, err = archive.ReadShards(dest) // once, for the projects and the index
 		if err != nil {
 			return convPage{}, err
 		}
-		pg.Unreadable += len(bad)
+		projects, lbad := archive.MergeShards(dest, shards)
+		pg.Unreadable += len(bad) + len(lbad)
 		var opts []projectOption
-		opts, keys = groupProjects(projects, shardHomes(dest))
+		opts, keys = groupProjects(projects, homesOf(shards))
 		for _, o := range opts {
 			names[o.Key] = o.Name
 		}
@@ -345,20 +373,22 @@ func queryConversations(root, dest string, q convQuery, now time.Time) (convPage
 	}
 	local := map[string]time.Time{} // this computer's transcripts' last change
 	if q.Look == "archive" {
-		sessions, err := archive.AllSessions(dest)
+		for _, s := range archive.SessionsOf(dest, shards) {
+			add(strings.ToLower(s.ID), s.Bucket, s.Machine, s.Prompt, s.Project, s.Updated, s.Size)
+		}
+		deleted, bad, err := archive.LoadDeletedEach(dest)
 		if err != nil {
-			return convPage{}, err
+			pg.Unreadable++ // the folder cannot be listed: nothing is shown as deleted
 		}
-		deleted, err := archive.LoadDeleted(dest)
-		if err != nil {
-			pg.Unreadable++ // shown as if nothing were deleted
-		}
-		for _, s := range sessions {
-			id := strings.ToLower(s.ID)
-			if d, ok := deleted[id]; !ok || d.Undone {
-				add(id, s.Bucket, s.Machine, s.Prompt, s.Project, s.Updated, s.Size)
-			}
-		}
+		pg.Unreadable += len(bad) // only that file's entries are shown again
+		// A deleted conversation continued since is archived again, so shown (Ruling P50).
+		// Updated is the indexing computer's clock and DeletedAt the deleting one's: a skew
+		// larger than the gap between them can show a deleted one, or hide a continued one,
+		// until the next push indexes it again.
+		rows = slices.DeleteFunc(rows, func(r *convRow) bool {
+			d, ok := deleted[r.ID]
+			return ok && !d.Undone && !r.Updated.After(d.DeletedAt)
+		})
 		buckets, _ := claude.ListBuckets(claude.ProjectsDir(root))
 		for _, b := range buckets {
 			for _, t := range b.Transcripts {
@@ -383,24 +413,6 @@ func queryConversations(root, dest string, q convQuery, now time.Time) (convPage
 				local[id] = r.Updated
 			}
 		}
-	}
-
-	if strings.TrimSpace(q.Text) != "" {
-		o := searchOpts{ClaudeDir: root, Query: q.Text, Role: q.Role, Archived: q.Look == "archive",
-			Regexp: q.Regexp, CaseSensitive: q.CaseSensitive, All: q.All, Limit: q.Limit}
-		if o.Archived {
-			o.ArchiveDir = dest // the archive listed above
-		}
-		res, err := runSearch(quietStreams(), o)
-		if err != nil {
-			return convPage{}, err
-		}
-		hit := map[string]bool{}
-		for _, h := range res.Hits {
-			hit[strings.ToLower(h.SessionID)] = true
-		}
-		rows = slices.DeleteFunc(rows, func(r *convRow) bool { return !hit[r.ID] })
-		pg.Stopped, pg.Unreadable = res.Stopped, pg.Unreadable+res.Unreadable
 	}
 
 	rows = slices.DeleteFunc(rows, func(r *convRow) bool {
@@ -437,6 +449,30 @@ func queryConversations(root, dest string, q convQuery, now time.Time) (convPage
 		r.InUse = ok && now.Sub(t) < archiveLag
 		return q.State == "compressed" && !r.Compressed || q.State == "forked" && !r.Forked || q.State == "inuse" && !r.InUse
 	})
+
+	// Search reads only the conversations every other filter kept (Ruling P49), and
+	// Limit counts conversations: each stops at its first match.
+	if strings.TrimSpace(q.Text) != "" && len(rows) > 0 {
+		o := searchOpts{ClaudeDir: root, Query: q.Text, Role: q.Role, Archived: q.Look == "archive",
+			Regexp: q.Regexp, CaseSensitive: q.CaseSensitive, All: q.All, Limit: q.Limit,
+			Only: map[string]bool{}, FirstHit: true}
+		if o.Archived {
+			o.ArchiveDir = dest // the archive listed above
+		}
+		for _, r := range rows {
+			o.Only[r.ID] = true
+		}
+		res, err := runSearch(quietStreams(), o)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) { // no conversations folder yet: no match
+			return convPage{}, err
+		}
+		hit := map[string]bool{}
+		for _, h := range res.Hits {
+			hit[strings.ToLower(h.SessionID)] = true
+		}
+		rows = slices.DeleteFunc(rows, func(r *convRow) bool { return !hit[r.ID] })
+		pg.Stopped, pg.Unreadable = res.Stopped, pg.Unreadable+res.Unreadable
+	}
 
 	sort.Slice(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
@@ -531,8 +567,8 @@ func panelDest(root string) (dest, problem string) {
 	return dest, ""
 }
 
-// parseConvQuery reads /api/conversations' parameters. limit is search --limit's: 50
-// when not given, 0 for every match.
+// parseConvQuery reads /api/conversations' parameters. limit counts conversations: 50
+// when not given, 0 for all.
 func parseConvQuery(v url.Values) (convQuery, error) {
 	q := convQuery{Text: v.Get("q"), Project: v.Get("project"), Machine: v.Get("machine"), Age: v.Get("age"),
 		State: v.Get("state"), Look: v.Get("look"), Role: v.Get("role"), Since: v.Get("since"), Until: v.Get("until"), Limit: 50}
@@ -563,7 +599,7 @@ func (u *uiServer) apiProjects(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, map[string]string{"problem": problem})
 		return
 	}
-	opts, _, err := queryProjects(dest, shardHomes(dest))
+	opts, _, err := queryProjects(dest, nil)
 	if err != nil {
 		u.logf("PANEL: projects: %v", err)
 		sendStatus(w, http.StatusInternalServerError, map[string]string{"error": plainError(err)})

@@ -6,6 +6,7 @@ package identity
 
 import (
 	"bufio"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -128,7 +129,7 @@ func SameRemote(a, b string) bool {
 }
 
 // NormalRemote is a remote as SameRemote compares it: host and path, lower case, as in
-// github.com/o/r.
+// github.com/o/r, with no user, password or token.
 func NormalRemote(u string) string { return normaliseRemote(u) }
 
 // hostPort matches a leading host with an explicit port, e.g. "github.com:22/".
@@ -138,21 +139,37 @@ var hostPort = regexp.MustCompile(`^([^/:]+):\d+(/|$)`)
 func normaliseRemote(u string) string {
 	u = strings.TrimSpace(u)
 
-	// scheme://
-	hasScheme := false
+	// A user, password or token is never part of the identity, and a caller may show it.
 	if i := strings.Index(u, "://"); i >= 0 {
-		u = u[i+3:]
-		hasScheme = true
-	}
-	// user@ or user:password@
-	if i := strings.Index(u, "@"); i >= 0 && !strings.Contains(u[:i], "/") {
-		u = u[i+1:]
-	}
-	// Drop an explicit port before the scp-style colon is rewritten, or ssh://host:22/
-	// would turn into host/22/ and never match https://host/. Only a URL has a port:
-	// in scp form git@host:1234/repo, 1234 is the owner.
-	if hasScheme {
-		u = hostPort.ReplaceAllString(u, "$1$2")
+		if p, err := url.Parse(u); err == nil {
+			u = p.Hostname() + p.EscapedPath() // no user, port or query
+			if p.Fragment != "" {
+				u += "#" + p.EscapedFragment() // to git, part of the path
+			}
+		} else {
+			// Not a URL Go reads, as with a / in a password: what precedes the last @ is
+			// taken for credentials.
+			u, _, _ = strings.Cut(u[i+3:], "?")
+			if j := strings.LastIndex(u, "@"); j >= 0 {
+				u = u[j+1:]
+			}
+			// Drop an explicit port before the scp-style colon is rewritten, or
+			// ssh://host:22/ would turn into host/22/. Only a URL has a port: in scp
+			// form git@host:1234/repo, 1234 is the owner.
+			u = hostPort.ReplaceAllString(u, "$1$2")
+		}
+	} else {
+		// scp form, [user@]host:path: the user ends at the last @ before host:path, so an
+		// @ in the path stays.
+		cut := false
+		for j := strings.LastIndex(u, "@"); j >= 0 && !cut; j = strings.LastIndex(u[:j], "@") {
+			if strings.Contains(u[j+1:], ":") {
+				u, cut = u[j+1:], true
+			}
+		}
+		if i := strings.Index(u, "@"); !cut && i >= 0 && !strings.Contains(u[:i], "/") {
+			u = u[i+1:]
+		}
 	}
 
 	// scp-style host:path -> host/path

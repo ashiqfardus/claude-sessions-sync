@@ -37,14 +37,47 @@ func DeletedDir(dest string) string { return filepath.Join(dest, "deleted") }
 // own machine - a sync client's conflict copy - is ignored; one that cannot be read is
 // an error, as it may hold the entry that says a conversation is deleted.
 func LoadDeleted(dest string) (map[string]DeletedEntry, error) {
-	out := map[string]DeletedEntry{}
-	ents, err := os.ReadDir(DeletedDir(dest))
-	if os.IsNotExist(err) {
-		return out, nil
+	out, errs, err := loadDeleted(dest)
+	if err == nil && len(errs) > 0 {
+		err = errs[0].err
 	}
 	if err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+// LoadDeletedEach is LoadDeleted for a view, which may show what it cannot read as not
+// deleted: a file that cannot be read leaves out only its own entries, and is named.
+// Push and prune use LoadDeleted, which refuses instead.
+func LoadDeletedEach(dest string) (map[string]DeletedEntry, []string, error) {
+	out, errs, err := loadDeleted(dest)
+	if err != nil {
+		return nil, nil, err
+	}
+	var bad []string
+	for _, e := range errs {
+		bad = append(bad, e.name)
+	}
+	return out, bad, nil
+}
+
+// fileError is a deleted list that cannot be read, by its file name.
+type fileError struct {
+	name string
+	err  error
+}
+
+func loadDeleted(dest string) (map[string]DeletedEntry, []fileError, error) {
+	out := map[string]DeletedEntry{}
+	ents, err := os.ReadDir(DeletedDir(dest))
+	if os.IsNotExist(err) {
+		return out, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	var errs []fileError
 	for _, e := range ents {
 		machine, ok := strings.CutSuffix(e.Name(), ".json")
 		// push never puts a space in a machine name; a conflict copy ("LAP-1 (1)") has one.
@@ -53,7 +86,8 @@ func LoadDeleted(dest string) (map[string]DeletedEntry, error) {
 		}
 		f, err := readDeleted(filepath.Join(DeletedDir(dest), e.Name()))
 		if err != nil {
-			return nil, err
+			errs = append(errs, fileError{e.Name(), err})
+			continue
 		}
 		if !ownFile(e.Name(), &f.Machine) {
 			continue
@@ -69,7 +103,7 @@ func LoadDeleted(dest string) (map[string]DeletedEntry, error) {
 			}
 		}
 	}
-	return out, nil
+	return out, errs, nil
 }
 
 func readDeleted(path string) (deletedFile, error) {

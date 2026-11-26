@@ -107,7 +107,7 @@ func matchProject(projects map[string]archive.Project, arg string) (archive.Keep
 			fmt.Fprintf(&msg, "%q matches %d different projects; give the path of the one you mean:", arg, len(remotes))
 		}
 		for i, g := range groups {
-			label := "remote " + g.Remote
+			label := "remote " + identity.NormalRemote(g.Remote) // a token in the remote never reaches the log
 			if g.Remote == "" {
 				label = "no git remote, folder " + g.Leaf
 			}

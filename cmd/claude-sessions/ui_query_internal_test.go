@@ -141,7 +141,7 @@ func queryFixture(t *testing.T) (root, dest string) {
 
 func fixtureProjects(t *testing.T, dest string) ([]projectOption, map[string]string) {
 	t.Helper()
-	opts, keys, err := queryProjects(dest, shardHomes(dest))
+	opts, keys, err := queryProjects(dest, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,8 @@ func TestProjectArgsResolveToTheirOption(t *testing.T) {
 		qbWinWeb:            {Path: `E:\web-app`, Leaf: "web-app", Remote: "https://github.com/example-org/web-app", Machine: "LAP-2"},
 		"-home-you-web-app": {Path: "/home/you/web-app", Leaf: "web-app", Machine: "LAP-3"},
 	}
-	for name, projects := range map[string]map[string]archive.Project{"fixture": fixture, "joined": joined} {
+	noPath := map[string]archive.Project{"-x-notes": {Leaf: "notes", Machine: "LAP-1"}} // no computer recorded its path
+	for name, projects := range map[string]map[string]archive.Project{"fixture": fixture, "joined": joined, "no path": noPath} {
 		opts, _ := groupProjects(projects, nil)
 		ambiguous := map[string]bool{}
 		for _, o := range opts {
@@ -275,6 +276,9 @@ func TestProjectArgsResolveToTheirOption(t *testing.T) {
 					t.Errorf("%s: %s: matchProject(%q) also gives %s", name, o.Key, arg, b)
 				}
 			}
+		}
+		if name == "no path" && args["leaf:notes"] != "notes" {
+			t.Errorf("no path: arguments %v, want the folder name", args)
 		}
 		if name == "joined" && (len(opts) != 1 || len(opts[0].Buckets) != 3) {
 			t.Errorf("joined: %+v", opts)
@@ -460,8 +464,8 @@ func TestConversationsSkipUnreadableFiles(t *testing.T) {
 	writeFile(t, filepath.Join(archive.DeletedDir(dest), "LAP-2.json"), "{")
 	writeFile(t, filepath.Join(archive.ManifestDir(dest), "LAP-5.json"), "{")
 	pg := conversations(t, root, dest, convQuery{Per: 100})
-	if pg.Unreadable != 3 || len(pg.Rows) < 8 {
-		t.Errorf("unreadable %d, %d rows", pg.Unreadable, len(pg.Rows))
+	if pg.Unreadable != 3 || slices.Contains(rowIDs(pg), qGone) || len(pg.Rows) != 8 {
+		t.Errorf("unreadable %d, rows %v: LAP-1's deleted list must still hide %s", pg.Unreadable, rowIDs(pg), qGone)
 	}
 }
 
@@ -534,6 +538,115 @@ func TestQueryRoutes(t *testing.T) {
 		resp, body := send(t, u, http.MethodGet, u.url("/api/conversations?look=local"), cookie)
 		if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &pg) != nil || pg.Total != 2 {
 			t.Errorf("look=local with destination %q gave %d %s", c.dest, resp.StatusCode, body)
+		}
+	}
+}
+
+// Two computers' home folders by different names are two options, told apart.
+func TestProjectsNameEachHomeFolder(t *testing.T) {
+	projects := map[string]archive.Project{
+		"-Users-you": {Path: "/Users/you", Leaf: "you", Machine: "LAP-1"},
+		"-home-me":   {Path: "/home/me", Leaf: "me", Machine: "LAP-3"},
+	}
+	var names []string
+	opts, _ := groupProjects(projects, []string{"/Users/you", "/home/me"})
+	for _, o := range opts {
+		names = append(names, o.Name)
+	}
+	if want := []string{"Home folder (LAP-1)", "Home folder (LAP-3)"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("names %v, want %v", names, want)
+	}
+	if opts, _ := groupProjects(projects, []string{"/home/me"}); opts[0].Name != "Home folder" {
+		t.Errorf("one home folder is named %q", opts[0].Name)
+	}
+}
+
+// A token in a remote never reaches the log through a refusal.
+func TestMatchProjectRefusalHidesTokens(t *testing.T) {
+	_, _, err := matchProject(map[string]archive.Project{
+		"-Users-you-dev-api": {Path: "/Users/you/dev/api", Leaf: "api", Remote: "https://you:placeholder-token@github.com/example-org/api.git"},
+		"e--clients-api":     {Path: `E:\clients\api`, Leaf: "api", Remote: "git@github.com:other-org/api.git"},
+	}, "api")
+	if err == nil || strings.Contains(err.Error(), "placeholder-token") || !strings.Contains(err.Error(), "github.com/example-org/api") {
+		t.Errorf("refusal: %v", err)
+	}
+}
+
+// Search reads only the conversations the other filters kept, and its limit counts
+// conversations (Ruling P49).
+func TestSearchLimitCountsConversations(t *testing.T) {
+	root, dest := queryFixture(t)
+	// Every archived transcript has 60 matching replies: one no longer uses up the limit.
+	if pg := conversations(t, root, dest, convQuery{Text: "the same long reply", Limit: 50, Per: 100}); pg.Total != 8 || pg.Stopped {
+		t.Errorf("%d conversations, stopped %v: %v", pg.Total, pg.Stopped, rowIDs(pg))
+	}
+	if pg := conversations(t, root, dest, convQuery{Text: "the same long reply", Limit: 3}); pg.Total != 3 || !pg.Stopped {
+		t.Errorf("limit 3: %d conversations, stopped %v", pg.Total, pg.Stopped)
+	}
+
+	// 55 newer conversations on LAP-3 match too: a filter still finds the older one on LAP-2.
+	var newer []archive.Session
+	for i := 0; i < 55; i++ {
+		id := fmt.Sprintf("c3000000-0000-4000-8000-%012d", i)
+		body := queryTranscript("/home/you/notes", "Find the needle")
+		writeFile(t, filepath.Join(archive.ProjectsDir(dest), qbNotes, id+".jsonl"), body)
+		newer = append(newer, archive.Session{Bucket: qbNotes, Project: "/home/you/notes", ID: id,
+			Updated: time.Now().Add(-time.Duration(i) * time.Minute), Size: int64(len(body)), Prompt: "Find the needle"})
+	}
+	sessionIndex(t, dest, "LAP-5", newer)
+	old := filepath.Join(archive.ProjectsDir(dest), qbWinAPI, qAPI2+".jsonl")
+	writeFile(t, old, queryTranscript(`E:\clients\api`, "Trace the slow query, and find the needle"))
+	at := time.Now().AddDate(0, 0, -100)
+	if err := os.Chtimes(old, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if pg := conversations(t, root, dest, convQuery{Text: "needle", Limit: 50}); pg.Total != 50 || !pg.Stopped {
+		t.Errorf("unfiltered: %d conversations, stopped %v", pg.Total, pg.Stopped)
+	}
+	for _, q := range []convQuery{{Machine: "LAP-2"}, {Project: "remote:github.com/other-org/api"}} {
+		q.Text, q.Limit = "needle", 50
+		if got := rowIDs(conversations(t, root, dest, q)); !reflect.DeepEqual(got, []string{qAPI2}) {
+			t.Errorf("%+v gave %v", q, got)
+		}
+	}
+}
+
+// A conversation deleted and then continued is in the archive again (Ruling P50).
+func TestDeletedButContinuedIsShown(t *testing.T) {
+	root, dest := queryFixture(t)
+	ago := func(days int) time.Time { return time.Now().AddDate(0, 0, -days) }
+	writeJSON(t, filepath.Join(archive.DeletedDir(dest), "LAP-2.json"), map[string]any{
+		"schemaVersion": 1, "machine": "LAP-2", "entries": []archive.DeletedEntry{
+			{ID: qHome, DeletedAt: ago(20)}, // continued 10 days ago
+			{ID: qAPI2, DeletedAt: ago(50)}, // last changed 100 days ago
+		}})
+	got := rowIDs(conversations(t, root, dest, convQuery{Per: 100}))
+	if !slices.Contains(got, qHome) || slices.Contains(got, qAPI2) || slices.Contains(got, qGone) {
+		t.Errorf("rows %v: want %s shown, %s and %s hidden", got, qHome, qAPI2, qGone)
+	}
+}
+
+// A new archive has no conversations folder yet, nor a new profile: search finds
+// nothing, and is not an error.
+func TestSearchWithNoConversationsFolder(t *testing.T) {
+	root, dest := queryFixture(t)
+	if err := os.RemoveAll(archive.ProjectsDir(dest)); err != nil {
+		t.Fatal(err)
+	}
+	if pg := conversations(t, root, dest, convQuery{Text: "pelican", Limit: 50}); pg.Total != 0 {
+		t.Errorf("archive: %v", rowIDs(pg))
+	}
+	if err := os.RemoveAll(claude.ProjectsDir(root)); err != nil {
+		t.Fatal(err)
+	}
+	u := newTestUI(t, uiOpts{ClaudeDir: root, NoOpen: true})
+	runUI(t, u)
+	cookie := login(t, u)
+	for _, q := range []string{"q=pelican", "q=heron&look=local"} {
+		var pg convPage
+		if resp, body := send(t, u, http.MethodGet, u.url("/api/conversations?"+q), cookie); resp.StatusCode != http.StatusOK ||
+			json.Unmarshal([]byte(body), &pg) != nil || pg.Total != 0 {
+			t.Errorf("%s gave %d %s", q, resp.StatusCode, body)
 		}
 	}
 }

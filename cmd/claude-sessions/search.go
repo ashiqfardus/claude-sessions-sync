@@ -57,6 +57,10 @@ type searchOpts struct {
 	ClaudeDir, ArchiveDir, Query, Project, Role string
 	Archived, Regexp, CaseSensitive, All        bool
 	Limit                                       int
+	// The panel's: Only, when not nil, is the lower-cased ids to search, and FirstHit
+	// stops reading a conversation at its first match, so Limit counts conversations.
+	Only     map[string]bool
+	FirstHit bool
 }
 
 // searchResult is what a search found: its hits, how many sessions it read and could
@@ -123,18 +127,24 @@ func runSearch(s streams, o searchOpts) (searchResult, error) {
 			}
 		}
 		for _, tr := range b.Transcripts {
-			candidates = append(candidates, candidate{bucket: b.Name, t: tr})
+			if o.Only == nil || o.Only[strings.ToLower(tr.ID)] {
+				candidates = append(candidates, candidate{bucket: b.Name, t: tr})
+			}
 		}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].t.ModTime.After(candidates[j].t.ModTime)
 	})
 
+	matched := map[string]bool{} // with FirstHit: a conversation archived in two buckets counts once
 	for _, c := range candidates {
 		if o.Limit > 0 && len(hits) >= o.Limit {
 			break
 		}
 		tr := c.t
+		if o.FirstHit && matched[strings.ToLower(tr.ID)] {
+			continue
+		}
 
 		// One pass. The cwd is picked up from the same walk that does the matching,
 		// rather than paying for a separate head scan over every file.
@@ -172,7 +182,7 @@ func runSearch(s streams, o searchOpts) (searchResult, error) {
 					break
 				}
 			}
-			return o.Limit <= 0 || len(hits)+len(found) < o.Limit
+			return !(o.FirstHit && len(found) > 0) && (o.Limit <= 0 || len(hits)+len(found) < o.Limit)
 		})
 		cleanup()
 		if err != nil {
@@ -192,6 +202,9 @@ func runSearch(s streams, o searchOpts) (searchResult, error) {
 		// it. They are not re-sorted: sorting by time across sessions interleaved them
 		// and reprinted the same session header over and over.
 		hits = append(hits, found...)
+		if o.FirstHit && len(found) > 0 {
+			matched[strings.ToLower(tr.ID)] = true
+		}
 	}
 
 	if hits == nil {

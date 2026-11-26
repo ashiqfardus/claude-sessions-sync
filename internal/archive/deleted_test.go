@@ -77,3 +77,22 @@ func readJSON(t *testing.T, path string, v any) {
 		t.Fatal(err)
 	}
 }
+
+// A view reads every deleted list it can; push and prune refuse while one cannot be read.
+func TestLoadDeletedEachSkipsOnlyTheUnreadable(t *testing.T) {
+	dest := t.TempDir()
+	const x = "aaaaaaaa-0000-4000-8000-000000000001"
+	if err := RecordDeleted(dest, "LAP-1", []DeletedEntry{{ID: x, DeletedAt: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(DeletedDir(dest), "LAP-2.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDeleted(dest); err == nil {
+		t.Error("LoadDeleted read past a list it cannot read")
+	}
+	got, bad, err := LoadDeletedEach(dest)
+	if _, ok := got[x]; err != nil || !ok || !reflect.DeepEqual(bad, []string{"LAP-2.json"}) {
+		t.Errorf("entries %v, unreadable %v, %v", got, bad, err)
+	}
+}
