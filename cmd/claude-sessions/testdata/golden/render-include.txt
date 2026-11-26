@@ -1,0 +1,8 @@
+$ claude-sessions render --claude-dir <CLAUDE> --include notes
+exit 0
+--- stdout
+Publishing notes again (removed from <CLAUDE>/session-sync.json and <ARCHIVE>/render-exclude.txt).
+
+Rendered 1, 2 already up to date -> <ARCHIVE>/html
+Open <ARCHIVE>/html/index.html
+--- stderr

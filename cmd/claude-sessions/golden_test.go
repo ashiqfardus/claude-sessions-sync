@@ -369,6 +369,11 @@ func TestGoldenChanging(t *testing.T) {
 		{"render", pushed("render"), nil},
 		{"render-json", pushed("render", "--json"), nil},
 		{"render-exclude", pushed("render", "--exclude", "notes"), nil},
+		{"render-include", func(t *testing.T) string {
+			e := goldenFixture(t)
+			goldenStep(t, e, "render", "--exclude", "notes")
+			return runGolden(t, e, "render", "--include", "notes")
+		}, nil},
 		{"render-force", pushed("render", "--force"), nil},
 
 		{"import-dry-run", imports("--dry-run"), nil},

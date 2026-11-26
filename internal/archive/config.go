@@ -198,31 +198,137 @@ func SaveConfig(claudeRoot string, c Config) error {
 // SharedExcludePath is <archive>/render-exclude.txt: one pattern per line.
 func SharedExcludePath(dest string) string { return filepath.Join(dest, "render-exclude.txt") }
 
+const sharedExcludeHeader = "# Projects whose sessions are not published as pages, on any machine.\n" +
+	"# One case-insensitive fragment of a project path or bucket name per line.\n" +
+	"# A line starting with ! publishes that project again, on every machine.\n"
+
+// readShared splits render-exclude.txt, which other computers write and so is not
+// trusted, into patterns and inclusions (the "!" lines). A "!" with nothing after it
+// is ignored.
+func readShared(dest string) (patterns, incl []string) {
+	raw, err := os.ReadFile(SharedExcludePath(dest))
+	if err != nil {
+		return nil, nil
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		p := strings.TrimSpace(line)
+		if p == "" || strings.HasPrefix(p, "#") {
+			continue
+		}
+		if strings.HasPrefix(p, "!") {
+			if p = strings.TrimSpace(p[1:]); p != "" {
+				incl = append(incl, p)
+			}
+			continue
+		}
+		patterns = append(patterns, p)
+	}
+	return patterns, incl
+}
+
+func hasFold(list []string, p string) bool {
+	for _, q := range list {
+		if strings.EqualFold(q, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// writeShared saves the shared list: patterns, then inclusions.
+func writeShared(dest string, patterns, incl []string) error {
+	body := sharedExcludeHeader
+	for _, p := range patterns {
+		body += p + "\n"
+	}
+	for _, p := range incl {
+		body += "!" + p + "\n"
+	}
+	return WriteFileAtomic(SharedExcludePath(dest), []byte(body), 0o644)
+}
+
+func without(list []string, drop []string) []string {
+	out := []string{}
+	for _, p := range list {
+		if !hasFold(drop, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func trimmed(list []string) []string {
+	var out []string
+	for _, p := range list {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ExcludeRender adds patterns to this machine's renderExclude and saves it, and takes
+// back any "!" line for them in render-exclude.txt, so the exclusion is not overruled.
+func ExcludeRender(claudeRoot, dest string, patterns []string) error {
+	patterns = trimmed(patterns)
+	cfg, err := LoadConfig(claudeRoot)
+	if err != nil {
+		return err
+	}
+	if pats, incl := readShared(dest); len(without(incl, patterns)) != len(incl) {
+		if err := writeShared(dest, pats, without(incl, patterns)); err != nil {
+			return err
+		}
+	}
+	cfg.RenderExclude = append(cfg.RenderExclude, patterns...)
+	return SaveConfig(claudeRoot, cfg)
+}
+
+// IncludeRender publishes projects again: each pattern must be left out now, here or in
+// the shared list. It is removed from both, and a "!" line goes to the shared list so
+// the other computers drop it from their own config too.
+func IncludeRender(claudeRoot, dest string, patterns []string) error {
+	patterns = trimmed(patterns)
+	cfg, err := LoadConfig(claudeRoot)
+	if err != nil {
+		return err
+	}
+	shared, incl := readShared(dest)
+	for _, p := range patterns {
+		if !hasFold(cfg.RenderExclude, p) && !hasFold(shared, p) {
+			return fmt.Errorf("%s is not left out of pages", p)
+		}
+	}
+	if err := writeShared(dest, without(shared, patterns), append(without(incl, patterns), patterns...)); err != nil {
+		return err
+	}
+	cfg.RenderExclude = without(cfg.RenderExclude, patterns)
+	return SaveConfig(claudeRoot, cfg)
+}
+
 // RenderExcludes returns the exclusions in force for an archive: this machine's
 // renderExclude, the archive's shared list, and any one-off extras.
 //
 // renderExclude used to live only in each machine's own config, while rendering
 // covers the whole shared archive - so a second machine without the setting rendered
 // the excluded project straight back. With persist, this machine's patterns are added
-// to the shared list so every machine honours them. It only ever adds: to publish a
-// project again, remove its line from render-exclude.txt as well as from the config.
+// to the shared list so every machine honours them. To publish a project again, use
+// IncludeRender: its "!" line in the shared list beats a pattern still in another
+// machine's config, and with persist that machine drops the pattern.
 func RenderExcludes(claudeRoot, dest string, extra []string, persist bool) []string {
 	cfg, _ := LoadConfig(claudeRoot)
-
-	var shared []string
-	if raw, err := os.ReadFile(SharedExcludePath(dest)); err == nil {
-		for _, line := range strings.Split(string(raw), "\n") {
-			if p := strings.TrimSpace(line); p != "" && !strings.HasPrefix(p, "#") {
-				shared = append(shared, p)
-			}
-		}
-	}
+	shared, incl := readShared(dest)
 
 	seen := map[string]bool{}
 	var all, added []string
+	dropped := false
 	add := func(p string, local bool) {
 		p = strings.TrimSpace(p)
 		if p == "" || seen[strings.ToLower(p)] {
+			return
+		}
+		if hasFold(incl, p) {
+			dropped = dropped || local
 			return
 		}
 		seen[strings.ToLower(p)] = true
@@ -238,14 +344,15 @@ func RenderExcludes(claudeRoot, dest string, extra []string, persist bool) []str
 		add(p, true)
 	}
 
-	if persist && len(added) > 0 {
-		if _, err := os.Stat(dest); err == nil {
-			body := "# Projects whose sessions are not published as pages, on any machine.\n" +
-				"# One case-insensitive fragment of a project path or bucket name per line.\n"
-			for _, p := range all {
-				body += p + "\n"
+	if persist {
+		if dropped {
+			cfg.RenderExclude = without(cfg.RenderExclude, incl)
+			_ = SaveConfig(claudeRoot, cfg)
+		}
+		if len(added) > 0 {
+			if _, err := os.Stat(dest); err == nil {
+				_ = writeShared(dest, all, incl)
 			}
-			_ = WriteFileAtomic(SharedExcludePath(dest), []byte(body), 0o644)
 		}
 	}
 

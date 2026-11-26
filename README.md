@@ -357,8 +357,13 @@ Each name matches, ignoring case, any project whose path or archive name contain
 (so `api` would withhold every project with "api" in its path). This removes pages
 already published for those projects, and the exclusion holds on every computer that
 pushes to the archive. It is saved in `session-sync.json`
-(`renderExclude`) and in the archive's `render-exclude.txt`. To publish one again,
-remove it from both. The transcripts themselves stay in the archive.
+(`renderExclude`) and in the archive's `render-exclude.txt`. The transcripts themselves
+stay in the archive.
+
+To publish a project again, run `claude-sessions render --include client-acme`. It takes
+the project off the list here and in `render-exclude.txt`, and records that in the
+archive, so a computer that still lists it drops it at its next push instead of
+withholding the pages again. `--exclude` later undoes it.
 
 ## Step 7: Find an old conversation
 
@@ -1054,7 +1059,7 @@ its flags. `grep` is another name for `search`, and `-v` or `--version` for `ver
 | `--archived` | `ls`, `search`, `stats` | Read the archive instead of this computer |
 | `--project`, `--since`, `--until`, `--limit` | `ls` | Narrow the list |
 | `--all`, `--role`, `--regexp`, `--case-sensitive`, `--project`, `--limit` | `search` | Narrow the search |
-| `--force`, `--exclude <text>`, `--quiet` | `render` | Rebuild current pages; withhold projects (saved, on every computer); print nothing on success |
+| `--force`, `--exclude <text>`, `--include <text>`, `--quiet` | `render` | Rebuild current pages; withhold projects (saved, on every computer); publish them again; print nothing on success |
 | `--forget <name>` | `machines` | Retire a computer |
 | `--older-than <N>d`, `--project <name or path>`, `--yes`, `--undo` | `prune` | Choose by age or project; delete; take conversations off the deleted list |
 | `--out <folder>` | `backup` | Where to write the zip |

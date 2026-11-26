@@ -10,6 +10,7 @@ age rule wait until all of them have, and `doctor` names any they wait for.
 
 ### Added
 - `import --profile-only` brings in only the newer rules and skills.
+- **`render --include <project>`** publishes a project's pages again, on every computer.
 - **`claude-sessions prune` deletes chosen conversations from the archive.** Choose them
   with `--older-than <N>d`, `--project` or conversation IDs; without `--yes` it only
   lists them, with their size. It deletes every copy, loose or zipped, in each

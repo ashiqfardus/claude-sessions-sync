@@ -16,6 +16,7 @@ func cmdRender(args []string) error {
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	archiveDir := fs.String("archive", "", "override the synced destination folder")
 	force := fs.Bool("force", false, "re-render pages that are already up to date")
+	include := fs.String("include", "", "comma-separated text; publishes projects left out by --exclude again, on every machine")
 	exclude := fs.String("exclude", "", "comma-separated text; projects matching any of it are unpublished and stay so on every machine (saved)")
 	quiet := fs.Bool("quiet", false, "print nothing on success")
 	asJSON := fs.Bool("json", false, "machine-readable output")
@@ -23,7 +24,7 @@ func cmdRender(args []string) error {
 		return err
 	}
 
-	o := renderOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, Force: *force, Quiet: *quiet, Exclude: splitList(*exclude)}
+	o := renderOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, Force: *force, Quiet: *quiet, Exclude: splitList(*exclude), Include: splitList(*include)}
 	if !*asJSON {
 		_, err := runRender(stdStreams(), o)
 		return err
@@ -39,6 +40,7 @@ type renderOpts struct {
 	ClaudeDir, ArchiveDir string
 	Force, Quiet          bool
 	Exclude               []string // saved, then excluded on every machine
+	Include               []string // taken off the exclusions, on every machine
 }
 
 // runRender renders the archive's pages and returns what it did, saying so on s.Out
@@ -63,18 +65,22 @@ func runRender(s streams, o renderOpts) (render.Result, error) {
 	// next push - within 30 minutes, by the sweep - with nothing said: pages the user
 	// had withdrawn for privacy were quietly published again.
 	if len(o.Exclude) > 0 {
-		cfg, err := archive.LoadConfig(root)
-		if err != nil {
-			return render.Result{}, err
-		}
-		cfg.RenderExclude = append(cfg.RenderExclude, o.Exclude...)
-		if err := archive.SaveConfig(root, cfg); err != nil {
+		if err := archive.ExcludeRender(root, dest, o.Exclude); err != nil {
 			return render.Result{}, err
 		}
 		if !o.Quiet {
 			fmt.Fprintf(s.Out, "Excluding %s from now on (saved to %s and %s).\n",
 				strings.Join(o.Exclude, ", "), archive.ConfigPath(root), archive.SharedExcludePath(dest))
 			fmt.Fprintln(s.Out, "To publish again, remove it from renderExclude there and from render-exclude.txt.")
+		}
+	}
+	if len(o.Include) > 0 {
+		if err := archive.IncludeRender(root, dest, o.Include); err != nil {
+			return render.Result{}, err
+		}
+		if !o.Quiet {
+			fmt.Fprintf(s.Out, "Publishing %s again (removed from %s and %s).\n",
+				strings.Join(o.Include, ", "), archive.ConfigPath(root), archive.SharedExcludePath(dest))
 		}
 	}
 	patterns := archive.RenderExcludes(root, dest, nil, true)
