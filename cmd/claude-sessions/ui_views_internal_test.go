@@ -495,6 +495,20 @@ func TestActivityTitlesAndRotatedLog(t *testing.T) {
 	}
 }
 
+// E2E L-6: Never delete's view carries when keep-days was last set, so the page can show
+// the grace-day note after a reload; null when it never was.
+func TestRetentionCarriesKeepDaysSetAt(t *testing.T) {
+	_, dest := queryFixture(t)
+	if b, _ := json.Marshal(queryRetention(dest)); !strings.Contains(string(b), `"keepDaysSetAt":null`) {
+		t.Errorf("never set: %s", b)
+	}
+	at := time.Date(2026, 11, 26, 9, 30, 0, 0, time.UTC)
+	writeJSON(t, archive.RetentionPath(dest), archive.Retention{KeepDays: 90, KeepDaysSetAt: &at})
+	if v := queryRetention(dest); v.KeepDaysSetAt == nil || !v.KeepDaysSetAt.Equal(at) {
+		t.Errorf("set at %v: %+v", at, v)
+	}
+}
+
 func TestArchiveLabel(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	for _, c := range []struct{ dest, provider, display string }{
@@ -1001,6 +1015,24 @@ func TestHoldoutsWithNoManifest(t *testing.T) {
 	}
 	if r := queryRetention(dest); !reflect.DeepEqual(r.Holdouts, every) {
 		t.Errorf("holdouts %v", r.Holdouts)
+	}
+}
+
+// Minor m6: Health and Settings say the same of a scheduled backup that cannot be
+// checked, and of one that is set up but broken: never "isn't set up" for the first.
+func TestSweepSentencesMatchSettings(t *testing.T) {
+	for _, c := range []struct {
+		c    check
+		want string
+	}{
+		{check{"sweep", levelWarn, "exec: \"launchctl\": executable file not found in $PATH", ""}, sweepUncheckable},
+		{check{"sweep", levelFail, "launchd: points at a gone program", "x. Re-run `claude-sessions install` to register it again."}, sweepBroken},
+		{check{"sweep", levelWarn, "launchd: not loaded", "A session killed abruptly will not be archived until the next manual push."},
+			"The scheduled backup isn't set up, so a session that's cut off waits for the next backup."},
+	} {
+		if got := plainCheck(c.c).Text; got != c.want {
+			t.Errorf("%s %q gave %q, want %q", c.c.Level, c.c.Detail, got, c.want)
+		}
 	}
 }
 

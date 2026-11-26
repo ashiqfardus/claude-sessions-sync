@@ -451,8 +451,11 @@ type keepRow struct {
 }
 
 type retentionView struct {
-	KeepDays int       `json:"keepDays"`
-	Keep     []keepRow `json:"keep"`
+	KeepDays int `json:"keepDays"`
+	// KeepDaysSetAt is when keep-days last changed, nil if never: deleting by age waits a
+	// day after each computer's next backup from then.
+	KeepDaysSetAt *time.Time `json:"keepDaysSetAt"`
+	Keep          []keepRow  `json:"keep"`
 	// Holdouts are the computers deleting waits for, which do not honour the deleted list.
 	Holdouts            []string `json:"holdouts"`
 	RetentionUnreadable bool     `json:"retentionUnreadable"` // nothing then shows as kept
@@ -467,7 +470,7 @@ func queryRetention(dest string) retentionView {
 	for i := range opts {
 		opts[i].Arg = projectArg(projects, opts[i])
 	}
-	return retentionView{KeepDays: ret.KeepDays, Keep: keepRows(ret, projects, opts, archive.SessionsOf(dest, shards)),
+	return retentionView{KeepDays: ret.KeepDays, KeepDaysSetAt: ret.KeepDaysSetAt, Keep: keepRows(ret, projects, opts, archive.SessionsOf(dest, shards)),
 		Holdouts:            holdouts(shards, bad, err, func(s archive.Shard) bool { return s.HonorsDeleted }),
 		RetentionUnreadable: rerr != nil, Unreadable: len(bad) + len(lbad) + errCount(err) + errCount(rerr)}
 }
@@ -923,6 +926,13 @@ func listAfter(detail, sep string) string {
 	return list
 }
 
+// What Health and Settings say of the scheduled backup: hostagent's own words hold
+// paths and commands.
+const (
+	sweepUncheckable = "The scheduled backup can't be checked on this computer."
+	sweepBroken      = "The scheduled backup is set up but won't back anything up. Set it up again."
+)
+
 // plainChecks gives each of doctor's checks the page's words. A detail is read only for
 // a number or the computers it names, never shown: it can hold a path.
 var plainChecks = map[string]func(c check) healthItem{
@@ -1119,7 +1129,10 @@ var plainChecks = map[string]func(c check) healthItem{
 		case levelOK:
 			return say(c, "The scheduled backup is set up.", "", "")
 		case levelFail:
-			return say(c, "The scheduled backup is set up but won't back anything up. Set it up again.", "Set up again", toSettings)
+			return say(c, sweepBroken, "Set up again", toSettings)
+		}
+		if c.Advice == "" { // doctor could not ask the system: its error is the detail
+			return say(c, sweepUncheckable, "", "")
 		}
 		return say(c, "The scheduled backup isn't set up, so a session that's cut off waits for the next backup.", "Set up again", toSettings)
 	},
@@ -1187,9 +1200,9 @@ func querySettings(root string, fromShortcut bool, now time.Time, profiles *prof
 	v.Sweep.Installed, v.Sweep.Mechanism = sw.Installed, sw.Mechanism
 	switch { // the system's own words hold paths and commands
 	case err != nil:
-		v.Sweep.Problem = "The scheduled backup can't be checked on this computer."
+		v.Sweep.Problem = sweepUncheckable
 	case sw.Problem != "":
-		v.Sweep.Problem = "The scheduled backup is set up but won't back anything up. Set it up again."
+		v.Sweep.Problem = sweepBroken
 	}
 	dest, problem := panelDest(root)
 	if problem != "" {
