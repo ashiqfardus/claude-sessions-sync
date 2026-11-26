@@ -315,9 +315,10 @@ absolute one. If it says the parent does not exist, your cloud drive is not moun
 
 If you skip this step, the tool looks for an existing `claude-sessions` folder by
 itself: in `<drive>:\My Drive` on Windows, in `~/Google Drive`, `~/OneDrive`,
-`~/Dropbox`, iCloud Drive and `~/Sync`, and on macOS under `~/Library/CloudStorage`,
-where it uses one only when exactly one account holds it. With none yet, it picks the
-only Google Drive it can see. Setting it yourself is better: every run then agrees.
+`~/Dropbox`, iCloud Drive, `~/Sync`, `~/Nextcloud` and `~/ownCloud`, and in each
+Insync account on Linux or under `~/Library/CloudStorage` on macOS, where it uses one
+only when exactly one account holds it. With none yet, it picks the only Google Drive
+it can see. Setting it yourself is better: every run then agrees.
 
 ## Step 3: See what state you are in
 

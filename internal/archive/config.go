@@ -408,14 +408,19 @@ func detectLists() (candidates, driveParents, cloudDrives []string) {
 			candidates = append(candidates, filepath.Join(append(parts, archiveFolderName)...))
 		}
 
-		// Insync (Linux) keeps one folder per account.
+		// Insync (Linux) keeps one folder per account. As for CloudStorage below,
+		// choosing between two accounts would be a guess.
+		var insync []string
 		for _, name := range []string{"Google Drive", "My Drive"} {
-			m, _ := filepath.Glob(filepath.Join(home, "Insync", "*", name))
+			m, _ := filepath.Glob(filepath.Join(home, "Insync", "*", name, archiveFolderName))
 			for _, d := range m {
 				if isDir(d) {
-					candidates = append(candidates, filepath.Join(d, archiveFolderName))
+					insync = append(insync, d)
 				}
 			}
+		}
+		if len(insync) == 1 {
+			candidates = append(candidates, insync[0])
 		}
 
 		// On macOS, Drive for desktop and OneDrive mount one folder per account under

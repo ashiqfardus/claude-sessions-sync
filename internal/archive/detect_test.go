@@ -150,3 +150,25 @@ func TestDetectedFoldersIncludesDetect(t *testing.T) {
 		t.Fatalf("detected %q not in %v", d, DetectedFolders())
 	}
 }
+
+// Insync keeps one folder per account: two holding an archive is the same guess.
+func TestDetectRefusesTwoInsyncArchives(t *testing.T) {
+	home := fakeHome(t)
+	mkdirs(t,
+		filepath.Join(home, "Insync", "a@example.com", "Google Drive", archiveFolderName),
+		filepath.Join(home, "Insync", "b@example.com", "My Drive", archiveFolderName))
+
+	if got := detected(t); got != "" {
+		t.Fatalf("detected %q, want none when two Insync accounts hold an archive", got)
+	}
+}
+
+func TestDetectUsesTheOnlyInsyncAccountWithAnArchive(t *testing.T) {
+	home := fakeHome(t)
+	want := filepath.Join(home, "Insync", "b@example.com", "My Drive", archiveFolderName)
+	mkdirs(t, filepath.Join(home, "Insync", "a@example.com", "Google Drive"), want)
+
+	if got := detected(t); got != want {
+		t.Fatalf("detected %q, want %q", got, want)
+	}
+}

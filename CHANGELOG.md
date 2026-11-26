@@ -24,6 +24,9 @@ All notable changes to this project are documented here. This project follows
   as one that "cannot replace a file by renaming", when a sync client or antivirus held
   the test file for more than about 0.3 s, or a cached read showed the old bytes just
   after the rename. The check now waits about a second and reads again.
+- **With two Insync accounts that each hold a `claude-sessions` folder, the tool picked
+  one by itself** when no folder was saved. It now picks neither, as it already did for
+  two accounts under `~/Library/CloudStorage`; `config set-destination` chooses.
 
 ## [0.7.0] - 2026-11-26
 

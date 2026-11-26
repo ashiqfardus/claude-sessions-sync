@@ -166,9 +166,7 @@ func TestDetectListsLinuxSyncApps(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	for _, d := range []string{"Insync/a@b/Google Drive", "Insync/a@b/My Drive"} {
-		os.MkdirAll(filepath.Join(home, d), 0o755)
-	}
+	os.MkdirAll(filepath.Join(home, "Insync/a@b/My Drive", archiveFolderName), 0o755)
 	c, _, _ := detectLists()
 	has := func(rel string) bool {
 		for _, x := range c {
@@ -178,7 +176,7 @@ func TestDetectListsLinuxSyncApps(t *testing.T) {
 		}
 		return false
 	}
-	for _, r := range []string{"Insync/a@b/Google Drive", "Insync/a@b/My Drive", "Nextcloud", "ownCloud"} {
+	for _, r := range []string{"Insync/a@b/My Drive", "Nextcloud", "ownCloud"} {
 		if !has(r) {
 			t.Errorf("missing %s", r)
 		}
