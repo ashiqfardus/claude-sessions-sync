@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"testing"
 )
 
@@ -134,8 +135,11 @@ func TestListFoldersSkipsBrokenAndLoopLinks(t *testing.T) {
 	if os.Symlink(filepath.Join(root, "gone"), filepath.Join(root, "broken")) != nil {
 		t.Skip("symlinks unavailable")
 	}
-	os.Symlink(filepath.Join(root, "loop2"), filepath.Join(root, "loop1"))
-	os.Symlink(filepath.Join(root, "loop1"), filepath.Join(root, "loop2"))
+	for _, l := range [][2]string{{"loop2", "loop1"}, {"loop1", "loop2"}} { // else the loop goes untested
+		if err := os.Symlink(filepath.Join(root, l[0]), filepath.Join(root, l[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if l := ListFolders(root, false); !reflect.DeepEqual(names(l), []string{"real"}) {
 		t.Fatalf("%v", names(l))
 	}
@@ -151,5 +155,29 @@ func TestListFoldersPermissionDenied(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(d, 0o755) })
 	if l := ListFolders(d, false); l.Error != cantOpen {
 		t.Fatalf("%+v", l)
+	}
+}
+
+// A huge folder is read until the cap is passed, not to its end.
+func TestListFoldersStopsReadingPastTheCap(t *testing.T) {
+	oldMax, oldRead := maxEntries, readDir
+	maxEntries = 3
+	read := 0
+	readDir = func(f *os.File, n int) ([]os.DirEntry, error) {
+		e, err := oldRead(f, n)
+		read += len(e)
+		return e, err
+	}
+	t.Cleanup(func() { maxEntries, readDir = oldMax, oldRead })
+	root := t.TempDir()
+	for i := 0; i < 20; i++ {
+		os.Mkdir(filepath.Join(root, strconv.Itoa(i)), 0o755)
+	}
+	if l := ListFolders(root, false); len(l.Entries) != 3 || !l.Truncated || read >= 20 {
+		t.Fatalf("read %d entries of 20 for a cap of 3: %+v", read, l)
+	}
+	empty := t.TempDir()
+	if l := ListFolders(empty, false); l.Error != "" || len(l.Entries) != 0 {
+		t.Fatalf("an empty folder: %+v", l)
 	}
 }

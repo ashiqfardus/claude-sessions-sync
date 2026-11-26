@@ -129,6 +129,19 @@ func TestRefusesMissingCookie(t *testing.T) {
 	}
 }
 
+// Minor PA M4: a page on another 127.0.0.1 port can set a cookie of the panel's name
+// with a longer Path, which the browser sends first. The panel's own still opens it.
+func TestPlantedCookieDoesNotLockOut(t *testing.T) {
+	s := newTestServer(t, nil)
+	planted := "cs_panel_" + strconv.Itoa(s.Port()) + "=" + strings.Repeat("0", 64)
+	if w := do(s, http.MethodGet, "/api/ping", "Cookie", planted+"; "+login(t, s)); w.Code != http.StatusOK || w.Body.String() != "pong" {
+		t.Errorf("with a planted cookie first: %d %q", w.Code, w.Body.String())
+	}
+	if w := do(s, http.MethodGet, "/api/ping", "Cookie", planted+"; "+planted); w.Code != http.StatusForbidden {
+		t.Errorf("two wrong cookies: %d, want 403", w.Code)
+	}
+}
+
 func TestKeyWorksOnce(t *testing.T) {
 	now := time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)
 	s := newTestServer(t, &now)

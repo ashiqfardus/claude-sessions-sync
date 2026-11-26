@@ -2,6 +2,7 @@
 package panel
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,6 +28,9 @@ type FolderList struct {
 // maxEntries is a variable so a test can lower it.
 var maxEntries = 2000
 
+// readDir is (*os.File).ReadDir; a test counts what it reads.
+var readDir = (*os.File).ReadDir
+
 const cantOpen = "You can't open this folder."
 
 // ListFolders lists the subfolder names of an absolute path and nothing else: no
@@ -47,27 +51,34 @@ func ListFolders(path string, hidden bool) FolderList {
 		return out
 	}
 	defer f.Close()
-	ents, err := f.ReadDir(-1)
-	if err != nil && len(ents) == 0 {
-		out.Error = cantOpen
-		return out
-	}
-	for _, e := range ents {
-		name := e.Name()
-		if !hidden && strings.HasPrefix(name, ".") {
-			continue
-		}
-		full := filepath.Join(path, name)
-		// Following a linked folder is a navigation convenience, not a jail: the real
-		// access control is the route's localhost and token guard.
-		if e.Type()&os.ModeSymlink != 0 {
-			if st, err := os.Stat(full); err != nil || !st.IsDir() {
+	// In batches, until more than the cap are found: a huge folder is not read to its end.
+	for read := 0; len(out.Entries) <= maxEntries; {
+		ents, err := readDir(f, maxEntries+1)
+		read += len(ents)
+		for _, e := range ents {
+			name := e.Name()
+			if !hidden && (strings.HasPrefix(name, ".") || isHidden(e)) {
 				continue
 			}
-		} else if !e.IsDir() {
-			continue
+			full := filepath.Join(path, name)
+			// Following a linked folder is a navigation convenience, not a jail: the real
+			// access control is the route's localhost and token guard.
+			if e.Type()&os.ModeSymlink != 0 {
+				if st, err := os.Stat(full); err != nil || !st.IsDir() {
+					continue
+				}
+			} else if !e.IsDir() {
+				continue
+			}
+			out.Entries = append(out.Entries, Folder{name, full})
 		}
-		out.Entries = append(out.Entries, Folder{name, full})
+		if err != nil { // io.EOF at the end
+			if read == 0 && err != io.EOF {
+				out.Error = cantOpen
+				return out
+			}
+			break
+		}
 	}
 	sort.Slice(out.Entries, func(i, j int) bool {
 		a, b := strings.ToLower(out.Entries[i].Name), strings.ToLower(out.Entries[j].Name)

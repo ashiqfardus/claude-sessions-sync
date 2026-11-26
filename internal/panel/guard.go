@@ -9,6 +9,17 @@ import (
 
 func same(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
 
+// hasCookie reports whether any cookie of the panel's name holds its value: a page on
+// another 127.0.0.1 port can set one of that name, which the browser may send first.
+func (s *Server) hasCookie(r *http.Request) bool {
+	for _, c := range r.Cookies() {
+		if c.Name == s.cookieName() && same(c.Value, s.cookie) {
+			return true
+		}
+	}
+	return false
+}
+
 // serve checks every request, in order: the Host (against DNS rebinding), the session
 // cookie (except for the key swap and /launch), then Origin and token on anything but
 // GET. Only then does it route.
@@ -34,7 +45,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	// /k/ has no cookie yet; /launch has its own checks (secret, no Origin) instead.
 	if !strings.HasPrefix(p, "/k/") && p != "/launch" {
-		if c, err := r.Cookie(s.cookieName()); err != nil || !same(c.Value, s.cookie) {
+		if !s.hasCookie(r) {
 			if p == "/" {
 				plain(w, http.StatusForbidden, usedLink)
 			} else {
