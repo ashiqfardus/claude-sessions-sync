@@ -216,3 +216,20 @@ func TestRedactRemote(t *testing.T) {
 		}
 	}
 }
+
+// Go cannot read these URLs and no path follows their host, so no @ is followed by
+// host/: the last @ still ends the credentials, as it did before 0.7.1.
+func TestRemoteWithNoPathAfterItsHostDropsItsPassword(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://user:p%zz@host":   "https://host",
+		"https://user:to/ken@host": "https://host",
+		"https://p%zz@host":        "https://host",
+	} {
+		if got := RedactRemote(in); got != want {
+			t.Errorf("RedactRemote(%q) = %q, want %q", in, got, want)
+		}
+		if got := NormalRemote(in); got != "host" {
+			t.Errorf("NormalRemote(%q) = %q, want host", in, got)
+		}
+	}
+}

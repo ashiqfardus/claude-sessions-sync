@@ -193,15 +193,17 @@ func RedactRemote(u string) string {
 
 // credEnd is where the credentials of a URL Go cannot read end, given what follows
 // its "://": at the first @ followed by a host and a /, as in user:to/ken@host/o/r, so
-// an @ in the path, as in host/o/r@v2, stays. -1 when there are none.
+// an @ in the path, as in host/o/r@v2, stays. With no such @, nothing follows the host
+// (user:p%zz@host): at the last @, unless the text before the first / is a host[:port],
+// whose path holds each @. -1 when there are none.
 //
-// shortcut: a remote with no path after its host (user:p/w@host) keeps its password;
-// no git remote names a repository without a path.
+// shortcut: user:1234/x@host reads as host:port/path and keeps its password; no git
+// remote names a repository without a path.
 func credEnd(rest string) int {
 	for j := 0; ; {
 		k := strings.Index(rest[j:], "@")
 		if k < 0 {
-			return -1
+			break
 		}
 		j += k
 		if seg, _, slash := strings.Cut(rest[j+1:], "/"); slash && !strings.Contains(seg, "@") {
@@ -209,7 +211,14 @@ func credEnd(rest string) int {
 		}
 		j++
 	}
+	if first, _, _ := strings.Cut(rest, "/"); hostOnly.MatchString(first) {
+		return -1
+	}
+	return strings.LastIndex(rest, "@")
 }
+
+// hostOnly matches a host with an optional port and nothing else.
+var hostOnly = regexp.MustCompile(`^[^:@]*(:\d+)?$`)
 
 // hostPort matches a leading host with an explicit port, e.g. "github.com:22/".
 // A port is a transport detail, not part of the repository's identity.
