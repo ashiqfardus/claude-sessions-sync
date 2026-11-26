@@ -72,7 +72,15 @@ func cmdDoctor(args []string) error {
 type doctorOpts struct {
 	ClaudeDir, ArchiveDir, Exclude string
 	NoProbe                        bool
+	// Light reads no archived conversation: the panel's health runs it on each Overview
+	// load. A check it leaves out says so, as info inFullCheck. No flag sets it.
+	Light bool
+	// ProfileDiffs replaces profileDiffs, as the panel's cache of it does; nil for none.
+	ProfileDiffs func(dest string) []string
 }
+
+// inFullCheck is the detail of a check Light leaves to the full doctor.
+const inFullCheck = "checked in the full check"
 
 // runDoctor runs the checks, printing each on s.Out as it finishes, and returns the
 // report: with errChecksFailed when a check fails.
@@ -198,6 +206,8 @@ func runDoctor(s streams, o doctorOpts) (doctorReport, error) {
 		return report(s, checks)
 	case reach.Level == levelWarn:
 		giveUp()
+	case o.Light: // timing a read means reading a transcript
+		add(check{"archive files", levelInfo, inFullCheck, ""})
 	case streamingHint(dest):
 		hint(streamingAdvice)
 	}
@@ -258,8 +268,12 @@ func runDoctor(s streams, o doctorOpts) (doctorReport, error) {
 	slow("zips", func(add func(check)) { add(zipCheck(root, dest)) })
 	slow("prune", func(add func(check)) { add(pruneCheck(root, dest)) })
 
+	diff := profileDiffs
+	if o.ProfileDiffs != nil {
+		diff = o.ProfileDiffs
+	}
 	slow("profile", func(add func(check)) {
-		if diffs := profileDiffs(dest); len(diffs) > 0 {
+		if diffs := diff(dest); len(diffs) > 0 {
 			add(check{"profile", levelInfo,
 				fmt.Sprintf("%d rule/skill file(s) differ between machines: %s", len(diffs), profileSummary(diffs)),
 				"`import --update-profile` takes the newest. Every machine's own copy stays in the archive under profile/machines/."})
@@ -457,7 +471,7 @@ func runDoctor(s streams, o doctorOpts) (doctorReport, error) {
 	// --- is anything actually being archived? ---------------------------------
 	// The hook and the sweep both exit 0 by design, so a scheduler's "last result"
 	// only ever proves that something started. Ask the question directly.
-	slow("archived", func(add func(check)) { add(archivedCheck(root, dest, buckets)) })
+	slow("archived", func(add func(check)) { add(archivedCheck(root, dest, buckets, o.Light)) })
 	for _, c := range liveness(root) {
 		add(c)
 	}
@@ -593,9 +607,18 @@ const quietPushAge = 3 * time.Hour
 
 // archivedCheck and liveness check the two things that show the archive is really
 // being kept up to date: sessions that ended a while ago are in it, and pushes are
-// succeeding. Only the first reads the archive.
-func archivedCheck(root, dest string, buckets []claude.Bucket) check {
+// succeeding. Only the first reads the archive. light reads no zip's index: a session
+// only one could show archived leaves the check to the full doctor, unless another is
+// missing anyway.
+func archivedCheck(root, dest string, buckets []claude.Bucket, light bool) check {
 	var pending []string
+	unsure, index := 0, readZipIndex
+	if light {
+		index = func(string) (map[string]work.PackEntry, error) {
+			unsure++
+			return nil, errors.New("not read by the light check")
+		}
+	}
 	cutoff := time.Now().Add(-archiveLag)
 	held, zips := loadHeld(root), loadZipCompared(root)
 	deleted, _ := archive.LoadDeleted(dest)
@@ -614,8 +637,10 @@ func archivedCheck(root, dest string, buckets []claude.Bucket) check {
 			// whose copy is saved as a fork beside the archived one, or one another
 			// bucket's archived copy holds in whole, nor one whose copy is zipped.
 			fork := archive.StatOrNil(forkPath(dest, b.Name, t.ID, machineName()))
+			was := unsure
 			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) &&
-				!held.leftTo(dest, b.Name, t.ID, src) && !(dst == nil && zipCovers(dest, b.Name, t.ID, src, zips)) {
+				!held.leftTo(dest, b.Name, t.ID, src) && !(dst == nil && zipCovers(dest, b.Name, t.ID, src, zips, index)) &&
+				unsure == was {
 				pending = append(pending, b.Name+"/"+t.ID)
 			}
 		}
@@ -625,6 +650,9 @@ func archivedCheck(root, dest string, buckets []claude.Bucket) check {
 			fmt.Sprintf("%d session(s) that ended over %d minutes ago are not in the archive, e.g. %s",
 				len(pending), int(archiveLag.Minutes()), pending[0]),
 			"Neither the hook nor the sweep has copied them. Run `claude-sessions push` and read ~/.claude/session-sync.log for why."}
+	}
+	if unsure > 0 {
+		return check{"archived", levelInfo, inFullCheck, ""}
 	}
 	return check{"archived", levelOK, fmt.Sprintf("every session that ended over %d minutes ago is in the archive", int(archiveLag.Minutes())), ""}
 }
@@ -666,9 +694,9 @@ func liveness(root string) []check {
 
 // zipCovers reports whether bucket's zip of session id holds the local transcript src.
 // A pair push left zipped, both unchanged since, is taken from its record with no read:
-// most zipped conversations are still on this machine. Otherwise the zip's index is
-// judged by the rule a loose copy is: its entry is the same, newer or longer.
-func zipCovers(dest, bucket, id string, src os.FileInfo, zips *zipRecord) bool {
+// most zipped conversations are still on this machine. Otherwise the zip's index, read
+// by index, is judged by the rule a loose copy is: its entry is the same, newer or longer.
+func zipCovers(dest, bucket, id string, src os.FileInfo, zips *zipRecord, index func(string) (map[string]work.PackEntry, error)) bool {
 	zp := zippedCopy(dest, bucket, id)
 	zst, err := os.Lstat(zp)
 	if zp == "" || err != nil {
@@ -679,7 +707,7 @@ func zipCovers(dest, bucket, id string, src os.FileInfo, zips *zipRecord) bool {
 		c.ZipSize == zst.Size() && archive.SameMTime(c.ZipMTime, zst.ModTime()) {
 		return true
 	}
-	ents, err := readZipIndex(zp)
+	ents, err := index(zp)
 	e, ok := ents[id+".jsonl"]
 	if err != nil || !ok {
 		return false
@@ -825,20 +853,27 @@ var secretNames = map[string]bool{
 // look where the files are is worse than none: it reports "nothing found".
 func findSecrets(dest string) []string {
 	var found []string
+	// From the folder a link at dest names: WalkDir follows no link, not even its root.
+	// The links inside stay unfollowed.
+	root, err := filepath.EvalSymlinks(dest)
+	if err != nil {
+		root = dest
+	}
 	// Errors are ignored per-entry so one unreadable subdirectory cannot suppress the
 	// whole check.
-	_ = filepath.WalkDir(dest, func(path string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		if d.IsDir() {
-			if path != dest && d.Name() == "html" && filepath.Dir(path) == dest {
+			if path != root && d.Name() == "html" && filepath.Dir(path) == root {
 				return filepath.SkipDir // rendered output, never a credential store
 			}
 			return nil
 		}
 		if secretNames[strings.ToLower(d.Name())] {
-			found = append(found, path)
+			rel, _ := filepath.Rel(root, path)
+			found = append(found, filepath.Join(dest, rel)) // as the caller named the archive
 		}
 		return nil
 	})

@@ -96,7 +96,10 @@ type uiServer struct {
 	stopAfterJob bool
 	lastClean    *cleanSummary
 
-	health healthFlight // one doctor at a time (Ruling P15)
+	// One doctor, and one walk of the archive, at a time (Ruling P15); their answers are kept.
+	health   flight[[]healthItem]
+	storage  flight[storageView]
+	profiles profileCache
 }
 
 func newUIServer(o uiOpts) (*uiServer, error) {
@@ -330,7 +333,7 @@ func (u *uiServer) routes() []panel.Route {
 		{Method: get, Path: "/api/retention", Handler: u.withArchive(func(dest string) any { return queryRetention(dest) })},
 		{Method: get, Path: "/api/deleted", Handler: u.withArchive(func(dest string) any { return queryDeleted(u.root, dest) })},
 		{Method: get, Path: "/api/settings", Handler: u.apiSettings},
-		{Method: get, Path: "/api/profile", Handler: u.withArchive(func(dest string) any { return queryProfile(dest) })},
+		{Method: get, Path: "/api/profile", Handler: u.withArchive(func(dest string) any { return queryProfile(dest, &u.profiles) })},
 		{Method: get, Path: "/read/", Prefix: true, Handler: u.readPage},
 	}
 }

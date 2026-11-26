@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -163,7 +164,7 @@ func TestComputerStates(t *testing.T) {
 	for _, s := range []archive.Shard{
 		{Machine: "LAP-1", ToolVersion: version, ReadsZips: true, HonorsDeleted: true, LastPush: now.Add(-5 * time.Hour)},
 		{Machine: "LAP-2", ToolVersion: "0.6.0", ReadsZips: true, HonorsDeleted: true, LastPush: now.Add(-time.Hour)},
-		{Machine: "LAP-3", ReadsZips: true, HonorsDeleted: true, LastPush: now.Add(-3 * time.Hour)},
+		{Machine: "LAP-3", ReadsZips: true, HonorsDeleted: true, LastPush: now.Add(-4 * time.Hour)},
 		{Machine: "LAP-4", HonorsDeleted: true, LastPush: now.Add(-time.Hour)},
 		{Machine: "LAP-5", ReadsZips: true, HonorsDeleted: true}, // no lastPush: unknown (Ruling P33)
 	} {
@@ -201,17 +202,59 @@ func TestComputerStates(t *testing.T) {
 	if sum.Conversations != 8 || got["LAP-1"].Conversations != 5 || got["LAP-2"].Conversations != 2 || got["LAP-3"].Conversations != 2 {
 		t.Errorf("conversations %d, per computer %+v", sum.Conversations, got)
 	}
+	newer := now.Add(-time.Minute).Truncate(time.Second) // the shard newer than the log
+	writeShard(t, dest, archive.Shard{Machine: "LAP-1", ReadsZips: true, HonorsDeleted: true, LastPush: newer})
+	if sum = querySummary(root, now); !sum.LastBackup.Equal(newer) || !sum.Computers[0].LastPush.Equal(newer) {
+		t.Errorf("last backup %v, this computer's row %v, want %v", sum.LastBackup, sum.Computers[0].LastPush, newer)
+	}
 }
 
-// Every check name in doctor.go has a plain sentence.
+// Ruling I2: a shard's lastPush is cut to the hour, so it is judged by the hour's end;
+// this computer's log gives the exact time.
+func TestComputerStateAtTheHourBoundary(t *testing.T) {
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "LAP-1")
+	at := time.Date(2026, 11, 26, 8, 0, 0, 0, time.UTC) // a push between 08:00 and 08:59
+	shards := map[string]archive.Shard{
+		"LAP-1": {Machine: "LAP-1", ReadsZips: true, HonorsDeleted: true, LastPush: at},
+		"LAP-2": {Machine: "LAP-2", ReadsZips: true, HonorsDeleted: true, LastPush: at},
+	}
+	logged := at.Add(30 * time.Minute)
+	for _, c := range []struct {
+		now        time.Time
+		lap1, lap2 string
+	}{
+		{logged.Add(2 * time.Hour), "ok", "ok"},
+		{logged.Add(2*time.Hour + time.Second), "late", "ok"},
+		{at.Add(3 * time.Hour), "late", "ok"},
+		{at.Add(3*time.Hour + time.Second), "late", "late"},
+	} {
+		got := map[string]string{}
+		for _, cv := range computersOf(shards, nil, logged, c.now) {
+			got[cv.Name] = cv.State
+		}
+		if got["LAP-1"] != c.lap1 || got["LAP-2"] != c.lap2 {
+			t.Errorf("at %s: %v, want LAP-1 %s, LAP-2 %s", c.now.Format("15:04:05"), got, c.lap1, c.lap2)
+		}
+	}
+}
+
+// Every check name in the package's code has a plain sentence.
 func TestEveryDoctorCheckHasPlainWords(t *testing.T) {
-	src, err := os.ReadFile("doctor.go")
-	if err != nil {
-		t.Fatal(err)
+	files, _ := filepath.Glob("*.go")
+	var src []byte
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src = append(src, b...)
 	}
 	names := regexp.MustCompile(`check\{"([^"]+)"`).FindAllStringSubmatch(string(src), -1)
 	if len(names) < 25 {
-		t.Fatalf("found %d check names in doctor.go", len(names))
+		t.Fatalf("found %d check names in %d files", len(names), len(files))
 	}
 	for _, m := range names {
 		if plainChecks[m[1]] == nil {
@@ -235,13 +278,15 @@ func TestHealthWordsForEveryDoctorRun(t *testing.T) {
 	appendLog(t, root, time.Now().Add(-5*time.Hour), "PUSH: 1 copied, 0 unchanged, 1 session(s), 1 project(s)")
 	appendLog(t, root, time.Now(), "WARN: x: operation not permitted")
 	t.Setenv("CLAUDE_CODE_PROJECT_DIR_NAME", "pinned")
+	idleHere(t, root)
 
 	noDest, gone := t.TempDir(), t.TempDir()
 	writeJSON(t, archive.ConfigPath(gone), map[string]string{"destination": filepath.Join(gone, "missing")})
 	seen := map[string]bool{}
 	for _, r := range []string{root, noDest, gone} {
-		for _, probe := range []bool{true, false} {
-			rep, _ := runDoctor(quietStreams(), doctorOpts{ClaudeDir: r, NoProbe: probe})
+		for _, o := range []doctorOpts{{NoProbe: true}, {}, {NoProbe: true, Light: true}} {
+			o.ClaudeDir = r
+			rep, _ := runDoctor(quietStreams(), o)
 			for _, c := range rep.Checks {
 				seen[c.Name] = true
 				if plainChecks[c.Name] == nil {
@@ -277,7 +322,8 @@ func TestHealthOrderAndOneDoctorAtATime(t *testing.T) {
 	}
 
 	// Ruling P15: callers that come while a doctor runs get that run's result.
-	var f healthFlight
+	var f flight[[]healthItem]
+	none := []healthItem{}
 	var runs atomic.Int32
 	release := make(chan struct{})
 	started := make(chan struct{})
@@ -288,11 +334,11 @@ func TestHealthOrderAndOneDoctorAtATime(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got[i] = f.do(func() []healthItem {
+			got[i] = f.do("", none, func() ([]healthItem, time.Duration) {
 				runs.Add(1)
 				close(started)
 				<-release
-				return []healthItem{{Name: "archive"}}
+				return []healthItem{{Name: "archive"}}, 0
 			})
 		}()
 	}
@@ -308,13 +354,46 @@ func TestHealthOrderAndOneDoctorAtATime(t *testing.T) {
 			t.Errorf("a caller got %+v", g)
 		}
 	}
-	// A later caller starts a new run, also after one that panicked.
-	func() {
-		defer func() { recover() }()
-		f.do(func() []healthItem { panic("doctor") })
+
+	// A result is kept for its key as long as its run said, until a drop, which also
+	// forgets a run in progress.
+	keep := func() ([]healthItem, time.Duration) { runs.Add(1); return []healthItem{{Name: "kept"}}, time.Hour }
+	for _, key := range []string{"a", "a", "b", "b"} {
+		f.do(key, none, keep)
+	}
+	if runs.Load() != 3 {
+		t.Errorf("%d runs for keys a, a, b, b; want 1 + 2", runs.Load())
+	}
+	f.drop()
+	f.do("b", none, keep)
+	inRun := make(chan struct{})
+	go func() {
+		<-inRun
+		f.drop()
 	}()
-	if g := f.do(func() []healthItem { runs.Add(1); return nil }); g != nil || runs.Load() != 2 {
-		t.Errorf("a second run gave %v, %d runs", g, runs.Load())
+	f.do("c", none, func() ([]healthItem, time.Duration) { close(inRun); time.Sleep(20 * time.Millisecond); return keep() })
+	f.do("c", none, keep)
+	if runs.Load() != 6 {
+		t.Errorf("%d runs after the drops, want 6", runs.Load())
+	}
+
+	// A run that panics lets its waiters go with the fallback, [] and not null, and the
+	// next caller runs again.
+	release, started = make(chan struct{}), make(chan struct{})
+	go func() {
+		defer func() { recover() }()
+		f.do("p", none, func() ([]healthItem, time.Duration) { close(started); <-release; panic("doctor") })
+	}()
+	<-started
+	waited := make(chan []healthItem)
+	go func() { waited <- f.do("p", none, keep) }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	if g := <-waited; g == nil || len(g) != 0 {
+		t.Errorf("a caller waiting on a panic got %#v", g)
+	}
+	if g := f.do("p", none, keep); len(g) != 1 || runs.Load() != 7 {
+		t.Errorf("after a panic: %v, %d runs", g, runs.Load())
 	}
 }
 
@@ -523,6 +602,11 @@ func TestViewsSkipUnreadableFiles(t *testing.T) {
 	getJSON(t, u, cookie, "/api/summary", &s)
 	var st storageView
 	getJSON(t, u, cookie, "/api/storage", &st)
+	var ret retentionView
+	getJSON(t, u, cookie, "/api/retention", &ret)
+	if !st.RetentionUnreadable || !ret.RetentionUnreadable {
+		t.Errorf("retention.json not read, yet storage %v and retention %v", st.RetentionUnreadable, ret.RetentionUnreadable)
+	}
 	if s.Conversations != 8 || s.Unreadable != 2 || st.Unreadable != 3 || st.KeepDays != 0 {
 		t.Errorf("summary %d conversations, %d unreadable; storage %d unreadable", s.Conversations, s.Unreadable, st.Unreadable)
 	}
@@ -541,15 +625,280 @@ func TestSettingsAndProfileViews(t *testing.T) {
 	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-1", "CLAUDE.md"), "one")
 	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-2", "CLAUDE.md"), "the other")
 	os.Chtimes(filepath.Join(profileDir(dest), "machines", "LAP-1", "CLAUDE.md"), old, old)
-	set := querySettings(root, true, time.Now())
+	set := querySettings(root, true, time.Now(), &profileCache{})
 	if set.Archive == nil || set.Config == nil || set.Config.InUse != dest || len(set.WorkFolders) != 1 || set.ProfileDiffs != 1 ||
 		!set.FromShortcut || set.Version != version || set.LogPath != filepath.Join(root, "session-sync.log") ||
 		set.Pages.Pages != 1 || set.Pages.Transcripts == 0 || len(set.Computers) != 3 || set.Sweep.Mechanism == "" {
 		t.Errorf("settings %+v", set)
 	}
-	diffs := queryProfile(dest)
+	diffs := queryProfile(dest, &profileCache{})
 	if len(diffs) != 1 || diffs[0].File != "CLAUDE.md" || diffs[0].Newest != "LAP-2" || len(diffs[0].Copies) != 2 ||
 		diffs[0].Copies[1].Size != int64(len("the other")) {
 		t.Errorf("profile %+v", diffs)
+	}
+}
+
+// idleHere gives this computer its own copy of qZipped, idle 200 days: only the zip's
+// index can show the archive holds it.
+func idleHere(t *testing.T, root string) {
+	t.Helper()
+	p := filepath.Join(claude.ProjectsDir(root), qbWeb, qZipped+".jsonl")
+	writeFile(t, p, queryTranscript("/Users/you/dev/web-app", "Map the stock tables"))
+	old := time.Now().AddDate(0, 0, -200)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Ruling P54: the panel's health reads no archived conversation: no transcript's head,
+// no zip's index. What it leaves out says so.
+func TestLightHealthReadsNoConversation(t *testing.T) {
+	isolateUI(t)
+	root, _ := queryFixture(t)
+	idleHere(t, root)
+	indexes, unpacked := zipReads(t)
+	var heads atomic.Int32
+	hook(t, &readHead, func(string) { heads.Add(1) })
+
+	items, keep := queryHealth(root, t.Logf, &profileCache{})
+	if heads.Load() != 0 || len(*indexes)+len(*unpacked) != 0 {
+		t.Errorf("light health read %d heads, zips %v %v", heads.Load(), *indexes, *unpacked)
+	}
+	byName := map[string]healthItem{}
+	for _, it := range items {
+		byName[it.Name] = it
+	}
+	for _, name := range []string{"archived", "archive files"} {
+		if it := byName[name]; it.Level != "info" || !strings.Contains(it.Text, "full check") {
+			t.Errorf("%s: %+v", name, it)
+		}
+	}
+	if keep != time.Minute {
+		t.Errorf("kept %v", keep)
+	}
+	// The full doctor reads both, so the light one really left them out.
+	rep, _ := runDoctor(quietStreams(), doctorOpts{ClaudeDir: root, NoProbe: true})
+	if heads.Load() == 0 || len(*indexes) == 0 {
+		t.Errorf("the full doctor read %d heads and zips %v: the fixture proves nothing", heads.Load(), *indexes)
+	}
+	for _, c := range rep.Checks {
+		if c.Detail == inFullCheck {
+			t.Errorf("the full doctor left %q to itself", c.Name)
+		}
+	}
+	// A conversation missing from the archive is still found without a zip read.
+	writeFile(t, filepath.Join(claude.ProjectsDir(root), qbWeb, "e5000000-0000-4000-8000-000000000001.jsonl"), "{}\n")
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(filepath.Join(claude.ProjectsDir(root), qbWeb, "e5000000-0000-4000-8000-000000000001.jsonl"), old, old)
+	if c := archivedCheck(root, rootDest(t, root), buckets(t, root), true); c.Level != levelFail {
+		t.Errorf("light archived check %+v", c)
+	}
+}
+
+func rootDest(t *testing.T, root string) string {
+	t.Helper()
+	dest, _, err := archive.ResolveDestination(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dest
+}
+
+func buckets(t *testing.T, root string) []claude.Bucket {
+	t.Helper()
+	b, err := claude.ListBuckets(claude.ProjectsDir(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// Ruling I1: reloads on a drive that stopped answering leave one blocked read, not one
+// each: the answer is kept 5 minutes.
+func TestHealthOnAStuckDriveLeavesOneReadBehind(t *testing.T) {
+	root, _ := queryFixture(t)
+	u := newTestUI(t, uiOpts{ClaudeDir: root, NoOpen: true})
+	var blocked atomic.Int32
+	release := make(chan struct{})
+	hook(t, &archiveLimit, 50*time.Millisecond)
+	hook(t, &beforeArchive, func(string) {
+		blocked.Add(1)
+		<-release
+		blocked.Add(-1)
+	})
+	t.Cleanup(func() { close(release) }) // before the hooks are put back
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			u.healthNow()
+		}()
+	}
+	wg.Wait()
+	var items []healthItem
+	for i := 0; i < 5; i++ {
+		items = u.healthNow()
+	}
+	if n := blocked.Load(); n != 1 {
+		t.Errorf("%d reads of the archive left blocked after 10 loads, want 1", n)
+	}
+	if !slices.ContainsFunc(items, func(it healthItem) bool { return it.Name == "archive checks" }) {
+		t.Errorf("no skipped checks said: %+v", items)
+	}
+	u.health.mu.Lock()
+	kept := time.Until(u.health.last.until)
+	u.health.mu.Unlock()
+	if kept < 4*time.Minute {
+		t.Errorf("kept %v once the archive stopped answering, want 5 minutes", kept)
+	}
+}
+
+// Ruling I4: an archive folder that is a link is walked; a link inside it is not.
+func TestLinkedArchiveIsWalked(t *testing.T) {
+	root, dest := queryFixture(t)
+	link := filepath.Join(t.TempDir(), "archive-link")
+	if err := os.Symlink(dest, link); err != nil {
+		t.Skip("no symbolic links here:", err)
+	}
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "big.bin"), strings.Repeat("x", 5000))
+	if err := os.MkdirAll(filepath.Join(dest, "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dest, "work", "linked")); err != nil {
+		t.Fatal(err)
+	}
+	plain := queryStorage(root, time.Now(), nil)
+	writeJSON(t, archive.ConfigPath(root), map[string]string{"destination": link})
+	linked := queryStorage(root, time.Now(), nil)
+	if linked.Sizes != plain.Sizes || linked.Sizes.Conversations == 0 || linked.Sizes.Work != 0 || linked.ZipFrees != plain.ZipFrees {
+		t.Errorf("through the link %+v, directly %+v", linked.Sizes, plain.Sizes)
+	}
+	secret := filepath.Join("projects", qbWeb, ".credentials.json")
+	writeFile(t, filepath.Join(dest, secret), "{}")
+	writeFile(t, filepath.Join(outside, ".credentials.json"), "{}") // behind the link inside: not the archive's
+	if got := findSecrets(link); !reflect.DeepEqual(got, []string{filepath.Join(link, secret)}) {
+		t.Errorf("secrets through the link: %v", got)
+	}
+}
+
+// Ruling I5: Storage walks once in 5 minutes, until a panel job ends; the duplicates
+// check it shows is always this run's last.
+func TestStorageKeptUntilAJobEnds(t *testing.T) {
+	root, dest := queryFixture(t)
+	u := newTestUI(t, uiOpts{ClaudeDir: root, NoOpen: true})
+	runUI(t, u)
+	cookie := login(t, u)
+	var a, b, c storageView
+	getJSON(t, u, cookie, "/api/storage", &a)
+	writeFile(t, filepath.Join(dest, "work", "LAP-1", "x.txt"), strings.Repeat("w", 1000))
+	u.mu.Lock()
+	u.lastClean = &cleanSummary{Copies: 2}
+	u.mu.Unlock()
+	getJSON(t, u, cookie, "/api/storage", &b)
+	if b.Sizes != a.Sizes || a.Duplicates != nil || b.Duplicates == nil || b.Duplicates.Copies != 2 {
+		t.Errorf("kept: %+v then %+v, duplicates %v", a.Sizes, b.Sizes, b.Duplicates)
+	}
+	u.dropCaches()
+	getJSON(t, u, cookie, "/api/storage", &c)
+	if c.Sizes.Work != a.Sizes.Work+1000 {
+		t.Errorf("after a job: work %d, want %d", c.Sizes.Work, a.Sizes.Work+1000)
+	}
+}
+
+// Ruling I3: copies of different sizes differ unread; one size is compared by hash; the
+// panel's cache reads nothing while every copy's size and time stand.
+func TestProfileDiffsReadOnlyWhatTheyMust(t *testing.T) {
+	_, dest := queryFixture(t)
+	copyOf := func(machine, rel string) string {
+		return filepath.Join(profileDir(dest), "machines", machine, filepath.FromSlash(rel))
+	}
+	for _, f := range []struct{ machine, rel, body string }{
+		{"LAP-1", "CLAUDE.md", "one"}, {"LAP-2", "CLAUDE.md", "three"}, // sizes differ
+		{"LAP-1", "RTK.md", "same"}, {"LAP-2", "RTK.md", "same"},
+		{"LAP-1", "skills/x/SKILL.md", "abcd"}, {"LAP-2", "skills/x/SKILL.md", "abce"}, // one size
+		{"LAP-3", "only.md", "alone"},
+	} {
+		writeFile(t, copyOf(f.machine, f.rel), f.body)
+	}
+	want := []string{"CLAUDE.md", "skills/x/SKILL.md"}
+	if got := profileDiffs(dest); !reflect.DeepEqual(got, want) {
+		t.Errorf("diffs %v, want %v", got, want)
+	}
+	var c profileCache
+	if got := c.diffs(dest); !reflect.DeepEqual(got, want) {
+		t.Errorf("cached diffs %v", got)
+	}
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		return // chmod 000 does not stop reads
+	}
+	var all []string
+	filepath.WalkDir(profileDir(dest), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			all = append(all, p)
+		}
+		return nil
+	})
+	for _, p := range all {
+		os.Chmod(p, 0)
+	}
+	t.Cleanup(func() {
+		for _, p := range all {
+			os.Chmod(p, 0o644)
+		}
+	})
+	if got := profileDiffs(dest); !slices.Contains(got, "CLAUDE.md") {
+		t.Errorf("copies of different sizes were read to compare: %v", got)
+	}
+	if got := c.diffs(dest); !reflect.DeepEqual(got, want) {
+		t.Errorf("a second load read the copies: %v", got)
+	}
+	// A copy of another size, its time put back, is compared again.
+	os.Chmod(copyOf("LAP-2", "RTK.md"), 0o644)
+	st, _ := os.Stat(copyOf("LAP-2", "RTK.md"))
+	writeFile(t, copyOf("LAP-2", "RTK.md"), "changed")
+	os.Chtimes(copyOf("LAP-2", "RTK.md"), st.ModTime(), st.ModTime())
+	if got := c.diffs(dest); !slices.Contains(got, "RTK.md") {
+		t.Errorf("a changed copy was not compared again: %v", got)
+	}
+}
+
+// Minor m3: a manifest that cannot be read may hold back every computer.
+func TestHoldoutsWithNoManifest(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("chmod 000 does not stop reads here")
+	}
+	root, dest := queryFixture(t)
+	if err := os.Chmod(archive.ManifestDir(dest), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(archive.ManifestDir(dest), 0o755) })
+	every := []string{everyComputer}
+	if st := queryStorage(root, time.Now(), nil); !reflect.DeepEqual(st.ZipWaitsFor, every) || st.Unreadable == 0 {
+		t.Errorf("zip waits for %v, unreadable %d", st.ZipWaitsFor, st.Unreadable)
+	}
+	if r := queryRetention(dest); !reflect.DeepEqual(r.Holdouts, every) {
+		t.Errorf("holdouts %v", r.Holdouts)
+	}
+}
+
+// Minor m4: one of a thing takes the singular.
+func TestPlainWordsSingular(t *testing.T) {
+	for _, c := range []struct {
+		c    check
+		want string
+	}{
+		{check{"archived", levelFail, "1 session(s) that ended over 40 minutes ago are not in the archive, e.g. b/x", ""}, "1 conversation that ended over 40 minutes ago isn't in the archive."},
+		{check{"profile", levelInfo, "1 rule/skill file(s) differ between machines: CLAUDE.md", ""}, "1 rule and skill file differs between your computers."},
+		{check{"profile", levelOK, "1 rule/skill file(s) archived", ""}, "1 rule and skill file is in the archive."},
+		{check{"manifest", levelWarn, "1 of 4 archived bucket(s) have no usable identity: x", ""}, "1 project folder in the archive holds notes only, so the other computers can't tell where it belongs."},
+		{check{"local buckets", levelInfo, "1 local bucket(s) hold memory but no transcripts", ""}, "1 project folder on this computer holds notes but no conversations."},
+		{check{"html", levelOK, "1 page(s) for 1 transcript(s)", ""}, "1 readable page, up to date."},
+		{check{"archived", levelFail, "3 session(s) that ended over 40 minutes ago are not in the archive, e.g. b/x", ""}, "3 conversations that ended over 40 minutes ago aren't in the archive."},
+	} {
+		if got := plainCheck(c.c).Text; !strings.HasPrefix(got, c.want) {
+			t.Errorf("%s %q gave %q", c.c.Name, c.c.Detail, got)
+		}
 	}
 }

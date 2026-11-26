@@ -12,6 +12,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -521,33 +523,77 @@ func printProfile(w io.Writer, res profileResult, dryRun bool) {
 
 // profileDiffs lists profile files that more than one machine has archived with
 // different content: what `import --update-profile` would settle by taking the newest.
-func profileDiffs(dest string) []string {
+func profileDiffs(dest string) []string { return diffsOf(profileCopies(dest)) }
+
+// profileCopy is one machine's archived copy of a rule or skill file.
+type profileCopy struct {
+	Machine string    `json:"machine"`
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"modTime"`
+	path    string
+}
+
+// profileCopies is every machine's copy of each profile file, by the file's path
+// relative to the profile: names, sizes and times, no content.
+func profileCopies(dest string) map[string][]profileCopy {
+	out := map[string][]profileCopy{}
 	machines, _ := os.ReadDir(filepath.Join(profileDir(dest), "machines"))
-	first := map[string][]byte{}
-	differs := map[string]bool{}
 	for _, m := range machines {
 		dir := filepath.Join(profileDir(dest), "machines", m.Name())
 		if !archive.IsRealDir(dir) {
 			continue
 		}
 		for _, rel := range profileFiles(dir) {
-			body, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
-			if err != nil {
-				continue
-			}
-			if prev, seen := first[rel]; !seen {
-				first[rel] = body
-			} else if !bytes.Equal(prev, body) {
-				differs[rel] = true
+			p := filepath.Join(dir, filepath.FromSlash(rel))
+			if st, err := os.Lstat(p); err == nil && st.Mode().IsRegular() {
+				out[rel] = append(out[rel], profileCopy{m.Name(), st.Size(), st.ModTime(), p})
 			}
 		}
 	}
-	out := make([]string, 0, len(differs))
-	for rel := range differs {
-		out = append(out, rel)
+	return out
+}
+
+// diffsOf is the files whose copies differ, sorted. Copies of different sizes differ
+// unread; copies of one size are compared by a hash read in a stream, never held whole.
+func diffsOf(copies map[string][]profileCopy) []string {
+	out := []string{}
+	for rel, cs := range copies {
+		if len(cs) < 2 {
+			continue
+		}
+		differ := slices.ContainsFunc(cs, func(c profileCopy) bool { return c.Size != cs[0].Size })
+		first := ""
+		for _, c := range cs {
+			if differ {
+				break
+			}
+			if h, ok := fileHash(c.path); !ok { // unreadable: compared with no copy
+				continue
+			} else if first == "" {
+				first = h
+			} else {
+				differ = h != first
+			}
+		}
+		if differ {
+			out = append(out, rel)
+		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+func fileHash(path string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", false
+	}
+	return string(h.Sum(nil)), true
 }
 
 // profileSummary names the top-level items: "CLAUDE.md, skills/graphify, ...".

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -90,7 +91,7 @@ type summaryView struct {
 	Computers     []computerView `json:"computers"`
 	Conversations int            `json:"conversations"`
 	WorkFolders   int            `json:"workFolders"`
-	LastBackup    time.Time      `json:"lastBackup"` // this computer's last PUSH: line; zero for none
+	LastBackup    time.Time      `json:"lastBackup"` // this computer's row's LastPush, or its log's; zero for none
 	Unreadable    int            `json:"unreadable"`
 }
 
@@ -107,6 +108,11 @@ func querySummary(root string, now time.Time) summaryView {
 	rows, _, n := archivedNow(dest, shards)
 	v.Unreadable = len(bad) + n + errCount(err)
 	v.Computers = computersOf(shards, rows, v.LastBackup, now)
+	for _, c := range v.Computers {
+		if c.This {
+			v.LastBackup = c.LastPush // the same time the computer's row shows
+		}
+	}
 	ids := map[string]bool{}
 	for _, s := range rows {
 		ids[strings.ToLower(s.ID)] = true
@@ -126,7 +132,9 @@ func errCount(err error) int {
 }
 
 // computersOf is every computer with a shard, by name. This computer's last backup is
-// the newer of its shard's and logged, its log's last PUSH: line.
+// the newer of its shard's and logged, its log's last PUSH: line. A shard's time is cut
+// to the hour, so it is judged by the end of its hour: ok up to 3 hours after it, as
+// doctor's quietPushAge.
 func computersOf(shards map[string]archive.Shard, rows []archive.Session, logged, now time.Time) []computerView {
 	count := map[string]int{}
 	for _, s := range rows {
@@ -136,13 +144,14 @@ func computersOf(shards map[string]archive.Shard, rows []archive.Session, logged
 	for name, s := range shards {
 		c := computerView{Name: name, Version: s.ToolVersion, This: strings.EqualFold(name, machineName()),
 			Ready: s.ReadsZips && s.HonorsDeleted, LastPush: s.LastPush, Conversations: count[name]}
+		latest := c.LastPush.Add(time.Hour)
 		if c.This && logged.After(c.LastPush) {
-			c.LastPush = logged
+			c.LastPush, latest = logged, logged
 		}
 		switch {
 		case !c.Ready || c.LastPush.IsZero():
 			c.State = "update"
-		case now.Sub(c.LastPush) <= 2*time.Hour:
+		case now.Sub(latest) <= 2*time.Hour:
 			c.State = "ok"
 		default:
 			c.State = "late"
@@ -181,8 +190,12 @@ func archivedNow(dest string, shards map[string]archive.Shard) (rows []archive.S
 }
 
 // holdouts is archive.Holdouts on shards already read. A shard that cannot be read may
-// be a computer without what has looks for, so it holds back too, by its file name.
-func holdouts(shards map[string]archive.Shard, bad []string, has func(archive.Shard) bool) []string {
+// be a computer without what has looks for, so it holds back too, by its file name; a
+// manifest that cannot be read at all, err, may hold back every computer.
+func holdouts(shards map[string]archive.Shard, bad []string, err error, has func(archive.Shard) bool) []string {
+	if err != nil {
+		return []string{everyComputer}
+	}
 	out := []string{}
 	for name, s := range shards {
 		if !has(s) {
@@ -195,6 +208,9 @@ func holdouts(shards map[string]archive.Shard, bad []string, has func(archive.Sh
 	sort.Strings(out)
 	return out
 }
+
+// everyComputer stands for the computers in a manifest that cannot be read.
+const everyComputer = "every computer"
 
 // localTranscripts is this computer's conversations, by lower-cased id.
 func localTranscripts(root string) map[string]string {
@@ -220,6 +236,14 @@ func convTitle(path, id string) string {
 		id = id[:8]
 	}
 	return "Conversation " + id
+}
+
+// agree is one for 1 and many otherwise: a verb that follows plural.
+func agree(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func plural(n int, word string) string {
@@ -262,12 +286,21 @@ type storageView struct {
 	Projects []storageProject `json:"projects"` // the 3 biggest, then the rest in one row
 	// Duplicates is this run's last duplicates check, nil when there has been none.
 	Duplicates *cleanSummary `json:"duplicates"`
-	Unreadable int           `json:"unreadable"`
+	// RetentionUnreadable is retention.json not read: nothing shows as kept, and nothing
+	// is deleted for its age.
+	RetentionUnreadable bool `json:"retentionUnreadable"`
+	Unreadable          int  `json:"unreadable"`
+}
+
+func emptyStorage() storageView {
+	v := storageView{ZipWaitsFor: []string{}, Projects: []storageProject{}}
+	v.Kept.Projects = []string{}
+	return v
 }
 
 func queryStorage(root string, now time.Time, last *cleanSummary) storageView {
-	v := storageView{ZipWaitsFor: []string{}, Projects: []storageProject{}, Duplicates: last}
-	v.Kept.Projects = []string{}
+	v := emptyStorage()
+	v.Duplicates = last
 	dest, problem := panelDest(root)
 	if problem != "" {
 		v.Problem = problem
@@ -279,10 +312,11 @@ func queryStorage(root string, now time.Time, last *cleanSummary) storageView {
 	rows, deleted, n := archivedNow(dest, shards)
 	ret, rerr := archive.LoadRetention(dest)
 	v.Unreadable = len(bad) + len(lbad) + n + errCount(err) + errCount(rerr)
+	v.RetentionUnreadable = rerr != nil
 
 	cfg, cerr := archive.LoadConfig(root)
 	v.ZipOn = cerr == nil && cfg.ZipOn() // push zips nothing with a config it cannot read
-	v.ZipWaitsFor = slices.DeleteFunc(holdouts(shards, bad, func(s archive.Shard) bool { return s.ReadsZips }),
+	v.ZipWaitsFor = slices.DeleteFunc(holdouts(shards, bad, err, func(s archive.Shard) bool { return s.ReadsZips }),
 		func(name string) bool { return strings.EqualFold(name, machineName()) }) // as zipHoldouts
 	v.KeepDays = ret.KeepDays
 	opts, keys := groupProjects(projects, homesOf(shards))
@@ -301,10 +335,15 @@ func queryStorage(root string, now time.Time, last *cleanSummary) storageView {
 		}
 	}
 
-	// One walk, by name and size: nothing is opened, and no link is followed.
+	// One walk, by name and size: nothing is opened, and no link is followed but one at
+	// dest itself, which WalkDir would not descend.
 	cutoff := now.Add(-zipIdle)
 	loose, idle, inBucket := map[string]int64{}, map[string]bool{}, map[string]int64{}
-	_ = filepath.WalkDir(dest, func(p string, d fs.DirEntry, err error) error {
+	top, err := filepath.EvalSymlinks(dest)
+	if err != nil {
+		top = dest
+	}
+	_ = filepath.WalkDir(top, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || !d.Type().IsRegular() {
 			return nil // a folder that cannot be listed is left out
 		}
@@ -312,7 +351,7 @@ func queryStorage(root string, now time.Time, last *cleanSummary) storageView {
 		if err != nil {
 			return nil
 		}
-		rel, _ := filepath.Rel(dest, p)
+		rel, _ := filepath.Rel(top, p)
 		parts, size := strings.Split(rel, string(filepath.Separator)), info.Size()
 		switch parts[0] {
 		case "projects", "forks", "deleted":
@@ -411,8 +450,9 @@ type retentionView struct {
 	KeepDays int       `json:"keepDays"`
 	Keep     []keepRow `json:"keep"`
 	// Holdouts are the computers deleting waits for, which do not honour the deleted list.
-	Holdouts   []string `json:"holdouts"`
-	Unreadable int      `json:"unreadable"`
+	Holdouts            []string `json:"holdouts"`
+	RetentionUnreadable bool     `json:"retentionUnreadable"` // nothing then shows as kept
+	Unreadable          int      `json:"unreadable"`
 }
 
 func queryRetention(dest string) retentionView {
@@ -424,8 +464,8 @@ func queryRetention(dest string) retentionView {
 		opts[i].Arg = projectArg(projects, opts[i])
 	}
 	return retentionView{KeepDays: ret.KeepDays, Keep: keepRows(ret, projects, opts, archive.SessionsOf(dest, shards)),
-		Holdouts:   holdouts(shards, bad, func(s archive.Shard) bool { return s.HonorsDeleted }),
-		Unreadable: len(bad) + len(lbad) + errCount(err) + errCount(rerr)}
+		Holdouts:            holdouts(shards, bad, err, func(s archive.Shard) bool { return s.HonorsDeleted }),
+		RetentionUnreadable: rerr != nil, Unreadable: len(bad) + len(lbad) + errCount(err) + errCount(rerr)}
 }
 
 // keepRows is the Never delete list: a row per conversation, and one per project however
@@ -660,52 +700,131 @@ type healthItem struct {
 	FixHref  string `json:"fixHref"`
 }
 
-// healthFlight runs one doctor at a time, and a caller that comes while it runs gets its
-// result (Ruling P15): doctor leaves a slow check's read behind, so a doctor for each
-// Overview load would pile up blocked reads while the drive is slow.
-type healthFlight struct {
-	mu  sync.Mutex
-	cur *healthRun
+// flight runs one computation at a time and keeps its result as long as the run says.
+// A caller that comes while it runs, or while its result for the same key is kept, gets
+// that result (Ruling P15): doctor leaves a slow check's read behind, and a walk of the
+// archive is slow, so one for each page load would pile up reads while the drive is slow.
+type flight[T any] struct {
+	mu   sync.Mutex
+	cur  *flightRun[T]
+	last *flightRun[T]
+	gen  int // drop's count: a run started before a drop is not kept
 }
 
-type healthRun struct {
+type flightRun[T any] struct {
+	key   string
+	gen   int
 	done  chan struct{}
-	items []healthItem // set before done is closed
+	v     T         // these three are set before done is closed
+	ok    bool      // run returned rather than panicked
+	until time.Time // its result is kept until then
 }
 
-// do runs run in the first caller's goroutine, where net/http recovers a panic.
-func (f *healthFlight) do(run func() []healthItem) []healthItem {
-	f.mu.Lock()
-	if r := f.cur; r != nil {
+// do gives key's result: kept, or the run in progress's, or run's, which runs in this
+// caller's goroutine, where net/http recovers a panic. Callers waiting on a run that
+// panicked get fallback.
+func (f *flight[T]) do(key string, fallback T, run func() (T, time.Duration)) T {
+	for {
+		f.mu.Lock()
+		if l := f.last; l != nil && l.key == key && time.Now().Before(l.until) {
+			f.mu.Unlock()
+			return l.v
+		}
+		r := f.cur
+		if r == nil {
+			break // still holding mu
+		}
 		f.mu.Unlock()
 		<-r.done
-		return r.items
+		if r.key == key && r.ok {
+			return r.v
+		} else if r.key == key {
+			return fallback
+		}
 	}
-	r := &healthRun{done: make(chan struct{})}
+	r := &flightRun[T]{key: key, gen: f.gen, done: make(chan struct{})}
 	f.cur = r
 	f.mu.Unlock()
-	defer func() { // a panic in run still lets the waiting callers go
+	defer func() {
 		f.mu.Lock()
 		f.cur = nil
+		if r.ok && r.gen == f.gen {
+			f.last = r
+		}
 		f.mu.Unlock()
 		close(r.done)
 	}()
-	r.items = run()
-	return r.items
+	v, keep := run()
+	r.v, r.ok, r.until = v, true, time.Now().Add(keep)
+	return v
 }
 
-// queryHealth is doctor's checks in plain words: failures, warnings, then the rest. It
-// writes no test file to the archive.
-func queryHealth(root string, logf func(string, ...any)) []healthItem {
-	rep, _ := runDoctor(quietStreams(), doctorOpts{ClaudeDir: root, NoProbe: true})
-	items := make([]healthItem, 0, len(rep.Checks))
+// drop forgets the kept result, and the one of a run in progress.
+func (f *flight[T]) drop() {
+	f.mu.Lock()
+	f.last = nil
+	f.gen++
+	f.mu.Unlock()
+}
+
+// queryHealth is doctor's light checks in plain words - failures, warnings, then the
+// rest - and how long to keep them: 60 s, or 5 minutes once the archive stopped
+// answering, so that reloads do not leave a blocked read each. It reads no archived
+// conversation and writes no test file to the archive.
+func queryHealth(root string, logf func(string, ...any), profiles *profileCache) ([]healthItem, time.Duration) {
+	rep, _ := runDoctor(quietStreams(), doctorOpts{ClaudeDir: root, NoProbe: true, Light: true, ProfileDiffs: profiles.diffs})
+	items, keep := make([]healthItem, 0, len(rep.Checks)), time.Minute
 	for _, c := range rep.Checks {
 		if plainChecks[c.Name] == nil {
 			logf("PANEL: health: %s: %s: %s", c.Name, c.Level, c.Detail) // what the generic sentence points to
 		}
+		if c.Name == "archive checks" || strings.Contains(c.Detail, ": not finished after ") {
+			keep = 5 * time.Minute
+		}
 		items = append(items, plainCheck(c))
 	}
-	return sortHealth(items)
+	return sortHealth(items), keep
+}
+
+// profileCache keeps profileDiffs' answer for the copies as they were: a load that finds
+// every copy's size and time unchanged reads no file.
+type profileCache struct {
+	mu   sync.Mutex
+	key  string
+	list []string
+}
+
+// get is every copy and the files whose copies differ.
+func (c *profileCache) get(dest string) (map[string][]profileCopy, []string) {
+	copies := profileCopies(dest)
+	files := make([]string, 0, len(copies))
+	for rel := range copies {
+		files = append(files, rel)
+	}
+	sort.Strings(files)
+	h := sha256.New()
+	for _, rel := range files {
+		for _, cp := range copies[rel] {
+			fmt.Fprintf(h, "%q %q %d %d\n", rel, cp.path, cp.Size, cp.ModTime.UnixNano())
+		}
+	}
+	key := string(h.Sum(nil))
+	c.mu.Lock()
+	if c.list != nil && c.key == key {
+		defer c.mu.Unlock()
+		return copies, c.list
+	}
+	c.mu.Unlock()
+	list := diffsOf(copies)
+	c.mu.Lock()
+	c.key, c.list = key, list
+	c.mu.Unlock()
+	return copies, list
+}
+
+func (c *profileCache) diffs(dest string) []string {
+	_, list := c.get(dest)
+	return list
 }
 
 func sortHealth(items []healthItem) []healthItem {
@@ -797,6 +916,9 @@ var plainChecks = map[string]func(c check) healthItem{
 		return say(c, "The archive folder setting can't be read. Choose the folder again.", "Choose folder", toSettings)
 	},
 	"archive files": func(c check) healthItem {
+		if c.Detail == inFullCheck {
+			return say(c, "Whether the archive folder downloads files only when they're opened is tested in the full check.", "", "")
+		}
 		if c.Detail == notRespondingAdvice {
 			return say(c, "The archive folder isn't answering. If a sync app keeps it, make it available offline; otherwise check that its drive is connected.", "", "")
 		}
@@ -818,7 +940,7 @@ var plainChecks = map[string]func(c check) healthItem{
 		return say(c, "The archive folder was found, not chosen. Choose it so every backup uses the same one.", "Choose folder", toSettings)
 	},
 	"versions": func(c check) healthItem {
-		return say(c, "Your other computers run another version of claude-sessions: "+listAfter(c.Detail, "): ")+
+		return say(c, "Not every computer runs this version of claude-sessions: "+listAfter(c.Detail, "): ")+
 			". Install the same version on each; an older one quietly skips newer features.", "See computers", toSettings)
 	},
 	"name": func(c check) healthItem {
@@ -841,7 +963,7 @@ var plainChecks = map[string]func(c check) healthItem{
 		case c.Level == levelOK:
 			return say(c, "Conversations nobody has used for 30 days are compressed.", "", "")
 		case strings.Contains(c.Detail, "read zips: "):
-			return say(c, "Compressing old conversations waits for these computers to update claude-sessions: "+listAfter(c.Detail, "read zips: ")+".", "See computers", toSettings)
+			return say(c, "Compressing old conversations waits until claude-sessions is updated on "+listAfter(c.Detail, "read zips: ")+".", "See computers", toSettings)
 		}
 		return say(c, "Compressing old conversations waits until every computer's record in the archive can be read.", "See computers", toSettings)
 	},
@@ -855,18 +977,20 @@ var plainChecks = map[string]func(c check) healthItem{
 		case strings.HasPrefix(c.Detail, "nothing is deleted for its age: "):
 			return say(c, "Nothing is deleted for its age: the archive's retention settings can't be read. Let your sync app finish, or remove a conflict copy of retention.json.", "", "")
 		case strings.Contains(c.Detail, "deleted list: "):
-			return say(c, "Deleting old conversations waits for these computers to update claude-sessions: "+listAfter(c.Detail, "deleted list: ")+".", "See computers", toSettings)
+			return say(c, "Deleting old conversations waits until claude-sessions is updated on "+listAfter(c.Detail, "deleted list: ")+".", "See computers", toSettings)
 		}
 		return say(c, "Deleting old conversations waits until every computer's record in the archive can be read.", "See computers", toSettings)
 	},
 	"profile": func(c check) healthItem {
 		switch c.Level {
 		case levelInfo:
-			return say(c, plural(scanned(c.Detail, "%d rule/skill"), "rule and skill file")+" differ between your computers. Each keeps its own until you choose.", "Compare", toSettings)
+			n := scanned(c.Detail, "%d rule/skill")
+			return say(c, plural(n, "rule and skill file")+agree(n, " differs", " differ")+" between your computers. Each keeps its own until you choose.", "Compare", toSettings)
 		case levelWarn:
 			return say(c, "Your rules and skills aren't in the archive yet. Back up once to add them.", "", "")
 		}
-		return say(c, plural(scanned(c.Detail, "%d rule/skill"), "rule and skill file")+" are in the archive.", "", "")
+		n := scanned(c.Detail, "%d rule/skill")
+		return say(c, plural(n, "rule and skill file")+agree(n, " is", " are")+" in the archive.", "", "")
 	},
 	"manifest": func(c check) healthItem {
 		switch {
@@ -877,7 +1001,8 @@ var plainChecks = map[string]func(c check) healthItem{
 		case strings.HasPrefix(c.Detail, "ignored manifest file: "):
 			return say(c, "A computer's record in the archive can't be read, or is a sync app's conflict copy. The other computers' records are still used.", "", "")
 		case strings.Contains(c.Detail, "no usable identity"):
-			return say(c, plural(scanned(c.Detail, "%d of"), "project folder")+" in the archive hold notes only, so the other computers can't tell where they belong.", "Review folders", toImport)
+			n := scanned(c.Detail, "%d of")
+			return say(c, plural(n, "project folder")+" in the archive"+agree(n, " holds", " hold")+" notes only, so the other computers can't tell where "+agree(n, "it belongs.", "they belong."), "Review folders", toImport)
 		}
 		return say(c, "The archive's project records can't be read.", "", "")
 	},
@@ -890,7 +1015,8 @@ var plainChecks = map[string]func(c check) healthItem{
 	"html": func(c check) healthItem {
 		switch {
 		case c.Level == levelOK:
-			return say(c, plural(scanned(c.Detail, "%d page(s)"), "readable page")+", all up to date.", "", "")
+			n := scanned(c.Detail, "%d page(s)")
+			return say(c, plural(n, "readable page")+agree(n, ", up to date.", ", all up to date."), "", "")
 		case c.Level == levelInfo:
 			return say(c, "No readable pages: every project is left out of them.", "Change", toSettings)
 		case strings.HasPrefix(c.Detail, "no pages"):
@@ -912,7 +1038,8 @@ var plainChecks = map[string]func(c check) healthItem{
 		return say(c, "Work folders take a lot of space in the archive. Exclude a folder you don't need.", "Work folders", toSettings)
 	},
 	"local buckets": func(c check) healthItem {
-		return say(c, plural(scanned(c.Detail, "%d local"), "project folder")+" on this computer hold notes but no conversations.", "", "")
+		n := scanned(c.Detail, "%d local")
+		return say(c, plural(n, "project folder")+" on this computer"+agree(n, " holds", " hold")+" notes but no conversations.", "", "")
 	},
 	"session hook": func(c check) healthItem {
 		switch {
@@ -940,8 +1067,12 @@ var plainChecks = map[string]func(c check) healthItem{
 		return say(c, "The scheduled backup isn't set up, so a session that's cut off waits for the next backup.", "Set up again", toSettings)
 	},
 	"archived": func(c check) healthItem {
+		if c.Detail == inFullCheck {
+			return say(c, "Whether every conversation that ended a while ago is in the archive is checked in the full check.", "", "")
+		}
 		if c.Level == levelFail {
-			return say(c, plural(scanned(c.Detail, "%d session(s)"), "conversation")+" that ended over 40 minutes ago aren't in the archive. Back up now, and see the log for why.", "Open the log", toSettings)
+			n := scanned(c.Detail, "%d session(s)")
+			return say(c, plural(n, "conversation")+" that ended over 40 minutes ago"+agree(n, " isn't", " aren't")+" in the archive. Back up now, and see the log for why.", "Open the log", toSettings)
 		}
 		return say(c, "Every conversation that ended more than 40 minutes ago is in the archive.", "", "")
 	},
@@ -986,7 +1117,7 @@ type settingsView struct {
 	LogPath      string `json:"logPath"`
 }
 
-func querySettings(root string, fromShortcut bool, now time.Time) settingsView {
+func querySettings(root string, fromShortcut bool, now time.Time, profiles *profileCache) settingsView {
 	v := settingsView{Computers: []computerView{}, WorkFolders: []archive.WorkFolder{}, FromShortcut: fromShortcut,
 		Version: version, LogPath: filepath.Join(root, "session-sync.log")}
 	if res, err := runConfig(quietStreams(), configOpts{ClaudeDir: root}); err == nil {
@@ -1017,14 +1148,8 @@ func querySettings(root string, fromShortcut bool, now time.Time) settingsView {
 	}
 	manifest, _ := archive.MergeShards(dest, shards)
 	v.Pages.Pages, v.Pages.Transcripts, v.Pages.Stale = renderState(dest, manifest, archive.RenderExcludes(root, dest, nil, false))
-	v.ProfileDiffs = len(profileDiffs(dest))
+	v.ProfileDiffs = len(profiles.diffs(dest))
 	return v
-}
-
-type profileCopy struct {
-	Machine string    `json:"machine"`
-	Size    int64     `json:"size"`
-	ModTime time.Time `json:"modTime"`
 }
 
 type profileDiff struct {
@@ -1035,24 +1160,15 @@ type profileDiff struct {
 
 // queryProfile is each rule or skill file whose computers' copies differ, with each
 // copy's size and time: no file's content.
-func queryProfile(dest string) []profileDiff {
+func queryProfile(dest string, profiles *profileCache) []profileDiff {
 	out := []profileDiff{}
-	machines, _ := os.ReadDir(filepath.Join(profileDir(dest), "machines"))
-	for _, file := range profileDiffs(dest) {
-		d := profileDiff{File: file, Copies: []profileCopy{}}
+	copies, diffs := profiles.get(dest)
+	for _, file := range diffs {
+		d := profileDiff{File: file, Copies: copies[file]}
 		var newest time.Time
-		for _, m := range machines {
-			dir := machineProfileDir(dest, m.Name())
-			if !archive.ValidName(m.Name()) || !archive.IsRealDir(dir) {
-				continue
-			}
-			st, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(file)))
-			if err != nil || !st.Mode().IsRegular() {
-				continue
-			}
-			d.Copies = append(d.Copies, profileCopy{m.Name(), st.Size(), st.ModTime()})
-			if st.ModTime().After(newest) {
-				d.Newest, newest = m.Name(), st.ModTime()
+		for _, c := range d.Copies {
+			if c.ModTime.After(newest) {
+				d.Newest, newest = c.Machine, c.ModTime
 			}
 		}
 		out = append(out, d)
@@ -1066,19 +1182,39 @@ func (u *uiServer) apiSummary(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, querySummary(u.root, time.Now()))
 }
 
+// apiStorage walks the archive once in 5 minutes for each folder, or after a panel job
+// (dropCaches). The folder as configured is the key: nothing in the archive is read
+// before a kept answer is given.
 func (u *uiServer) apiStorage(w http.ResponseWriter, r *http.Request) {
+	key, _, _ := archive.ResolveDestination(u.root, "")
+	v := u.storage.do(key, emptyStorage(), func() (storageView, time.Duration) {
+		v := queryStorage(u.root, time.Now(), nil)
+		if v.Archive == nil {
+			return v, 0 // no folder to walk: look again next time
+		}
+		return v, 5 * time.Minute
+	})
 	u.mu.Lock()
-	last := u.lastClean
+	v.Duplicates = u.lastClean // a copy of the kept view, with this run's check
 	u.mu.Unlock()
-	sendJSON(w, queryStorage(u.root, time.Now(), last))
+	sendJSON(w, v)
 }
 
-func (u *uiServer) apiHealth(w http.ResponseWriter, r *http.Request) {
-	sendJSON(w, u.health.do(func() []healthItem { return queryHealth(u.root, u.logf) }))
+func (u *uiServer) apiHealth(w http.ResponseWriter, r *http.Request) { sendJSON(w, u.healthNow()) }
+
+func (u *uiServer) healthNow() []healthItem {
+	return u.health.do("", []healthItem{}, func() ([]healthItem, time.Duration) { return queryHealth(u.root, u.logf, &u.profiles) })
+}
+
+// dropCaches forgets the health and storage answers kept, for a job whose changes they
+// would not show yet: a panel job calls it when it ends.
+func (u *uiServer) dropCaches() {
+	u.health.drop()
+	u.storage.drop()
 }
 
 func (u *uiServer) apiSettings(w http.ResponseWriter, r *http.Request) {
-	sendJSON(w, querySettings(u.root, u.opts.FromShortcut, time.Now()))
+	sendJSON(w, querySettings(u.root, u.opts.FromShortcut, time.Now(), &u.profiles))
 }
 
 // withArchive answers {"problem": ...} when there is no archive folder to read, as
