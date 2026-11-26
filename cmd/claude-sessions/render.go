@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -24,73 +23,88 @@ func cmdRender(args []string) error {
 		return err
 	}
 
-	root, _, err := resolveRoot(*claudeDir)
+	o := renderOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, Force: *force, Quiet: *quiet, Exclude: splitList(*exclude)}
+	if !*asJSON {
+		_, err := runRender(stdStreams(), o)
+		return err
+	}
+	res, err := runRender(jsonStreams(), o)
 	if err != nil {
 		return err
 	}
-	dest, _, err := archive.ResolveDestination(root, *archiveDir)
+	return encodeJSON(os.Stdout, res)
+}
+
+type renderOpts struct {
+	ClaudeDir, ArchiveDir string
+	Force, Quiet          bool
+	Exclude               []string // saved, then excluded on every machine
+}
+
+// runRender renders the archive's pages and returns what it did, saying so on s.Out
+// unless o.Quiet.
+func runRender(s streams, o renderOpts) (render.Result, error) {
+	root, _, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return render.Result{}, err
+	}
+	dest, _, err := archive.ResolveDestination(root, o.ArchiveDir)
+	if err != nil {
+		return render.Result{}, err
 	}
 	if dest == "" {
-		return fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
+		return render.Result{}, fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
 	}
 	if st, err := os.Stat(dest); err != nil || !st.IsDir() {
-		return fmt.Errorf("%s is not reachable - is the sync client mounted?", dest)
+		return render.Result{}, fmt.Errorf("%s is not reachable - is the sync client mounted?", dest)
 	}
 
 	// Saved, then shared through the archive. A one-off exclusion was undone by the
 	// next push - within 30 minutes, by the sweep - with nothing said: pages the user
 	// had withdrawn for privacy were quietly published again.
-	if extra := splitList(*exclude); len(extra) > 0 {
+	if len(o.Exclude) > 0 {
 		cfg, err := archive.LoadConfig(root)
 		if err != nil {
-			return err
+			return render.Result{}, err
 		}
-		cfg.RenderExclude = append(cfg.RenderExclude, extra...)
+		cfg.RenderExclude = append(cfg.RenderExclude, o.Exclude...)
 		if err := archive.SaveConfig(root, cfg); err != nil {
-			return err
+			return render.Result{}, err
 		}
-		if !*quiet && !*asJSON {
-			fmt.Printf("Excluding %s from now on (saved to %s and %s).\n",
-				strings.Join(extra, ", "), archive.ConfigPath(root), archive.SharedExcludePath(dest))
-			fmt.Println("To publish again, remove it from renderExclude there and from render-exclude.txt.")
+		if !o.Quiet {
+			fmt.Fprintf(s.Out, "Excluding %s from now on (saved to %s and %s).\n",
+				strings.Join(o.Exclude, ", "), archive.ConfigPath(root), archive.SharedExcludePath(dest))
+			fmt.Fprintln(s.Out, "To publish again, remove it from renderExclude there and from render-exclude.txt.")
 		}
 	}
 	patterns := archive.RenderExcludes(root, dest, nil, true)
 
 	res, err := render.Archive(dest, render.Options{
-		Force:         *force,
+		Force:         o.Force,
 		Exclude:       patterns,
 		LocalProjects: claude.ProjectsDir(root),
 	})
 	if err != nil {
-		return err
+		return render.Result{}, err
 	}
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(res)
-	}
-
-	if !*quiet {
-		fmt.Printf("\nRendered %d, %d already up to date -> %s\n",
+	if !o.Quiet {
+		fmt.Fprintf(s.Out, "\nRendered %d, %d already up to date -> %s\n",
 			res.Rendered, res.UpToDate, res.OutputDir)
 		if res.Excluded > 0 {
-			fmt.Printf("%d project(s) excluded", res.Excluded)
+			fmt.Fprintf(s.Out, "%d project(s) excluded", res.Excluded)
 			if res.Unpublished > 0 {
-				fmt.Printf("; %d previously published page(s) removed", res.Unpublished)
+				fmt.Fprintf(s.Out, "; %d previously published page(s) removed", res.Unpublished)
 			}
-			fmt.Println(".")
+			fmt.Fprintln(s.Out, ".")
 		}
 		if res.Failed > 0 {
-			fmt.Printf("%d transcript(s) could not be rendered; their .jsonl files are untouched.\n", res.Failed)
+			fmt.Fprintf(s.Out, "%d transcript(s) could not be rendered; their .jsonl files are untouched.\n", res.Failed)
 		}
 		if res.Skipped > 0 {
-			fmt.Printf("%d transcript line(s) could not be parsed and were skipped.\n", res.Skipped)
+			fmt.Fprintf(s.Out, "%d transcript line(s) could not be parsed and were skipped.\n", res.Skipped)
 		}
-		fmt.Printf("Open %s/index.html\n", res.OutputDir)
+		fmt.Fprintf(s.Out, "Open %s/index.html\n", res.OutputDir)
 	}
-	return nil
+	return res, nil
 }

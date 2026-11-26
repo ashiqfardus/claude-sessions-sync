@@ -56,7 +56,7 @@ func cmdPush(args []string) error {
 		for _, a := range args {
 			if a == "--quiet" || a == "-quiet" || a == "--quiet=true" || a == "-quiet=true" {
 				if root, _, rerr := resolveRoot(*claudeDir); rerr == nil {
-					newLogger(root, true)("SKIP: %v (a newer version's hook? re-run `claude-sessions install`)", err)
+					newLogger(root, true, nil)("SKIP: %v (a newer version's hook? re-run `claude-sessions install`)", err)
 				}
 				return nil
 			}
@@ -64,7 +64,11 @@ func cmdPush(args []string) error {
 		return err
 	}
 
-	opts := pushOpts{Quiet: *quiet, DryRun: *dryRun, JSON: *asJSON, NoHTML: *noHTML, LockWait: *lockWait, Sweep: *sweep, ScanHistory: *scanHistory}
+	opts := pushOpts{Quiet: *quiet, DryRun: *dryRun, NoHTML: *noHTML, LockWait: *lockWait, Sweep: *sweep, ScanHistory: *scanHistory}
+	s := stdStreams()
+	if *asJSON {
+		s = jsonStreams()
+	}
 	if *fromHook {
 		// Claude Code passes the hook's input as JSON on stdin; transcript_path is the
 		// session that just replied.
@@ -80,7 +84,7 @@ func cmdPush(args []string) error {
 		// would hold up every reply until Claude Code kills the hook. Give up instead;
 		// the sweep catches up.
 		var err error
-		if !withinDeadline(hookDeadline, func() { err = runPush(*claudeDir, *archiveDir, opts) }) {
+		if !withinDeadline(hookDeadline, func() { _, err = runPush(s, *claudeDir, *archiveDir, opts) }) {
 			if root, _, rerr := resolveRoot(*claudeDir); rerr == nil {
 				noteHookTimeout(root)
 			}
@@ -91,7 +95,11 @@ func cmdPush(args []string) error {
 		}
 		return err
 	}
-	err := runPush(*claudeDir, *archiveDir, opts)
+	res, err := runPush(s, *claudeDir, *archiveDir, opts)
+	// A quiet run skipped for the lock returns no Archive, and prints no JSON.
+	if err == nil && *asJSON && res.Archive != "" {
+		err = encodeJSON(os.Stdout, res)
+	}
 
 	// A SessionEnd hook that fails breaks the end of the user's session. Missing
 	// drive, offline mount, unexpected error: log it and exit 0. This is the single
@@ -130,19 +138,19 @@ func noteHookTimeout(root string) {
 	if st, err := os.Stat(marker); err == nil && time.Since(st.ModTime()) < time.Hour {
 		return
 	}
-	newLogger(root, true)("TIMEOUT: a per-reply push gave up after %s, the archive's drive being slow or asleep; the sweep and the SessionEnd hook still archive the session", hookDeadline)
+	newLogger(root, true, nil)("TIMEOUT: a per-reply push gave up after %s, the archive's drive being slow or asleep; the sweep and the SessionEnd hook still archive the session", hookDeadline)
 	_ = os.WriteFile(marker, nil, 0o600)
 	now := time.Now()
 	_ = os.Chtimes(marker, now, now)
 }
 
 type pushOpts struct {
-	Quiet, DryRun, JSON, NoHTML bool
-	LockWait                    time.Duration // --quiet only
-	FromHook                    bool          // archive only Session, the Stop hook's
-	Session                     string
-	Sweep                       bool // the scheduled run: its PUSH line is marked
-	ScanHistory                 bool // read every transcript in full for work folders, this run only
+	Quiet, DryRun, NoHTML bool
+	LockWait              time.Duration // --quiet only
+	FromHook              bool          // archive only Session, the Stop hook's
+	Session               string
+	Sweep                 bool // the scheduled run: its PUSH line is marked
+	ScanHistory           bool // read every transcript in full for work folders, this run only
 }
 
 // quietRenderBudget bounds page rendering in an unattended push.
@@ -157,14 +165,17 @@ const quietRenderBudget = 45 * time.Second
 // limit Task Scheduler and the systemd unit impose, so it logs why.
 const quietWatchdog = 55 * time.Minute
 
-func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
-	quiet, dryRun, asJSON, noHTML := opts.Quiet, opts.DryRun, opts.JSON, opts.NoHTML
+// runPush archives this profile's conversations and returns what it did: log lines on
+// s.Err, the summary on s.Out. A run skipped for the lock, or the per-reply hook's,
+// returns no Archive.
+func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResult, err error) {
+	quiet, dryRun, noHTML := opts.Quiet, opts.DryRun, opts.NoHTML
 	root, _, err := resolveRoot(claudeDir)
 	if err != nil {
-		return err
+		return pushResult{}, err
 	}
 
-	logf := newLogger(root, quiet)
+	logf := newLogger(root, quiet, s.Err)
 	if opts.Sweep {
 		// Every line of a sweep run is marked, not only its PUSH line: a sweep refused
 		// from its very first run leaves no PUSH, and doctor must still see that a
@@ -202,11 +213,11 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	dest, src, err := archive.ResolveDestination(root, archiveDir)
 	if err != nil {
 		logf("ERROR: %v", err)
-		return err
+		return pushResult{}, err
 	}
 	if dest == "" {
 		skipf("SKIP: no destination configured")
-		return fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
+		return pushResult{}, fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
 	}
 
 	// The destination's parent must already exist. Creating it would mean silently
@@ -220,12 +231,12 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 			reason = statErr.Error()
 		}
 		skipf("SKIP: destination parent not available: %s", reason)
-		return fmt.Errorf("%s is not available - is the sync client mounted?", filepath.Dir(dest))
+		return pushResult{}, fmt.Errorf("%s is not available - is the sync client mounted?", filepath.Dir(dest))
 	}
 
 	if err := archive.ValidateDestination(root, dest); err != nil {
 		skipf("SKIP: %v", err)
-		return err
+		return pushResult{}, err
 	}
 
 	// Unattended runs wait for one another: the sweep and a hook, or two sessions
@@ -238,21 +249,21 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	if err != nil {
 		skipf("SKIP: %v", err)
 		if quiet {
-			return nil
+			return pushResult{}, nil
 		}
-		return err
+		return pushResult{}, err
 	}
 	defer lock.Release()
 
 	// Before anything that walks the archive: this runs after every reply.
 	if opts.FromHook {
-		return pushOne(root, dest, opts.Session, dryRun, logf)
+		return pushResult{}, pushOne(root, dest, opts.Session, dryRun, logf)
 	}
 
 	if !dryRun {
 		if err := os.MkdirAll(archive.ProjectsDir(dest), 0o755); err != nil {
 			logf("ERROR: %v", err)
-			return err
+			return pushResult{}, err
 		}
 		if n := archive.RemoveOrphanTemps(dest); n > 0 {
 			logf("CLEAN: removed %d temporary file(s) left by an interrupted run", n)
@@ -264,11 +275,19 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	buckets, err := claude.ListBuckets(claude.ProjectsDir(root))
 	if err != nil {
 		logf("ERROR: %v", err)
-		return err
+		return pushResult{}, err
 	}
 
 	statePaths, _ := claude.ProjectPaths(claude.StatePath(root))
-	slowRead := hintIfSlow(!quiet) // the first archive reads, to the one of pushedBefore
+	var hintTo io.Writer
+	if !quiet {
+		hintTo = s.Err
+	}
+	// The first archive reads, to the one of pushedBefore. Stopped on every return too,
+	// a panic's included: the hint must not reach s.Err once push has returned. Nothing
+	// else writes to s.Err until it is stopped.
+	slowRead := hintIfSlowTo(hintTo)
+	defer slowRead()
 	excludes := archive.RenderExcludes(root, dest, nil, !dryRun)
 
 	res := pushResult{Archive: dest, DryRun: dryRun}
@@ -458,7 +477,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 	if quiet {
 		workBudget = quietWorkBudget
 	}
-	wr := pushWork(root, dest, &shard, prevShard, workScan, cfg, dryRun, opts.ScanHistory, workBudget, logf)
+	wr := pushWork(root, dest, &shard, prevShard, workScan, cfg, dryRun, opts.ScanHistory, workBudget, logf, s.Err)
 	res.Copied += wr.Copied
 	res.Unchanged += wr.Unchanged
 
@@ -477,7 +496,7 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		sessions = keepArchivedHistory(dest, &shard, sessions)
 		if err := writeManifest(dest, shard); err != nil {
 			logf("ERROR: manifest: %v", err)
-			return err
+			return pushResult{}, err
 		}
 		// Once the shard says this computer honours the deleted list, so it waits for no
 		// one but the others; before the index, which then lists none it deleted.
@@ -495,12 +514,12 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		}
 		if err := archive.WriteSessionIndex(dest, shard.Machine, withoutPruned(dest, sessions)); err != nil {
 			logf("ERROR: index cache: %v", err)
-			return err
+			return pushResult{}, err
 		}
 		// Built from every machine, not just this one - see writeIndex.
 		if err := writeIndex(dest, excludes); err != nil {
 			logf("ERROR: index: %v", err)
-			return err
+			return pushResult{}, err
 		}
 	}
 
@@ -552,36 +571,31 @@ func runPush(claudeDir, archiveDir string, opts pushOpts) (err error) {
 		}
 	}
 
-	if asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(res)
-	}
 	if !quiet {
 		for _, n := range wr.New {
-			fmt.Printf("now backing up %s\n", n)
+			fmt.Fprintf(s.Out, "now backing up %s\n", n)
 		}
 		for _, p := range wr.Would {
-			fmt.Printf("would copy %s\n", p)
+			fmt.Fprintf(s.Out, "would copy %s\n", p)
 		}
 		for _, p := range wr.WouldPack {
-			fmt.Printf("would %s\n", p)
+			fmt.Fprintf(s.Out, "would %s\n", p)
 		}
 		if wr.Packed+wr.Compacted > 0 {
-			fmt.Printf("%d subfolder(s) packed, %d packed again.\n", wr.Packed, wr.Compacted)
+			fmt.Fprintf(s.Out, "%d subfolder(s) packed, %d packed again.\n", wr.Packed, wr.Compacted)
 		}
 		verb := "copied"
 		if dryRun {
 			verb = "would copy"
 		}
-		fmt.Printf("\n%s %d file(s), %d unchanged.\n", verb, res.Copied, res.Unchanged)
-		fmt.Printf("%d session(s) across %d project(s) -> %s (%s)\n",
+		fmt.Fprintf(s.Out, "\n%s %d file(s), %d unchanged.\n", verb, res.Copied, res.Unchanged)
+		fmt.Fprintf(s.Out, "%d session(s) across %d project(s) -> %s (%s)\n",
 			res.Sessions, res.Projects, dest, src)
 		if len(res.Skipped) > 0 {
-			fmt.Printf("%d skipped: %s\n", len(res.Skipped), strings.Join(res.Skipped, ", "))
+			fmt.Fprintf(s.Out, "%d skipped: %s\n", len(res.Skipped), strings.Join(res.Skipped, ", "))
 		}
 	}
-	return nil
+	return res, nil
 }
 
 // projectIdentity recovers what is needed to place this bucket on another machine.
@@ -2035,11 +2049,12 @@ func machineName() string {
 // maxLogBytes is when session-sync.log is rotated to session-sync.log.1.
 const maxLogBytes = 1 << 20
 
-// newLogger returns a printf-style logger that appends to session-sync.log.
+// newLogger returns a printf-style logger that appends to session-sync.log, and writes
+// each line to progress too unless quiet.
 //
 // The log is the only record of what an unattended hook or sweep did. It never
 // returns an error: failing to log must not fail a push.
-func newLogger(root string, quiet bool) func(string, ...any) {
+func newLogger(root string, quiet bool, progress io.Writer) func(string, ...any) {
 	path := filepath.Join(root, "session-sync.log")
 	return func(format string, args ...any) {
 		line := fmt.Sprintf("%s  %s\n", time.Now().Format("2006-01-02 15:04:05"),
@@ -2055,7 +2070,7 @@ func newLogger(root string, quiet bool) func(string, ...any) {
 		// Progress goes to stderr, never stdout: stdout carries the result, and with
 		// --json a stray log line makes the output unparseable.
 		if !quiet {
-			fmt.Fprint(os.Stderr, line)
+			fmt.Fprint(progress, line)
 		}
 	}
 }

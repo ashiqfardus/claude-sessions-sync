@@ -941,7 +941,7 @@ func TestIndexLeavesOutPruned(t *testing.T) {
 	}
 	push := func() {
 		t.Helper()
-		if out, err := captured(t, func() error { return runPush(claudeDir, "", pushOpts{NoHTML: true}) }); err != nil {
+		if out, err := captured(t, func() error { _, err := runPush(stdStreams(), claudeDir, "", pushOpts{NoHTML: true}); return err }); err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
 	}
@@ -1241,7 +1241,7 @@ func pushHere(t *testing.T, claudeDir string, opts pushOpts) {
 	if err := os.MkdirAll(filepath.Join(claudeDir, "projects"), 0o755); err != nil { // as Claude Code makes it
 		t.Fatal(err)
 	}
-	if out, err := captured(t, func() error { return runPush(claudeDir, "", opts) }); err != nil {
+	if out, err := captured(t, func() error { _, err := runPush(stdStreams(), claudeDir, "", opts); return err }); err != nil {
 		t.Fatalf("push %+v: %v\n%s", opts, err, out)
 	}
 }

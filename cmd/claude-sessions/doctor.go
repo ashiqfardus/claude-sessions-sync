@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
@@ -544,16 +545,38 @@ func oneArchived(dest string) string {
 	return ""
 }
 
-// hintIfSlow is for import and push: started just before their first archive read, it
-// prints the streaming hint once on stderr if that read is still going after hintLimit.
-// It times the read and adds none. Call the result when the read returns.
+// hintIfSlow is hintIfSlowTo on stderr, or nowhere when !show.
 func hintIfSlow(show bool) (stop func() bool) {
 	if !show {
+		return hintIfSlowTo(nil)
+	}
+	return hintIfSlowTo(os.Stderr)
+}
+
+// hintIfSlowTo is for import and push: started just before their first archive read, it
+// prints the streaming hint once on w if that read is still going after hintLimit; a nil
+// w is never written. It times the read and adds none. Call the result when the read
+// returns: once it has returned, the hint is written in full or never.
+func hintIfSlowTo(w io.Writer) (stop func() bool) {
+	if w == nil {
 		return func() bool { return false }
 	}
-	t := time.AfterFunc(hintLimit, func() { fmt.Fprintln(os.Stderr, "! "+streamingAdvice) })
+	var mu sync.Mutex
+	stopped := false
+	t := time.AfterFunc(hintLimit, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !stopped {
+			fmt.Fprintln(w, "! "+streamingAdvice)
+		}
+	})
 	beforeArchive("first read") // the read it times starts here
-	return t.Stop
+	return func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		stopped = true
+		return t.Stop()
+	}
 }
 
 // archiveLag is how long a finished session may go unarchived before doctor fails:

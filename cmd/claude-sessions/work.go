@@ -72,8 +72,9 @@ func workEnv(root string) work.Env {
 // pushWork archives the folders this machine's sessions worked in to
 // work/<machine>/ and records them in shard. It looks for folders only in scan, the
 // transcripts that changed; those found before come from this machine's local record
-// (prev is not read for folders). The caller holds the push lock.
-func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan []string, cfg archive.Config, dryRun, history bool, budget time.Duration, logf func(string, ...any)) workPushResult {
+// (prev is not read for folders). The caller holds the push lock. history's warning
+// goes to warn.
+func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan []string, cfg archive.Config, dryRun, history bool, budget time.Duration, logf func(string, ...any), warn io.Writer) workPushResult {
 	var res workPushResult
 	// Loaded with work off too: a first run marks what is here then, and conversations
 	// from then on are found when work is turned on.
@@ -102,7 +103,7 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 
 	var cands []work.Candidate
 	if history {
-		fmt.Fprintln(os.Stderr, "WARNING: --scan-history reads every conversation on this computer in full, including ones\n"+
+		fmt.Fprintln(warn, "WARNING: --scan-history reads every conversation on this computer in full, including ones\n"+
 			"imported from other computers. Anyone who can write to the archive can name any of your\n"+
 			"folders in those, and this push would upload it. Use it only if you trust everyone who can\n"+
 			"write to "+dest+".")
