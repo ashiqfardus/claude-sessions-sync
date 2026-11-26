@@ -1192,7 +1192,7 @@ is another name for `search`, and `-v` or `--version` for `version`.
 | `--update` | `import`, `pull`, `restore` | Also bring in sessions continued elsewhere and newer memory |
 | `--update-profile` | `import`, `pull` | Also replace rule and skill files here with newer archived copies; this computer's are kept in the archive's `profile/replaced/` first |
 | `--no-plugins` | `import`, `pull` | Do not install plugins enabled on another computer |
-| `--no-profile` | `import` | Do not bring in rules, skills or `CLAUDE.md` |
+| `--no-profile` | `import` | Do not bring in rules, skills or `CLAUDE.md`. Not with `--profile-only` or `--update-profile` |
 | `--profile-only` | `import` | Bring in only the newer rules and skills: no conversations, memory or work folders, and no plugins. Cannot be combined with `--update`, `--repoint`, `--no-work`, `--search-root`, `--depth` or `--include-bare-name` |
 | `--no-work` | `import`, `pull` | Bring conversations only; skip other computers' work folders. Not with `--repoint` |
 | `--search-root <dirs>` | `import` | Where to look for projects (comma-separated; default: the parents of known projects, and your home) |
