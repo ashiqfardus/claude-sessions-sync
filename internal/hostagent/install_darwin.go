@@ -3,7 +3,6 @@ package hostagent
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -38,20 +37,20 @@ func Install(j Job, everyMinutes int) (Status, error) {
 
 	// Reload rather than assume: bootout first so a changed plist takes effect.
 	uid := strconv.Itoa(os.Getuid())
-	_ = exec.Command(systemBinary("launchctl"), "bootout", "gui/"+uid+"/"+j.LaunchdLabel()).Run()
+	_ = Command(systemBinary("launchctl"), "bootout", "gui/"+uid+"/"+j.LaunchdLabel()).Run()
 
 	// bootout returns before the job is gone, and bootstrapping in that window fails
 	// with "Input/output error". Retry briefly, then fall back to the deprecated
 	// `load -w` for older systems.
 	var out []byte
 	for attempt := 0; attempt < 5; attempt++ {
-		if out, err = exec.Command(systemBinary("launchctl"), "bootstrap", "gui/"+uid, path).CombinedOutput(); err == nil {
+		if out, err = Command(systemBinary("launchctl"), "bootstrap", "gui/"+uid, path).CombinedOutput(); err == nil {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	if err != nil {
-		if out2, err2 := exec.Command(systemBinary("launchctl"), "load", "-w", path).CombinedOutput(); err2 != nil {
+		if out2, err2 := Command(systemBinary("launchctl"), "load", "-w", path).CombinedOutput(); err2 != nil {
 			return s, fmt.Errorf("launchctl could not load %s: %s / %s",
 				path, strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
 		}
@@ -71,8 +70,8 @@ func Uninstall(j Job) (bool, error) {
 	}
 
 	uid := strconv.Itoa(os.Getuid())
-	_ = exec.Command(systemBinary("launchctl"), "bootout", "gui/"+uid+"/"+j.LaunchdLabel()).Run()
-	_ = exec.Command(systemBinary("launchctl"), "unload", path).Run()
+	_ = Command(systemBinary("launchctl"), "bootout", "gui/"+uid+"/"+j.LaunchdLabel()).Run()
+	_ = Command(systemBinary("launchctl"), "unload", path).Run()
 
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {

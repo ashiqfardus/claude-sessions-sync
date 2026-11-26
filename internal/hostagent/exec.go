@@ -1,11 +1,31 @@
 package hostagent
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 )
+
+// Command is exec.Command for every child process the program starts; a test fails on
+// any other exec.Command outside this file.
+//
+// On Windows the panel runs as claude-sessionsw.exe, which has no console, and a
+// console child of a process with no console gets a new visible one (a Windows
+// Terminal window where that is the default terminal). hideWindow stops that.
+func Command(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	hideWindow(cmd)
+	return cmd
+}
+
+// CommandContext is Command with a context, as exec.CommandContext.
+func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	hideWindow(cmd)
+	return cmd
+}
 
 // SystemBinary is systemBinary for other packages, such as the panel's browser opener.
 func SystemBinary(name string) string { return systemBinary(name) }

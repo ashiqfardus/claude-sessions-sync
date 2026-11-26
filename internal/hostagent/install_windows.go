@@ -3,7 +3,6 @@ package hostagent
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -37,7 +36,7 @@ func Install(j Job, everyMinutes int) (Status, error) {
 		return s, err
 	}
 
-	out, err := exec.Command(systemBinary("schtasks"),
+	out, err := Command(systemBinary("schtasks"),
 		"/Create", "/TN", j.TaskName(), "/XML", tmp.Name(), "/F").CombinedOutput()
 	if err != nil {
 		return s, fmt.Errorf("schtasks failed: %v: %s", err, strings.TrimSpace(string(out)))
@@ -64,7 +63,7 @@ func Uninstall(j Job) (bool, error) {
 			j.TaskName(), def.Command, def.Arguments)
 	}
 
-	out, err := exec.Command(systemBinary("schtasks"), "/Delete", "/TN", j.TaskName(), "/F").CombinedOutput()
+	out, err := Command(systemBinary("schtasks"), "/Delete", "/TN", j.TaskName(), "/F").CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("schtasks failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -91,7 +90,7 @@ func RemoveLegacySweep() error {
 	if !strings.Contains(strings.ToLower(def.Command+" "+def.Arguments), "sync-claude-sessions") {
 		return fmt.Errorf("the task %q does not run the PowerShell script - refusing to remove it", LegacyName)
 	}
-	out, err := exec.Command(systemBinary("schtasks"), "/Delete", "/TN", LegacyName, "/F").CombinedOutput()
+	out, err := Command(systemBinary("schtasks"), "/Delete", "/TN", LegacyName, "/F").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("schtasks failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -105,13 +104,13 @@ func RemoveLegacySweep() error {
 // every task works and does not include the name - otherwise an access-denied error
 // was reported as "sweep removed" while the task stayed registered.
 func queryTask(name string) (taskDefinition, bool, error) {
-	out, err := exec.Command(systemBinary("schtasks"), "/query", "/tn", name, "/xml").Output()
+	out, err := Command(systemBinary("schtasks"), "/query", "/tn", name, "/xml").Output()
 	if err == nil {
 		def, perr := parseTaskXML(out)
 		return def, true, perr
 	}
 
-	list, listErr := exec.Command(systemBinary("schtasks"), "/query", "/fo", "CSV", "/nh").Output()
+	list, listErr := Command(systemBinary("schtasks"), "/query", "/fo", "CSV", "/nh").Output()
 	if listErr != nil {
 		return taskDefinition{}, false, fmt.Errorf("schtasks could not query %q: %v", name, err)
 	}

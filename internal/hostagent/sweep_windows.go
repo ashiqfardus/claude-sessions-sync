@@ -3,7 +3,6 @@ package hostagent
 import (
 	"encoding/csv"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -40,7 +39,7 @@ func Sweep(j Job) (Status, error) {
 	// Last run and result come from the verbose CSV by column position: the header
 	// names are translated, the columns are not.
 	lastRun, lastResult := "", ""
-	if out, err := exec.Command(systemBinary("schtasks"), "/query", "/tn", j.TaskName(), "/fo", "CSV", "/v", "/nh").Output(); err == nil {
+	if out, err := Command(systemBinary("schtasks"), "/query", "/tn", j.TaskName(), "/fo", "CSV", "/v", "/nh").Output(); err == nil {
 		if rows, err := csv.NewReader(strings.NewReader(string(out))).ReadAll(); err == nil && len(rows) > 0 && len(rows[0]) > 6 {
 			lastRun, lastResult = rows[0][5], rows[0][6]
 		}

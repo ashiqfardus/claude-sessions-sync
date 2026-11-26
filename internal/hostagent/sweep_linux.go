@@ -16,7 +16,7 @@ func Sweep(j Job) (Status, error) {
 	// using it alone reports a broken sweep as "not installed" - two very different
 	// problems with two different fixes, and the stopped one is the one that silently
 	// stops backing anything up. Ask for the load and active state instead.
-	out, err := exec.Command(systemBinary("systemctl"), "--user", "show", j.SystemdTimerName(),
+	out, err := Command(systemBinary("systemctl"), "--user", "show", j.SystemdTimerName(),
 		"--property=LoadState", "--property=ActiveState", "--property=Result").Output()
 	if err == nil {
 		props := map[string]string{}
@@ -47,7 +47,7 @@ func Sweep(j Job) (Status, error) {
 		}
 	}
 
-	if out, err := exec.Command(systemBinary("crontab"), "-l").Output(); err == nil {
+	if out, err := Command(systemBinary("crontab"), "-l").Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			if ownsCronLine(j, line) {
 				s.Installed = true
@@ -84,6 +84,6 @@ func lingerNote() string {
 }
 
 func runOut(name string, args ...string) string {
-	out, _ := exec.Command(systemBinary(name), args...).Output()
+	out, _ := Command(systemBinary(name), args...).Output()
 	return string(out)
 }

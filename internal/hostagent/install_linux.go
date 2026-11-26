@@ -32,8 +32,8 @@ func Install(j Job, everyMinutes int) (Status, error) {
 			return s, err
 		}
 
-		_ = exec.Command(systemBinary("systemctl"), "--user", "daemon-reload").Run()
-		out, err := exec.Command(systemBinary("systemctl"), "--user", "enable", "--now", j.SystemdTimerName()).CombinedOutput()
+		_ = Command(systemBinary("systemctl"), "--user", "daemon-reload").Run()
+		out, err := Command(systemBinary("systemctl"), "--user", "enable", "--now", j.SystemdTimerName()).CombinedOutput()
 		if err == nil {
 			s.Installed = true
 			s.Detail = fmt.Sprintf("%s, every %d minutes", j.SystemdTimerName(), everyMinutes)
@@ -69,7 +69,7 @@ func Uninstall(j Job) (bool, error) {
 
 	removed := false
 	if _, lookErr := exec.LookPath("systemctl"); lookErr == nil {
-		_ = exec.Command(systemBinary("systemctl"), "--user", "disable", "--now", j.SystemdTimerName()).Run()
+		_ = Command(systemBinary("systemctl"), "--user", "disable", "--now", j.SystemdTimerName()).Run()
 		for _, f := range []string{j.SystemdTimerName(), j.SystemdServiceName()} {
 			err := os.Remove(filepath.Join(unitDir, f))
 			if err != nil && !os.IsNotExist(err) {
@@ -77,7 +77,7 @@ func Uninstall(j Job) (bool, error) {
 			}
 			removed = removed || err == nil
 		}
-		_ = exec.Command(systemBinary("systemctl"), "--user", "daemon-reload").Run()
+		_ = Command(systemBinary("systemctl"), "--user", "daemon-reload").Run()
 	}
 
 	// Remove our crontab line too, in case it was installed by the fallback.
@@ -92,7 +92,7 @@ func Uninstall(j Job) (bool, error) {
 // add when it is not empty. Unchanged crontabs are not rewritten. It reports whether
 // a line of ours was dropped.
 func rewriteCrontab(j Job, add string) (bool, error) {
-	existing, _ := exec.Command(systemBinary("crontab"), "-l").Output()
+	existing, _ := Command(systemBinary("crontab"), "-l").Output()
 
 	var kept []string
 	removed := false
@@ -112,7 +112,7 @@ func rewriteCrontab(j Job, add string) (bool, error) {
 		kept = append(kept, add)
 	}
 
-	cmd := exec.Command(systemBinary("crontab"), "-")
+	cmd := Command(systemBinary("crontab"), "-")
 	cmd.Stdin = strings.NewReader(strings.Join(kept, "\n") + "\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return false, fmt.Errorf("crontab failed: %s", strings.TrimSpace(string(out)))

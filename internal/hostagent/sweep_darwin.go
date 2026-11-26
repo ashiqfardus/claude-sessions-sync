@@ -2,7 +2,6 @@ package hostagent
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -25,7 +24,7 @@ func Sweep(j Job) (Status, error) {
 	s.Detail = path
 
 	// `launchctl list <label>` prints the last exit status when the job is loaded.
-	if out, err := exec.Command(systemBinary("launchctl"), "list", j.LaunchdLabel()).Output(); err == nil {
+	if out, err := Command(systemBinary("launchctl"), "list", j.LaunchdLabel()).Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			if strings.Contains(line, "LastExitStatus") {
 				s.Detail = path + ", " + strings.TrimSpace(line)

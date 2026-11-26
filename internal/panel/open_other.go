@@ -9,4 +9,6 @@ import (
 )
 
 // SystemBinary looks in the system folders (/bin, /usr/bin, ...) before PATH.
-func openCmd(path string) *exec.Cmd { return exec.Command(hostagent.SystemBinary("xdg-open"), path) }
+func openCmd(path string) *exec.Cmd {
+	return hostagent.Command(hostagent.SystemBinary("xdg-open"), path)
+}

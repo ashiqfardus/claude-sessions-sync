@@ -1,8 +1,10 @@
 package hostagent
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -81,5 +83,43 @@ func TestSweepReportsSomething(t *testing.T) {
 	}
 	if s.Detail == "" {
 		t.Error("Sweep must explain what it found")
+	}
+}
+
+// Every child process goes through Command, or a console child of the windowless panel
+// opens a visible window on Windows. Test files may run what they like.
+func TestNoExecCommandOutsideHelper(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("module root not found at %s: %v", root, err)
+	}
+	helper := filepath.Join(root, "internal", "hostagent", "exec.go")
+	banned := regexp.MustCompile(`exec\.Command(Context)?\(|os\.StartProcess\(`)
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && p != root && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") || p == helper {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if banned.MatchString(line) {
+				t.Errorf("%s:%d starts a process without hostagent.Command: %s", p, i+1, strings.TrimSpace(line))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

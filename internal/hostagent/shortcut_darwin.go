@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -57,7 +56,7 @@ func InstallShortcut(j Job) (string, error) {
 	defer os.RemoveAll(tmp)
 
 	built := filepath.Join(tmp, filepath.Base(path)) // osacompile picks an applet from the .app extension
-	if out, err := exec.Command(systemBinary("osacompile"), "-o", built, "-e", AppleScript(j)).CombinedOutput(); err != nil {
+	if out, err := Command(systemBinary("osacompile"), "-o", built, "-e", AppleScript(j)).CombinedOutput(); err != nil {
 		return "", fmt.Errorf("osacompile failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	old := tmp + "-old.app" // beside the target too, so every rename stays on one volume

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode/utf16"
@@ -59,7 +58,7 @@ func InstallShortcut(j Job) (string, error) {
 		return "", err
 	}
 
-	cmd := exec.Command(systemBinary(filepath.Join("WindowsPowerShell", "v1.0", "powershell")),
+	cmd := Command(systemBinary(filepath.Join("WindowsPowerShell", "v1.0", "powershell")),
 		"-NoProfile", "-NonInteractive", "-Command", linkScript)
 	cmd.Env = append(os.Environ(),
 		"CS_LNK="+path,

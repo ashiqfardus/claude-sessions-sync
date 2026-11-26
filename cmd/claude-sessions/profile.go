@@ -28,6 +28,7 @@ import (
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/hostagent"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 )
 
@@ -462,7 +463,7 @@ const pluginInstallTimeout = 3 * time.Minute
 func runPluginInstall(bin string, args []string, root string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), pluginInstallTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := hostagent.CommandContext(ctx, bin, args...)
 	cmd.Env = pluginEnv(root, claude.IsDefaultRoot(root), os.Environ())
 	cmd.Dir = root // not the caller's folder, whose .claude/settings.json would apply
 	out, err := cmd.CombinedOutput()

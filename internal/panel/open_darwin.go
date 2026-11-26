@@ -1,5 +1,9 @@
 package panel
 
-import "os/exec"
+import (
+	"os/exec"
 
-func openCmd(path string) *exec.Cmd { return exec.Command("/usr/bin/open", path) }
+	"github.com/ashiqfardus/claude-sessions-sync/internal/hostagent"
+)
+
+func openCmd(path string) *exec.Cmd { return hostagent.Command("/usr/bin/open", path) }
