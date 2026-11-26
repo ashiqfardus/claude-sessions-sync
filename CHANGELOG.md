@@ -56,6 +56,24 @@ All notable changes to this project are documented here. This project follows
   page was last written,** not by when it was last used. It is now dated by its zip.
 - **`push --dry-run` left out conversations a real push zips** when they were archived
   from this computer and their project folder is gone from it. It now lists them too.
+- Panel: Storage could show the sizes from before Remove duplicate copies when a slow
+  walk of the archive had started before the job ended.
+- Panel: on an archive mount that hangs (SMB, NFS, rclone), Overview, Conversations and
+  Settings now say the archive can't be reached within 3 seconds instead of loading
+  forever.
+- Panel: turning a page or changing a filter on Conversations no longer lists the
+  archive's folders again; the listings are kept a minute, or until a panel job ends.
+  A cold Settings load compares rule and skill copies once, not three times.
+- Panel: a cookie of the panel's name set by a page on another local port no longer
+  locks the panel out.
+- Panel: the Read page no longer shows an "all sessions" link that led to a blank page.
+- Panel: Recent activity names a conversation deleted from another computer by its
+  title (or its project folder), not "Conversation 1d7cd94c", and still shows the
+  older entries right after the log is rotated.
+- Panel: the folder chooser hides folders Windows marks hidden, such as AppData, and
+  answers quickly in a folder with thousands of subfolders.
+- Panel: Health says the scheduled backup can't be checked when the system can't be
+  asked, as Settings does, rather than that it isn't set up.
 
 ## [0.7.0] - 2026-11-26
 
