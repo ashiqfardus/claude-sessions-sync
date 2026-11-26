@@ -136,11 +136,13 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 	fmt.Fprintf(s.Out, "  hook      SessionEnd + Stop (%s)\n", res.Hook) // claude.ourHooks
 
 	// Before the sweep, whose failure returns early: the shortcut does not depend on it.
-	// Windows runs the windowless copy, which --no-sweep must not skip.
-	var serr error
+	// Windows runs the windowless copy, which --no-sweep must not skip. Made once, for
+	// the sweep too.
+	sweepBinary, werr := binary, error(nil)
 	if runtime.GOOS == "windows" {
-		_, serr = installWindowless(binary)
+		sweepBinary, werr = installWindowless(binary)
 	}
+	serr := werr
 	if serr == nil {
 		res.Shortcut, serr = installShortcut(sweepJob(root, binary))
 	}
@@ -186,10 +188,7 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 			}
 		}
 
-		sweepBinary := binary
-		if runtime.GOOS == "windows" {
-			sweepBinary, err = installWindowless(binary)
-		}
+		err = werr
 		var status hostagent.Status
 		if err == nil {
 			status, err = installSweep(sweepJob(root, sweepBinary), o.Every)
