@@ -60,8 +60,8 @@ type installResult struct {
 	Archive     string `json:"archive"`
 	Binary      string `json:"binary"`
 	Hook        string `json:"hook"`        // "new", or how many existing entries it replaced
-	Sweep       string `json:"sweep"`       // the job registered, or "skipped (--no-sweep)"
-	SweepFailed string `json:"sweepFailed"` // why the sweep is not registered, when it failed
+	Sweep       string `json:"sweep"`       // the job registered; with --no-sweep "skipped (--no-sweep)", or "removed (only after replies)" for one installed earlier
+	SweepFailed string `json:"sweepFailed"` // why the sweep could not be registered, or with --no-sweep removed
 }
 
 // runInstall installs the hooks and the sweep, printing on s.Out as the CLI does.
@@ -132,9 +132,19 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 		every = 30 // as hostagent registers it
 	}
 	if o.NoSweep {
+		// A sweep installed earlier goes too: saved as none while it still ran, the
+		// setting would say what is not so.
 		every = -1
 		res.Sweep = "skipped (--no-sweep)"
-		fmt.Fprintf(s.Out, "  sweep     %s\n", res.Sweep)
+		if removed, err := uninstallSweep(sweepJob(root, "")); err != nil {
+			res.Sweep, res.SweepFailed = "", err.Error()
+			fmt.Fprintf(s.Out, "  sweep     FAILED to remove the sweep installed earlier: %v\n", err)
+		} else {
+			if removed {
+				res.Sweep = "removed (only after replies)"
+			}
+			fmt.Fprintf(s.Out, "  sweep     %s\n", res.Sweep)
+		}
 	} else {
 		// Report the predecessor's scheduled job rather than removing it. It belongs
 		// to another program; taking it away because the names looked similar is how
@@ -173,14 +183,17 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 		fmt.Fprintf(s.Out, "  sweep     %s\n", res.Sweep)
 	}
 
-	// The interval, for the panel to show: a failed sweep above keeps the one saved before.
-	cfg, err := archive.LoadConfig(root)
-	if err == nil {
-		cfg.SweepEvery = every
-		err = archive.SaveConfig(root, cfg)
-	}
-	if err != nil {
-		return res, err
+	// The interval, for the panel to show. A sweep that could not be installed or
+	// removed keeps the one saved before: that job may still be registered.
+	if res.SweepFailed == "" {
+		cfg, err := archive.LoadConfig(root)
+		if err == nil {
+			cfg.SweepEvery = every
+			err = archive.SaveConfig(root, cfg)
+		}
+		if err != nil {
+			return res, err
+		}
 	}
 
 	fmt.Fprintln(s.Out, "\nDone. Sessions on this machine now archive automatically.")

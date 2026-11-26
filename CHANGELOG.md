@@ -66,6 +66,8 @@ age rule wait until all of them have, and `doctor` names any they wait for.
 - **`install` named one hook of two.** It said `hook      SessionEnd (new)`, but it adds a
   Stop hook too, which backs up after each reply; `uninstall` then removed 2 entries. It
   now says `SessionEnd + Stop`.
+- **`install --no-sweep` also removes a background sweep installed earlier.** It used to
+  leave it running, while the saved setting said there was none.
 - **`doctor` sat silent on a sync folder that streams files.** Where Google Drive
   downloads each file only when it is opened, `doctor` printed nothing, not even a
   header, and waited minutes on the archive. It now prints its header and then each
