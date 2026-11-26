@@ -39,7 +39,7 @@ func cmdImport(args []string) error {
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	archiveDir := fs.String("archive", "", "override the synced destination folder")
 	roots := fs.String("search-root", "", "comma-separated folders to scan for projects (default: parents of known projects, plus your home)")
-	depth := fs.Int("depth", 3, "how deep to scan under each search root")
+	depth := fs.Int("depth", 0, "how deep to scan under each search root (default 3)")
 	dryRun := fs.Bool("dry-run", false, "report what would happen without writing")
 	bareName := fs.Bool("include-bare-name", false, "also replace the bare folder name inside transcripts")
 	update := fs.Bool("update", false, updateHelp)
@@ -55,7 +55,6 @@ func cmdImport(args []string) error {
 	o := importOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, SearchRoot: *roots, Depth: *depth,
 		DryRun: *dryRun, BareName: *bareName, Update: *update, UpdateProfile: *updateProfile,
 		NoPlugins: *noPlugins, NoWork: *noWork, Repoint: *repoint, ProfileOnly: *profileOnly}
-	fs.Visit(func(f *flag.Flag) { o.DepthSet = o.DepthSet || f.Name == "depth" })
 	s := stdStreams()
 	if *asJSON {
 		s = jsonStreams()
@@ -74,7 +73,7 @@ type importOpts struct {
 	ClaudeDir, ArchiveDir, SearchRoot                                   string
 	Depth                                                               int
 	DryRun, BareName, Update, UpdateProfile, NoPlugins, NoWork, Repoint bool
-	ProfileOnly, DepthSet                                               bool // DepthSet: --depth was passed
+	ProfileOnly                                                         bool
 }
 
 type importResult struct {
@@ -90,11 +89,14 @@ func runImport(s streams, o importOpts) (importResult, error) {
 			set  bool
 			name string
 		}{{o.Update, "update"}, {o.Repoint, "repoint"}, {o.NoWork, "no-work"}, {o.SearchRoot != "", "search-root"},
-			{o.DepthSet, "depth"}, {o.BareName, "include-bare-name"}} {
+			{o.Depth != 0, "depth"}, {o.BareName, "include-bare-name"}} {
 			if c.set {
 				return importResult{}, fmt.Errorf("--profile-only brings in rules and skills only; it cannot be combined with --%s", c.name)
 			}
 		}
+	}
+	if o.Depth == 0 { // unset
+		o.Depth = 3
 	}
 	if o.NoWork && o.Repoint {
 		return importResult{}, fmt.Errorf("--no-work and --repoint cannot be combined: --repoint rewrites conversations to work folders that --no-work does not restore")

@@ -5,6 +5,7 @@ package main_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -208,46 +209,118 @@ func TestImportPluginsFallBackToPrintedCommandsAndHonourNoPlugins(t *testing.T) 
 	}
 }
 
-func TestProfileOnlyTakesNewerRulesOnly(t *testing.T) {
+// profileOnlyFixture is findable: a normal import with HOME at dev files the transcript.
+func profileOnlyFixture(t *testing.T) importFixture {
+	t.Helper()
 	f := profileImportFixture(t)
-	p := filepath.Join(f.archive, "profile")
-	mustWrite(t, filepath.Join(p, "CLAUDE.md"), "archived rules\n")
+	mustWrite(t, filepath.Join(f.archive, "profile", "CLAUDE.md"), "archived rules\n")
 	mustWrite(t, filepath.Join(f.claudeDir, "CLAUDE.md"), "local rules\n")
 	old := time.Now().Add(-48 * time.Hour)
 	if err := os.Chtimes(filepath.Join(f.claudeDir, "CLAUDE.md"), old, old); err != nil {
 		t.Fatal(err)
 	}
-	out, err := f.run(t, "import", "--profile-only")
+	return f
+}
+
+func transcripts(f importFixture) []string {
+	m, _ := filepath.Glob(filepath.Join(f.claudeDir, "projects", "*", "*.jsonl"))
+	return m
+}
+
+func TestProfileOnlyTakesNewerRulesOnly(t *testing.T) {
+	// control: the same fixture, imported normally, files the transcript.
+	c := profileOnlyFixture(t)
+	if out, err := c.runAsHome(t, c.dev, "import", "--no-plugins"); err != nil || len(transcripts(c)) == 0 {
+		t.Fatalf("control import filed nothing (err %v):\n%s", err, out)
+	}
+
+	f := profileOnlyFixture(t)
+	homeBefore, _ := os.ReadDir(f.dev)
+	out, err := f.runAsHome(t, f.dev, "import", "--profile-only")
 	if err != nil {
 		t.Fatalf("import --profile-only: %v\n%s", err, out)
 	}
 	if got := mustRead(t, filepath.Join(f.claudeDir, "CLAUDE.md")); got != "archived rules\n" {
 		t.Errorf("newer archived CLAUDE.md not taken: %q\n%s", got, out)
 	}
-	if kept, _ := filepath.Glob(filepath.Join(p, "replaced", "*", "*", "CLAUDE.md")); len(kept) == 0 {
+	if kept, _ := filepath.Glob(filepath.Join(f.archive, "profile", "replaced", "*", "*", "CLAUDE.md")); len(kept) == 0 {
 		t.Errorf("local CLAUDE.md not kept in profile/replaced/:\n%s", out)
 	}
-	if files := f.localBucket(t, "D--work-api"); len(files) != 0 {
-		t.Errorf("a transcript was filed: %v", files)
+	if m := transcripts(f); len(m) != 0 {
+		t.Errorf("a transcript was filed: %v", m)
 	}
-	if _, err := os.Stat(filepath.Join(f.claudeDir, "projects")); err == nil {
-		if m, _ := filepath.Glob(filepath.Join(f.claudeDir, "projects", "*", "*.jsonl")); len(m) != 0 {
-			t.Errorf("transcripts filed: %v", m)
-		}
+	if after, _ := os.ReadDir(f.dev); len(after) != len(homeBefore) {
+		t.Errorf("a work folder was placed: %v", after)
+	}
+}
+
+func TestProfileOnlyInstallsNoPlugins(t *testing.T) {
+	f := profileOnlyFixture(t)
+	mustWrite(t, filepath.Join(f.archive, "profile", "plugins", "OLD-BOX.json"),
+		`{"enabledPlugins":{"ponytail@ponytail":true},"extraKnownMarketplaces":{"ponytail":{"source":{"source":"github","repo":"DietrichGebert/ponytail"}}}}`)
+	out, err := f.runAsHome(t, f.dev, "import", "--profile-only", "--json")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if strings.Contains(out, "ponytail") || !strings.Contains(out, `"plugins": []`) {
+		t.Errorf("plugins were offered or installed:\n%s", out)
 	}
 }
 
 func TestProfileOnlyDryRunChangesNothing(t *testing.T) {
-	f := profileImportFixture(t)
-	mustWrite(t, filepath.Join(f.archive, "profile", "CLAUDE.md"), "archived rules\n")
-	mustWrite(t, filepath.Join(f.claudeDir, "CLAUDE.md"), "local rules\n")
-	old := time.Now().Add(-48 * time.Hour)
-	os.Chtimes(filepath.Join(f.claudeDir, "CLAUDE.md"), old, old)
-	if out, err := f.run(t, "import", "--profile-only", "--dry-run"); err != nil {
+	f := profileOnlyFixture(t)
+	snap := func() string {
+		var b strings.Builder
+		filepath.Walk(f.claudeDir, func(p string, i os.FileInfo, _ error) error { b.WriteString(p + "\n"); return nil })
+		filepath.Walk(f.archive, func(p string, i os.FileInfo, _ error) error { b.WriteString(p + "\n"); return nil })
+		return b.String()
+	}
+	before := snap()
+	out, err := f.runAsHome(t, f.dev, "import", "--profile-only", "--dry-run")
+	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	if got := mustRead(t, filepath.Join(f.claudeDir, "CLAUDE.md")); got != "local rules\n" {
 		t.Errorf("dry run replaced CLAUDE.md: %q", got)
+	}
+	if after := snap(); after != before {
+		t.Errorf("dry run wrote files (profile/replaced, held list...):\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if !strings.Contains(out, "would") {
+		t.Errorf("dry run output does not say what would happen:\n%s", out)
+	}
+}
+
+func TestProfileOnlyNothingNewer(t *testing.T) {
+	f := profileOnlyFixture(t)
+	fresh := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(f.claudeDir, "CLAUDE.md"), fresh, fresh); err != nil {
+		t.Fatal(err)
+	}
+	out, err := f.runAsHome(t, f.dev, "import", "--profile-only")
+	if err != nil || !strings.Contains(out, "No rules or skills here are older than the archive's.") {
+		t.Errorf("want the nothing-newer line, got err=%v\n%s", err, out)
+	}
+}
+
+func TestProfileOnlyUnreachableArchiveAndHeldLock(t *testing.T) {
+	f := profileOnlyFixture(t)
+	missing := filepath.Join(f.archive, "gone")
+	out, err := exec.Command(binary, "import", "--profile-only", "--claude-dir", f.claudeDir, "--archive", missing).CombinedOutput()
+	if err == nil || !strings.Contains(string(out), missing+" is not reachable - is the sync client mounted?") {
+		t.Errorf("unreachable archive: err=%v\n%s", err, out)
+	}
+	if got := mustRead(t, filepath.Join(f.claudeDir, "CLAUDE.md")); got != "local rules\n" {
+		t.Errorf("CLAUDE.md changed: %q", got)
+	}
+
+	mustWrite(t, filepath.Join(f.claudeDir, "session-sync.lock"), fmt.Sprintf("%d token 2026-09-01T00:00:00Z\n", os.Getpid()))
+	o, err := f.runAsHome(t, f.dev, "import", "--profile-only")
+	if err == nil || !strings.Contains(o, "lock") {
+		t.Errorf("held lock not refused: err=%v\n%s", err, o)
+	}
+	if got := mustRead(t, filepath.Join(f.claudeDir, "CLAUDE.md")); got != "local rules\n" {
+		t.Errorf("CLAUDE.md changed under a held lock: %q", got)
 	}
 }
 
