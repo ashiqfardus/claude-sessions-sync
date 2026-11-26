@@ -123,8 +123,10 @@ func runDoctor(s streams, o doctorOpts) (doctorReport, error) {
 
 	// --- Claude's own state ---------------------------------------------------
 	root, rootSrc, err := resolveRoot(o.ClaudeDir)
-	if err != nil {
-		return doctorReport{}, err
+	if err != nil { // a check, not a bare error: the panel's Health read an empty report as all fine
+		add(check{"claude root", levelFail, err.Error(),
+			"Set HOME (USERPROFILE on Windows), or CLAUDE_CONFIG_DIR to where Claude Code keeps its files."})
+		return report(s, checks)
 	}
 	if st, err := os.Stat(root); err != nil || !st.IsDir() {
 		add(check{"claude root", levelFail, root + " does not exist",
@@ -740,7 +742,12 @@ func otherVersions(dest string) []string {
 
 // zipCheck says whether push zips idle conversations, and if it waits, for whom.
 func zipCheck(root, dest string) check {
-	if cfg, err := archive.LoadConfig(root); err == nil && !cfg.ZipOn() {
+	cfg, err := archive.LoadConfig(root)
+	switch {
+	case err != nil: // push zips nothing then: the file may hold zip-sessions off
+		return check{"zips", levelWarn, "idle conversations are not zipped: " + err.Error(),
+			"Push zips nothing until it can read session-sync.json, which may say zip-sessions off."}
+	case !cfg.ZipOn():
 		return check{"zips", levelInfo, "off: idle conversations stay loose", "`claude-sessions config zip-sessions on` zips them again; existing zips stay readable either way."}
 	}
 	waits, err := zipHoldouts(dest)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -64,5 +65,37 @@ func TestOtherVersionsIgnoresALeadingV(t *testing.T) {
 		if got, want := otherVersions(dest), []string{"LAP-4 (0.7.1)"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("version %s: otherVersions = %v, want %v", v, got, want)
 		}
+	}
+}
+
+// push zips nothing while session-sync.json cannot be read, so doctor must not say it
+// does.
+func TestZipCheckSaysWhenTheConfigCannotBeRead(t *testing.T) {
+	root, dest := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(archive.ConfigPath(root), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := zipCheck(root, dest)
+	if c.Level != levelWarn || !strings.Contains(c.Detail, "not zipped") || !strings.Contains(c.Detail, archive.ConfigPath(root)) {
+		t.Errorf("zipCheck = %+v; want a warning naming the unreadable config", c)
+	}
+}
+
+// With no home folder there is no Claude folder to check: the report says so, rather
+// than coming back empty, which the panel's Health read as all fine.
+func TestDoctorReportsAMissingHomeFolder(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("home", "") // plan9
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	if _, err := os.UserHomeDir(); err == nil {
+		t.Skip("this OS finds a home folder without HOME")
+	}
+	rep, err := runDoctor(quietStreams(), doctorOpts{NoProbe: true})
+	if !errors.Is(err, errChecksFailed) {
+		t.Errorf("err = %v, want errChecksFailed", err)
+	}
+	if len(rep.Checks) != 1 || rep.Checks[0].Name != "claude root" || rep.Checks[0].Level != levelFail || rep.OK {
+		t.Errorf("report %+v; want one failed claude root check", rep)
 	}
 }

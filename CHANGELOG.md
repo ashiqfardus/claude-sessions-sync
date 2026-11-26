@@ -31,6 +31,12 @@ All notable changes to this project are documented here. This project follows
   same,** so a moment when a sync client held a file cost its space for good. A failed
   zip or unzip is now tried again after a week. A conversation over the size limit, or
   one whose two copies differ, still waits until it changes.
+- **`doctor` said idle conversations are zipped when it could not read
+  session-sync.json.** `push` zips nothing then, and `doctor` now says so with the
+  error.
+- **With no home folder to be found, `doctor` printed only its header** and the panel's
+  Health showed nothing wrong. It now fails a `claude root` check that names the
+  problem, and `doctor --json` prints that report.
 
 ## [0.7.0] - 2026-11-26
 
