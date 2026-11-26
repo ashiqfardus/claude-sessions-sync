@@ -1,0 +1,13 @@
+$ claude-sessions import --claude-dir <LAP2-CLAUDE> --profile-only --json
+exit 0
+--- stdout
+{
+  "files": [
+    "skills/demo/SKILL.md"
+  ],
+  "replaced": [],
+  "from": "another machine's newer copy",
+  "keptIn": "<ARCHIVE>/profile/replaced/LAP-2/<STAMP>",
+  "plugins": []
+}
+--- stderr

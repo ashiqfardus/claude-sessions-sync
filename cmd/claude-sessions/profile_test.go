@@ -207,3 +207,57 @@ func TestImportPluginsFallBackToPrintedCommandsAndHonourNoPlugins(t *testing.T) 
 		t.Errorf("--no-plugins still handled plugins:\n%s", out)
 	}
 }
+
+func TestProfileOnlyTakesNewerRulesOnly(t *testing.T) {
+	f := profileImportFixture(t)
+	p := filepath.Join(f.archive, "profile")
+	mustWrite(t, filepath.Join(p, "CLAUDE.md"), "archived rules\n")
+	mustWrite(t, filepath.Join(f.claudeDir, "CLAUDE.md"), "local rules\n")
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(filepath.Join(f.claudeDir, "CLAUDE.md"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	out, err := f.run(t, "import", "--profile-only")
+	if err != nil {
+		t.Fatalf("import --profile-only: %v\n%s", err, out)
+	}
+	if got := mustRead(t, filepath.Join(f.claudeDir, "CLAUDE.md")); got != "archived rules\n" {
+		t.Errorf("newer archived CLAUDE.md not taken: %q\n%s", got, out)
+	}
+	if kept, _ := filepath.Glob(filepath.Join(p, "replaced", "*", "*", "CLAUDE.md")); len(kept) == 0 {
+		t.Errorf("local CLAUDE.md not kept in profile/replaced/:\n%s", out)
+	}
+	if files := f.localBucket(t, "D--work-api"); len(files) != 0 {
+		t.Errorf("a transcript was filed: %v", files)
+	}
+	if _, err := os.Stat(filepath.Join(f.claudeDir, "projects")); err == nil {
+		if m, _ := filepath.Glob(filepath.Join(f.claudeDir, "projects", "*", "*.jsonl")); len(m) != 0 {
+			t.Errorf("transcripts filed: %v", m)
+		}
+	}
+}
+
+func TestProfileOnlyDryRunChangesNothing(t *testing.T) {
+	f := profileImportFixture(t)
+	mustWrite(t, filepath.Join(f.archive, "profile", "CLAUDE.md"), "archived rules\n")
+	mustWrite(t, filepath.Join(f.claudeDir, "CLAUDE.md"), "local rules\n")
+	old := time.Now().Add(-48 * time.Hour)
+	os.Chtimes(filepath.Join(f.claudeDir, "CLAUDE.md"), old, old)
+	if out, err := f.run(t, "import", "--profile-only", "--dry-run"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if got := mustRead(t, filepath.Join(f.claudeDir, "CLAUDE.md")); got != "local rules\n" {
+		t.Errorf("dry run replaced CLAUDE.md: %q", got)
+	}
+}
+
+func TestProfileOnlyRefusesCombinations(t *testing.T) {
+	f := profileImportFixture(t)
+	for _, fl := range [][]string{{"--update"}, {"--repoint"}, {"--no-work"}, {"--search-root", f.dev}, {"--depth", "3"}, {"--include-bare-name"}} {
+		out, err := f.run(t, append([]string{"import", "--profile-only"}, fl...)...)
+		want := "--profile-only brings in rules and skills only; it cannot be combined with " + fl[0]
+		if err == nil || !strings.Contains(out, want) {
+			t.Errorf("%v: want refusal %q, got err=%v\n%s", fl, want, err, out)
+		}
+	}
+}

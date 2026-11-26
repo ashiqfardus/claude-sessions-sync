@@ -46,6 +46,7 @@ func cmdImport(args []string) error {
 	updateProfile := fs.Bool("update-profile", false, updateProfileHelp)
 	noPlugins := fs.Bool("no-plugins", false, noPluginsHelp)
 	asJSON := fs.Bool("json", false, "machine-readable output")
+	profileOnly := fs.Bool("profile-only", false, "bring in only the newer rules and skills: no conversations, memory or work folders, no plugins")
 	noWork := fs.Bool("no-work", false, noWorkHelp)
 	repoint := fs.Bool("repoint", false, "also rewrite conversations already here that name other machines' work folders (originals are backed up; any used in the last hour is skipped)")
 	if err := parseFlags(fs, args, false); err != nil {
@@ -53,7 +54,8 @@ func cmdImport(args []string) error {
 	}
 	o := importOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, SearchRoot: *roots, Depth: *depth,
 		DryRun: *dryRun, BareName: *bareName, Update: *update, UpdateProfile: *updateProfile,
-		NoPlugins: *noPlugins, NoWork: *noWork, Repoint: *repoint}
+		NoPlugins: *noPlugins, NoWork: *noWork, Repoint: *repoint, ProfileOnly: *profileOnly}
+	fs.Visit(func(f *flag.Flag) { o.DepthSet = o.DepthSet || f.Name == "depth" })
 	s := stdStreams()
 	if *asJSON {
 		s = jsonStreams()
@@ -62,6 +64,9 @@ func cmdImport(args []string) error {
 	if err != nil || !*asJSON {
 		return err
 	}
+	if *profileOnly {
+		return encodeJSON(os.Stdout, res.Profile)
+	}
 	return encodeJSON(os.Stdout, res.Rows)
 }
 
@@ -69,6 +74,7 @@ type importOpts struct {
 	ClaudeDir, ArchiveDir, SearchRoot                                   string
 	Depth                                                               int
 	DryRun, BareName, Update, UpdateProfile, NoPlugins, NoWork, Repoint bool
+	ProfileOnly, DepthSet                                               bool // DepthSet: --depth was passed
 }
 
 type importResult struct {
@@ -79,6 +85,17 @@ type importResult struct {
 // runImport files the archive's projects and work folders here, reports on s as it
 // goes, and returns a row for each.
 func runImport(s streams, o importOpts) (importResult, error) {
+	if o.ProfileOnly {
+		for _, c := range []struct {
+			set  bool
+			name string
+		}{{o.Update, "update"}, {o.Repoint, "repoint"}, {o.NoWork, "no-work"}, {o.SearchRoot != "", "search-root"},
+			{o.DepthSet, "depth"}, {o.BareName, "include-bare-name"}} {
+			if c.set {
+				return importResult{}, fmt.Errorf("--profile-only brings in rules and skills only; it cannot be combined with --%s", c.name)
+			}
+		}
+	}
 	if o.NoWork && o.Repoint {
 		return importResult{}, fmt.Errorf("--no-work and --repoint cannot be combined: --repoint rewrites conversations to work folders that --no-work does not restore")
 	}
@@ -96,6 +113,21 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	}
 	if st, err := os.Stat(dest); err != nil || !st.IsDir() {
 		return importResult{}, fmt.Errorf("%s is not reachable - is the sync client mounted?", dest)
+	}
+
+	if o.ProfileOnly {
+		lock, err := archive.AcquireLock(root)
+		if err != nil {
+			return importResult{}, err
+		}
+		defer lock.Release()
+		p := restoreProfile(root, dest, o.DryRun, true, false)
+		p.Files, p.Replaced, p.Plugins = nonNil(p.Files), nonNil(p.Replaced), nonNil(p.Plugins)
+		if len(p.Files) == 0 {
+			fmt.Fprintln(s.Out, "No rules or skills here are older than the archive's.")
+		}
+		printProfile(s.Out, p, o.DryRun)
+		return importResult{Rows: []importRow{}, Profile: p}, nil
 	}
 
 	slowRead := hintIfSlowTo(s.Err)

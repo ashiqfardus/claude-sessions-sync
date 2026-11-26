@@ -374,6 +374,14 @@ func TestGoldenChanging(t *testing.T) {
 		{"import-dry-run", imports("--dry-run"), nil},
 		{"import", imports(), nil},
 		{"import-json", imports("--json"), nil},
+		{"import-profile-only-json", func(t *testing.T) string {
+			e := goldenWork(t, goldenFixture(t))
+			l := goldenLAP2(t, e)
+			mustWrite(t, filepath.Join(l.m.archive, "profile", "skills", "demo", "SKILL.md"), "demo\n")
+			var out string
+			away(t, e.home, func() { out = runGolden(t, l, "import", "--profile-only", "--json") })
+			return out
+		}, []mask{{`/\d{8}-\d{6}"`, `/<STAMP>"`}}},
 		{"import-update", func(t *testing.T) string {
 			e := goldenWork(t, goldenFixture(t))
 			l := goldenLAP2(t, e)
