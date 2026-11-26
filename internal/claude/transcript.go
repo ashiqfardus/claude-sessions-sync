@@ -24,6 +24,9 @@ type Record struct {
 	SessionID string
 	IsMeta    bool
 	Line      int // 1-based line number, for reporting a match
+
+	title string // what this user turn would be listed by, "" for none; see title
+	typed bool   // title is text the user typed, not recovered from a wrapper
 }
 
 // Block is one piece of a message's content.
@@ -128,10 +131,10 @@ func Walk(path string, fn func(Record) bool) (Stats, error) {
 					// assistant only ever mentions those tags, and stripping there cut
 					// everything after an unclosed mention off the page.
 					strip := role != "assistant" && typ != "assistant"
+					text := rawText(content)
 					rec := Record{
 						Type:      typ,
 						Role:      role,
-						Text:      contentText(content, strip),
 						Blocks:    contentBlocks(content, strip),
 						Timestamp: parseTime(e.Timestamp),
 						Cwd:       e.Cwd,
@@ -139,6 +142,13 @@ func Walk(path string, fn func(Record) bool) (Stats, error) {
 						IsMeta:    e.IsMeta,
 						Line:      st.Lines,
 					}
+					if typ == "user" {
+						rec.title, rec.typed = title(text)
+					}
+					if strip {
+						text = stripInjected(text)
+					}
+					rec.Text = collapse(text)
 					if !fn(rec) {
 						return st, nil
 					}
@@ -200,6 +210,7 @@ func ScanHead(path string, maxLines int) (Summary, error) { return scan(path, ma
 
 func scan(path string, maxLines int) (Summary, error) {
 	s := Summary{Path: path}
+	var title Title
 
 	st, err := Walk(path, func(r Record) bool {
 		if s.Cwd == "" && r.Cwd != "" {
@@ -216,11 +227,9 @@ func scan(path string, maxLines int) (Summary, error) {
 				s.Last = r.Timestamp
 			}
 		}
-		if s.FirstPrompt == "" && r.Type == "user" && !r.IsMeta {
-			s.FirstPrompt = truncate(r.Text, maxPromptLen)
-		}
+		typed := title.Add(r)
 		if maxLines > 0 {
-			if s.Cwd != "" && s.FirstPrompt != "" {
+			if s.Cwd != "" && typed {
 				return false
 			}
 			if r.Line >= maxLines {
@@ -230,8 +239,94 @@ func scan(path string, maxLines int) (Summary, error) {
 		return true
 	})
 
+	s.FirstPrompt = truncate(title.String(), maxPromptLen)
 	s.Lines, s.Skipped = st.Lines, st.Skipped
 	return s, err
+}
+
+// Title picks a conversation's title from its records, given in order: the first
+// prompt the user typed, or failing that the first slash command or paste.
+type Title struct {
+	text  string
+	typed bool
+}
+
+// Add considers one record and reports whether the title is settled.
+//
+// A slash command or a paste is only a fallback: a conversation opened with /model or
+// /usage is about the question typed next, which is what its title already was.
+func (t *Title) Add(r Record) bool {
+	if !t.typed && r.Type == "user" && !r.IsMeta && r.title != "" && (r.typed || t.text == "") {
+		t.text, t.typed = r.title, r.typed
+	}
+	return t.typed
+}
+
+// String is the title, "" when no record gave one.
+func (t Title) String() string { return t.text }
+
+// wrapperTags are the blocks Claude Code wraps around, or splices into, what the user
+// typed. A title leaves them all out. injected, which also cleans search text and
+// pages, strips fewer: a paste or an opened file is the user's material there.
+var wrapperTags = []string{
+	"browser_instruction", "pasted_content", "ide_opened_file", "ide_selection",
+	"cross-session-message", "agent-message", "system-reminder", "task-notification",
+	"command-name", "command-message", "command-args",
+	"local-command-stdout", "local-command-stderr", "local-command-caveat",
+	"user-prompt-submit-hook", "bash-input", "bash-stdout", "bash-stderr",
+}
+
+// wrapper matches one wrapper block with its attributes; capture group i+1 is the
+// content of wrapperTags[i]. RE2 has no backreferences, so each tag is spelled out. One
+// left open runs to the end, so a truncated block leaks no markup either.
+var wrapper = func() *regexp.Regexp {
+	alts := make([]string, len(wrapperTags))
+	for i, t := range wrapperTags {
+		alts[i] = `<` + t + `(?:\s[^>]*)?>(.*?)(?:</` + t + `>|$)`
+	}
+	return regexp.MustCompile(`(?s)` + strings.Join(alts, "|"))
+}()
+
+// title is what a user turn would be listed by, and whether the user typed it.
+//
+// The text left once every wrapper block is removed is typed. A turn of wrappers alone
+// falls back to its slash command and arguments, or to the first line of a paste or of
+// a message from another session or agent: a session opened that way and never typed
+// in had no title at all. The rest - reminders, an opened file or selection, browser
+// instructions, hook output, task notices, ! commands and their output - give none: a
+// title made of them says nothing about the conversation, and a later turn may.
+func title(text string) (string, bool) {
+	var rest strings.Builder
+	var name, args, line string
+	last := 0
+	for _, m := range wrapper.FindAllStringSubmatchIndex(text, -1) {
+		rest.WriteString(text[last:m[0]])
+		rest.WriteByte(' ')
+		last = m[1]
+		for i, tag := range wrapperTags {
+			if m[2*i+2] < 0 {
+				continue
+			}
+			content := strings.TrimSpace(text[m[2*i+2]:m[2*i+3]])
+			switch {
+			case tag == "command-name" && name == "":
+				name = strings.TrimPrefix(content, "/")
+			case tag == "command-args" && args == "":
+				args = content
+			case line == "" && (tag == "pasted_content" || tag == "cross-session-message" || tag == "agent-message"):
+				line, _, _ = strings.Cut(content, "\n")
+			}
+			break
+		}
+	}
+	rest.WriteString(text[last:])
+	if t := collapse(rest.String()); t != "" {
+		return t, true
+	}
+	if name != "" {
+		return collapse("/" + name + " " + args), false
+	}
+	return collapse(line), false
 }
 
 // readLine returns one line without its terminator, however long it is.
@@ -275,39 +370,34 @@ var injected = regexp.MustCompile(`(?s)` + strings.Join([]string{
 	`<local-command-stdout>.*`,
 }, "|"))
 
-// contentText pulls readable text out of a message's content, which is either a
-// plain string or an array of typed blocks.
-func contentText(raw json.RawMessage, strip bool) string {
+// rawText pulls the text out of a message's content, which is either a plain string
+// or an array of typed blocks, as it was written.
+func rawText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
-
-	var text string
 	var asString string
 	if json.Unmarshal(raw, &asString) == nil {
-		text = asString
-	} else {
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(raw, &blocks) != nil {
-			return ""
-		}
-		var parts []string
-		for _, b := range blocks {
-			if b.Text != "" {
-				parts = append(parts, b.Text)
-			}
-		}
-		text = strings.Join(parts, " ")
+		return asString
 	}
-
-	if strip {
-		text = stripInjected(text)
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
 	}
-	return strings.TrimSpace(strings.Join(strings.Fields(text), " "))
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var parts []string
+	for _, b := range blocks {
+		if b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, " ")
 }
+
+// collapse puts text on one line, each run of white space a single space.
+func collapse(text string) string { return strings.Join(strings.Fields(text), " ") }
 
 // stripInjected removes the plumbing Claude Code splices into a message.
 func stripInjected(text string) string {
@@ -450,5 +540,6 @@ func truncate(s string, max int) string {
 
 // firstPrompt is retained for tests that exercise content extraction directly.
 func firstPrompt(raw json.RawMessage) string {
-	return truncate(contentText(raw, true), maxPromptLen)
+	t, _ := title(rawText(raw))
+	return truncate(t, maxPromptLen)
 }

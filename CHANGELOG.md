@@ -32,6 +32,17 @@ All notable changes to this project are documented here. This project follows
   the plugins left to install by hand.
 - **Small work folders no longer show "0.0 MB filed".** Sizes under 0.1 MB print in KB, and
   under 1 KB in bytes.
+- **Conversation titles showed the text Claude Code wraps around a message.** A
+  conversation opened from Claude in Chrome, an IDE, a paste, or a message from another
+  session was listed in `ls`, the panel, INDEX.md and the HTML pages as
+  `<ide_opened_file>The user opened the file…` and the like, and a message from another
+  session put that session's id in the title. Titles now leave those wrappers out and
+  show what you typed. A conversation opened with a slash command and never typed in had
+  no title at all; it is now listed by the command, as in `/review 123`. One opened with
+  only a paste is listed by the paste's first line. Each computer corrects the titles of
+  the conversations it still has on its next push, and the HTML pages are rendered once
+  more for it. A conversation already gone from the computer that backed it up keeps its
+  old title in INDEX.md and the panel.
 
 ## [0.7.2] - 2026-11-26
 

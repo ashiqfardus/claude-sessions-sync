@@ -388,7 +388,8 @@ func Archive(dest string, opts Options) (Result, error) {
 // every page is rendered again once. 2: secrets are redacted, times are local.
 // 3: a Content-Security-Policy forbids scripts, and more secret formats are redacted.
 // 4: Claude's Markdown is formatted (bold, inline code, links, headings, tables).
-const templateVersion = 4
+// 5: titles leave out Claude Code's wrapper blocks; only the index rows change.
+const templateVersion = 5
 
 // pageHref links a session's page from the main index.
 //
@@ -529,15 +530,9 @@ func renderOne(open func() (string, func(), error), project, id string, known *p
 	var last time.Time
 	var truncatedTurns int
 
+	var title claude.Title // what ls and the panel call it too
 	stats, err := claude.Walk(src, func(r claude.Record) bool {
-		if info.prompt == "" && r.Type == "user" && !r.IsMeta && r.Text != "" {
-			// Cut by characters, not bytes: a byte slice split Bengali text and emoji
-			// mid-character in the index.
-			info.prompt = Redact(r.Text)
-			if runes := []rune(info.prompt); len(runes) > 120 {
-				info.prompt = string(runes[:120]) + "..."
-			}
-		}
+		title.Add(r)
 		if !r.Timestamp.IsZero() {
 			// Transcripts record UTC; the index shows local file times. Pages used to
 			// disagree with their own index row by the UTC offset.
@@ -565,6 +560,12 @@ func renderOne(open func() (string, func(), error), project, id string, known *p
 		return info, err
 	}
 	info.skipped = stats.Skipped
+	// Cut by characters, not bytes: a byte slice split Bengali text and emoji
+	// mid-character in the index.
+	info.prompt = Redact(title.String())
+	if runes := []rune(info.prompt); len(runes) > 120 {
+		info.prompt = string(runes[:120]) + "..."
+	}
 
 	var b strings.Builder
 	b.WriteString(pageHead(project + " — " + id))

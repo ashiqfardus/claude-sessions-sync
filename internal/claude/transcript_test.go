@@ -104,7 +104,7 @@ func TestFirstPromptSkipsMachineText(t *testing.T) {
 		{"plain string", `"just do it"`, "just do it"},
 		{"block array", `[{"type":"text","text":"line one"},{"type":"text","text":"line two"}]`, "line one line two"},
 		{"whitespace collapsed", `"  a\n\n   b  "`, "a b"},
-		{"slash command", `"<command-name>/loop</command-name>"`, ""},
+		{"slash command", `"<command-name>/loop</command-name>"`, "/loop"},
 		{"system reminder", `"<system-reminder>ignore me</system-reminder>"`, ""},
 		{"empty", `""`, ""},
 		{"tool result block", `[{"type":"tool_result","text":""}]`, ""},
@@ -173,9 +173,9 @@ func TestFirstPromptKeepsHumanTextAroundInjectedBlocks(t *testing.T) {
 			"what changed in auth?",
 		},
 		{
-			"slash command alone still yields nothing",
+			"slash command alone is its own title",
 			`"<command-name>/loop</command-name><command-args>5m</command-args>"`,
-			"",
+			"/loop 5m",
 		},
 		{
 			"unterminated block does not leak markup",

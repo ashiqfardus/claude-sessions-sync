@@ -408,3 +408,20 @@ func TestExcludeIsIdempotent(t *testing.T) {
 		t.Errorf("excluded = %d, want 1", res.Excluded)
 	}
 }
+
+// The index lists a session by the title ls and the panel give it, without the
+// wrapper Claude Code put around the prompt.
+func TestRenderIndexTitleLeavesOutWrappers(t *testing.T) {
+	dest := writeArchive(t,
+		`{"type":"user","cwd":"/work/api","message":{"role":"user","content":"<ide_opened_file>The user opened the file /work/api/main.go</ide_opened_file>why is the build failing"}}`)
+	if _, err := Archive(dest, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dest, "html", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw); !strings.Contains(got, `<span class="prompt">why is the build failing</span>`) {
+		t.Errorf("index title:\n%s", got)
+	}
+}
