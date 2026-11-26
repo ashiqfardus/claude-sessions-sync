@@ -4,19 +4,24 @@ package panel
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
 
 // Folder is one directory the folder browser can show.
-type Folder struct{ Name, Path string }
+type Folder struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
 
 // FolderList is one directory's subfolders. Error is a fixed phrase with no detail.
 type FolderList struct {
-	Path, Parent string
-	Entries      []Folder
-	Truncated    bool
-	Error        string
+	Path      string   `json:"path"`
+	Parent    string   `json:"parent"`
+	Entries   []Folder `json:"entries"`
+	Truncated bool     `json:"truncated"`
+	Error     string   `json:"error"`
 }
 
 // maxEntries is a variable so a test can lower it.
@@ -85,7 +90,7 @@ func Roots(home string, drives []string) []Folder {
 	for _, d := range drives {
 		r = append(r, Folder{d, d})
 	}
-	if len(drives) == 0 {
+	if len(drives) == 0 && runtime.GOOS != "windows" { // no "/" on Windows
 		r = append(r, Folder{"/", "/"})
 	}
 	return r
