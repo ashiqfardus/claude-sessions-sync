@@ -6,6 +6,7 @@ package main_test
 // holds a session imported here.
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -535,8 +536,49 @@ func TestPullSkipsAnUnreadableZip(t *testing.T) {
 	}
 }
 
-// A second pull or import of conversations already here reads no zip: one garbled at
-// the same size and time goes unnoticed.
+// garbleData overwrites the packed bytes of every file in the zip at p, at the same
+// size and time, and leaves its index as it was: the index still reads, an extraction
+// fails.
+func garbleData(t *testing.T, p string) {
+	t.Helper()
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.OpenReader(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type span struct{ at, n int64 }
+	var spans []span
+	for _, f := range zr.File {
+		at, err := f.DataOffset()
+		if err != nil {
+			t.Fatal(err)
+		}
+		spans = append(spans, span{at, int64(f.CompressedSize64)})
+	}
+	zr.Close()
+	f, err := os.OpenFile(p, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range spans {
+		if _, err := f.WriteAt([]byte(strings.Repeat("x", int(s.n))), s.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Chtimes(p, st.ModTime(), st.ModTime())
+}
+
+// A second pull or import of conversations already here unpacks no zip: one whose
+// packed bytes are garbled at the same size and time goes unnoticed, though a first
+// one, on another computer, says it cannot be read. Only the packed bytes are garbled:
+// the index still lists the zip's folder files, so a run that took one for missing
+// would unpack the zip, and say so.
 func TestRepeatPullAndImportReadNoZip(t *testing.T) {
 	t.Run("pull", func(t *testing.T) {
 		archive, _, repo := pushedSession(t)
@@ -546,9 +588,12 @@ func TestRepeatPullAndImportReadNoZip(t *testing.T) {
 		if !fileExists(lap.session(repo)) {
 			t.Fatal("setup: the first pull filed nothing")
 		}
-		garble(t, convzip.Path(bucket, forkSession))
+		garbleData(t, convzip.Path(bucket, forkSession))
 		if out := lap.run(t, "pull", "--no-plugins"); strings.Contains(out, "could not be read") {
 			t.Errorf("the second pull read the zip:\n%s", out)
+		}
+		if out := newMachine(t, "LAP-3", archive).run(t, "pull", "--no-plugins"); !strings.Contains(out, "could not be read") {
+			t.Errorf("setup: a first pull did not notice the garbled zip:\n%s", out)
 		}
 	})
 	t.Run("import", func(t *testing.T) {
@@ -557,9 +602,12 @@ func TestRepeatPullAndImportReadNoZip(t *testing.T) {
 		if !fileExists(win.session(winRepo)) {
 			t.Fatal("setup: the first import filed nothing")
 		}
-		garble(t, convzip.Path(filepath.Join(archive, "projects", claude.Slug(macRepo)), forkSession))
+		garbleData(t, convzip.Path(filepath.Join(archive, "projects", claude.Slug(macRepo)), forkSession))
 		if out := importOn(t, win, macRepo, winRepo); strings.Contains(out, "could not be read") {
 			t.Errorf("the second import read the zip:\n%s", out)
+		}
+		if out := importOn(t, newMachine(t, "LAP-3", archive), macRepo, winRepo); !strings.Contains(out, "could not be read") {
+			t.Errorf("setup: a first import did not notice the garbled zip:\n%s", out)
 		}
 	})
 }
