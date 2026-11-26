@@ -365,13 +365,15 @@ func mustMkdirAll(t *testing.T, p string) {
 	}
 }
 
-// fakeSweep stands in for the scheduled sweep, which a test must not register, and
-// says the interval it was given.
+// fakeSweep stands in for the scheduled sweep and the panel's shortcut, which a test
+// must not register or create, and says the interval it was given.
 func fakeSweep(t *testing.T) {
 	hook(t, &installSweep, func(_ hostagent.Job, every int) (hostagent.Status, error) {
 		return hostagent.Status{Installed: true, Mechanism: "fake", Detail: fmt.Sprintf("every %d minutes", every)}, nil
 	})
 	hook(t, &uninstallSweep, func(hostagent.Job) (bool, error) { return true, nil })
+	hook(t, &installShortcut, func(hostagent.Job) (string, error) { return "/x/claude-sessions panel.app", nil })
+	hook(t, &uninstallShortcut, func(hostagent.Job) (bool, error) { return true, nil })
 	hook(t, &legacySweep, func() (string, bool) { return "", false })
 }
 
@@ -889,5 +891,47 @@ func TestActivityTextSaysWhatChanged(t *testing.T) {
 		if got := activityText(c.name, c.result); got != c.want {
 			t.Errorf("activityText(%s, %+v) = %q, want %q", c.name, c.result, got, c.want)
 		}
+	}
+}
+
+// Storage is read again straight after a job, not kept from before it: clean --yes's
+// removal shows at once.
+func TestStorageShowsCleanAtOnce(t *testing.T) {
+	isolateUI(t)
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "LAP-1")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	e := parityFixture(t)
+	u, cookie := actionPanel(t, e.root)
+	var before, after storageView
+	getJSON(t, u, cookie, "/api/storage", &before) // now kept for minutes
+	if st := runAction(t, u, cookie, "clean", map[string]any{"yes": true}); !st.OK {
+		t.Fatalf("clean --yes: %s", st.Error)
+	}
+	getJSON(t, u, cookie, "/api/storage", &after)
+	if after.Sizes.Conversations >= before.Sizes.Conversations {
+		t.Errorf("after clean --yes, Storage still shows %d bytes of conversations (was %d)", after.Sizes.Conversations, before.Sizes.Conversations)
+	}
+	if after.Duplicates == nil || after.Duplicates.Copies != 0 {
+		t.Errorf("after clean --yes, duplicates are %+v", after.Duplicates)
+	}
+}
+
+// A new name for this computer shows in the panel at once, not at its next start.
+func TestSetMachineShowsAtOnce(t *testing.T) {
+	isolateUI(t)
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "") // the name saved, not the tests' own
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	machineMu.RLock()
+	name := savedMachine
+	machineMu.RUnlock()
+	former := savedFormer()
+	t.Cleanup(func() { setSavedMachine(name, former) })
+	u, cookie := actionPanel(t, t.TempDir())
+	if st := runAction(t, u, cookie, "config", map[string]any{"action": "set-machine", "args": []string{"LAP-7"}}); !st.OK {
+		t.Fatalf("set-machine: %s", st.Error)
+	}
+	var state struct{ Machine string }
+	if getJSON(t, u, cookie, "/api/state", &state); state.Machine != "LAP-7" {
+		t.Errorf("/api/state says %q after set-machine LAP-7", state.Machine)
 	}
 }

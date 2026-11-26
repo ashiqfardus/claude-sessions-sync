@@ -285,7 +285,11 @@ var uiActions = map[string]uiAction{
 		return runForget(s, machinesOpts{ClaudeDir: u.root, Forget: b.Name})
 	}),
 	"config": action("Change a setting", true, func(u *uiServer, b configBody, s streams) (any, error) {
-		return runConfig(s, configOpts{ClaudeDir: u.root, Action: b.Action, Args: b.Args})
+		res, err := runConfig(s, configOpts{ClaudeDir: u.root, Action: b.Action, Args: b.Args})
+		if err == nil && b.Action == "set-machine" {
+			resolveRoot(u.root) // reads the new name in, for /api/state and the jobs after this one
+		}
+		return res, err
 	}),
 	"doctor": action("Run full check", false, func(u *uiServer, _ noBody, s streams) (any, error) {
 		// Every check, the write test too: Overview's health is the light one (Ruling P54).
@@ -335,6 +339,7 @@ func (u *uiServer) apiRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	j, err := u.jobs.Start(name, a.Label, func(log io.Writer) (any, error) {
+		defer u.dropCaches() // whatever it changed, even failing partway, shows on the next read
 		res, err := a.Run(u, body, streams{log, log})
 		if err == nil && a.Changes && !onlyLooks(name, body) {
 			if text := activityText(name, res); text != "" {
