@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
@@ -561,10 +562,59 @@ func panelDest(root string) (dest, problem string) {
 	if err != nil || dest == "" {
 		return "", "none"
 	}
-	if st, err := os.Stat(dest); err != nil || !st.IsDir() {
+	if !answers(dest) {
 		return "", "unreachable"
 	}
 	return dest, ""
+}
+
+// destLimit is how long a view waits for the archive folder to answer; statDest is
+// os.Stat. A test replaces both.
+var (
+	destLimit = 3 * time.Second
+	statDest  = os.Stat
+)
+
+// statRun is a Stat of an archive folder in progress.
+type statRun struct {
+	started time.Time
+	done    chan struct{}
+	ok      bool // set before done is closed
+}
+
+var (
+	statMu   sync.Mutex
+	statting = map[string]*statRun{}
+)
+
+// answers reports whether dest is a folder, as a Stat says within destLimit of starting.
+// On a hung network mount a Stat never returns, so callers share the one in progress:
+// reloads leave one blocked read, not one each, and once it is late they answer at once.
+func answers(dest string) bool {
+	statMu.Lock()
+	r := statting[dest]
+	if r == nil {
+		r = &statRun{started: time.Now(), done: make(chan struct{})}
+		statting[dest] = r
+		stat := statDest
+		go func() {
+			st, err := stat(dest)
+			r.ok = err == nil && st.IsDir()
+			statMu.Lock()
+			delete(statting, dest)
+			statMu.Unlock()
+			close(r.done)
+		}()
+	}
+	statMu.Unlock()
+	late := time.NewTimer(time.Until(r.started.Add(destLimit)))
+	defer late.Stop()
+	select {
+	case <-r.done:
+		return r.ok
+	case <-late.C:
+		return false
+	}
 }
 
 // parseConvQuery reads /api/conversations' parameters. limit counts conversations: 50

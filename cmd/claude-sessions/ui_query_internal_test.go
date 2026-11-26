@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -659,4 +660,39 @@ func TestKeepLabelHidesTokens(t *testing.T) {
 			t.Errorf("%+v: %s", e, l)
 		}
 	}
+}
+
+// Minor PA M2: on a hung network mount a view answers "unreachable" within the limit,
+// and reloads wait on the one Stat already running instead of leaving one each.
+func TestViewsAnswerWhenTheArchiveHangs(t *testing.T) {
+	root, _ := queryFixture(t)
+	var stats atomic.Int32
+	release := make(chan struct{})
+	hook(t, &destLimit, 50*time.Millisecond)
+	hook(t, &statDest, func(p string) (os.FileInfo, error) {
+		stats.Add(1)
+		<-release
+		return os.Stat(p)
+	})
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(release)
+		}
+	})
+	start := time.Now()
+	for i := 0; i < 5; i++ {
+		if _, problem := panelDest(root); problem != "unreachable" {
+			t.Fatalf("a hung archive gave %q", problem)
+		}
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("5 views took %v on a hung archive", d)
+	}
+	if n := stats.Load(); n != 1 {
+		t.Errorf("%d Stats left blocked after 5 views, want 1", n)
+	}
+	close(release)
+	released = true
+	waitUntil(t, "the archive to answer again", func() bool { _, problem := panelDest(root); return problem == "" })
 }
