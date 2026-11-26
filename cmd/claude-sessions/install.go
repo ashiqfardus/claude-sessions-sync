@@ -186,12 +186,7 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 	// The interval, for the panel to show. A sweep that could not be installed or
 	// removed keeps the one saved before: that job may still be registered.
 	if res.SweepFailed == "" {
-		cfg, err := archive.LoadConfig(root)
-		if err == nil {
-			cfg.SweepEvery = every
-			err = archive.SaveConfig(root, cfg)
-		}
-		if err != nil {
+		if err := saveSweepEvery(root, every); err != nil {
 			return res, err
 		}
 	}
@@ -247,16 +242,23 @@ func runUninstall(s streams, o uninstallOpts) (uninstallResult, error) {
 	res.HookEntries = removed
 	fmt.Fprintf(s.Out, "  hook      removed %d entr(y/ies)\n", removed)
 
-	if removed, err := uninstallSweep(sweepJob(root, "")); err != nil {
+	swept, err := uninstallSweep(sweepJob(root, ""))
+	switch {
+	case err != nil:
 		res.Sweep = fmt.Sprintf("FAILED: %v", err)
-	} else if removed {
+	case swept:
 		res.Sweep = "removed"
-	} else {
+	default:
 		// Said "removed" before, which hid a sweep registered under another profile's
 		// name (installed with CLAUDE_CONFIG_DIR set, uninstalled without it).
 		res.Sweep = "none registered for " + root
 	}
 	fmt.Fprintf(s.Out, "  sweep     %s\n", res.Sweep)
+	if err == nil && swept { // none runs now: config show and the panel say so
+		if err := saveSweepEvery(root, -1); err != nil {
+			return res, err
+		}
+	}
 
 	// The archive and the binary are left alone on purpose: the archive is the user's
 	// data, and removing the binary would delete the program that is running.
@@ -264,6 +266,16 @@ func runUninstall(s streams, o uninstallOpts) (uninstallResult, error) {
 	fmt.Fprintf(s.Out, "The binary is still at %s if you want to remove it.\n",
 		filepath.Join(root, "bin"))
 	return res, nil
+}
+
+// saveSweepEvery records the sweep's interval in minutes, -1 for none.
+func saveSweepEvery(root string, every int) error {
+	cfg, err := archive.LoadConfig(root)
+	if err != nil {
+		return err
+	}
+	cfg.SweepEvery = every
+	return archive.SaveConfig(root, cfg)
 }
 
 // installBinary copies the running executable into <claude-root>/bin.

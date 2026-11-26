@@ -160,3 +160,38 @@ func TestInstallNoSweepRemovesAnEarlierSweep(t *testing.T) {
 		}
 	}
 }
+
+// uninstall that removed the sweep saves none, so config show and the panel stop
+// showing its interval; one that removed nothing, or failed to, leaves it.
+func TestUninstallSavesNoSweep(t *testing.T) {
+	root, _, _ := installEnv(t)
+	var swept bool
+	var removeErr error
+	hook(t, &uninstallSweep, func(hostagent.Job) (bool, error) { return swept, removeErr })
+	for _, c := range []struct {
+		name  string
+		swept bool
+		err   error
+		every int
+	}{
+		{"removed", true, nil, -1},
+		{"none registered", false, nil, 60},
+		{"removal fails", false, errors.New("access denied"), 60},
+	} {
+		swept, removeErr = false, nil // install's own check for an earlier one finds none
+		if _, err := runInstall(quietStreams(), installOpts{ClaudeDir: root, Every: 60}); err != nil {
+			t.Fatal(err)
+		}
+		swept, removeErr = c.swept, c.err
+		if _, err := runUninstall(quietStreams(), uninstallOpts{ClaudeDir: root, KeepLegacy: true}); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		cfg, err := archive.LoadConfig(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.SweepEvery != c.every || cfg.Destination == "" {
+			t.Errorf("%s: after uninstall, sweepEvery = %d (want %d), destination %q", c.name, cfg.SweepEvery, c.every, cfg.Destination)
+		}
+	}
+}
