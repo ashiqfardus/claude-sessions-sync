@@ -1,6 +1,9 @@
 package panel
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"html"
 	"net/http"
@@ -20,8 +23,18 @@ func (s *Server) launch(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
+	k := s.NewKey()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"key": s.NewKey()})
+	json.NewEncoder(w).Encode(map[string]string{"key": k, "proof": LaunchProof(s.proofKey, k)})
+}
+
+// LaunchProof signs a /launch reply, so a second `ui` opens a key only from this panel.
+// Whatever now listens on a dead panel's port has seen that panel's secret in the
+// request, so the proof uses another key, kept only in the 0600 panel file.
+func LaunchProof(proofKey, key string) string {
+	m := hmac.New(sha256.New, []byte(proofKey))
+	m.Write([]byte(key))
+	return hex.EncodeToString(m.Sum(nil))
 }
 
 // Seams for the tests: where WriteRedirect decides its folder.

@@ -50,6 +50,7 @@ type Server struct {
 	port   int
 
 	cookie, token, secret string
+	proofKey              string // signs /launch replies; never sent, unlike secret
 
 	mu        sync.Mutex
 	keys      map[string]time.Time // unused one-time keys and when they were made
@@ -69,7 +70,7 @@ func New(o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{o: o, shell: shell, cookie: randHex(), token: randHex(), secret: randHex(), keys: map[string]time.Time{}}
+	s := &Server{o: o, shell: shell, cookie: randHex(), token: randHex(), secret: randHex(), proofKey: randHex(), keys: map[string]time.Time{}}
 	s.routes = []Route{
 		{Method: http.MethodGet, Path: "/k/", Prefix: true, Handler: s.useKey},
 		{Method: http.MethodPost, Path: "/launch", Handler: s.launch},
@@ -110,6 +111,7 @@ func (s *Server) Listen(port int) (net.Listener, error) {
 func (s *Server) Port() int             { return s.port }
 func (s *Server) Token() string         { return s.token }
 func (s *Server) LaunchSecret() string  { return s.secret }
+func (s *Server) ProofKey() string      { return s.proofKey }
 func (s *Server) Handler() http.Handler { return http.HandlerFunc(s.serve) }
 
 func (s *Server) KeyURL(key string) string {

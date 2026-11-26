@@ -591,3 +591,25 @@ func TestRunnerCloseRefusesNewJobs(t *testing.T) {
 		t.Fatalf("Start after the job ended: %v, want ErrClosed", err)
 	}
 }
+
+// Summary is what /api/state polls: no lines, and running turns false when the job ends.
+func TestJobSummaryHasNoLog(t *testing.T) {
+	r, _ := newJobRunner()
+	block := make(chan struct{})
+	j, err := r.Start("push", "Back up now", func(log io.Writer) (any, error) {
+		fmt.Fprintln(log, "a line")
+		<-block
+		return "result", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := j.Summary(), (Summary{ID: "1", Action: "push", Label: "Back up now", Running: true}); got != want {
+		t.Errorf("Summary during the job = %+v, want %+v", got, want)
+	}
+	close(block)
+	j.Wait()
+	if j.Summary().Running {
+		t.Error("Summary says running after the job ended")
+	}
+}

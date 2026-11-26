@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -316,9 +317,29 @@ func TestStalePanelFileStartsANewPanel(t *testing.T) {
 	}
 
 	// A dead PID is no panel, even when something answers on its port.
-	write(panelFile{PID: dead, Port: u.panel.Port(), Launch: u.panel.LaunchSecret()})
-	if ok, err := reuseRunning(root, false, io.Discard); ok || err != nil {
+	write(panelFile{PID: dead, Port: u.panel.Port(), Launch: u.panel.LaunchSecret(), ProofKey: u.panel.ProofKey()})
+	if archive.ProcessAlive(dead) {
+		t.Log("the dead PID was reused: that case is skipped")
+	} else if ok, err := reuseRunning(root, false, io.Discard); ok || err != nil {
 		t.Errorf("a dead PID: reuseRunning = %v, %v", ok, err)
+	}
+
+	// A live PID whose port another program has taken: it answers a key of the panel's
+	// form, unsigned, or signed with the secret the request carried. Neither is opened.
+	for name, proof := range map[string]func(secret, key string) string{
+		"no proof":              func(string, string) string { return "" },
+		"proof from the secret": panel.LaunchProof,
+	} {
+		key := strings.Repeat("ab", 32)
+		fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]string{"key": key, "proof": proof(r.Header.Get("X-CS-Launch"), key)})
+		}))
+		port, _ := strconv.Atoi(fake.URL[strings.LastIndex(fake.URL, ":")+1:])
+		write(panelFile{PID: os.Getpid(), Port: port, Launch: "the-old-secret", ProofKey: "the-old-proof-key"})
+		if ok, err := reuseRunning(root, false, io.Discard); ok || err != nil {
+			t.Errorf("%s: reuseRunning = %v, %v", name, ok, err)
+		}
+		fake.Close()
 	}
 
 	// A live PID (this one) whose port has no panel: the request fails.
@@ -334,6 +355,99 @@ func TestStalePanelFileStartsANewPanel(t *testing.T) {
 	}
 	if got := rec.get(); len(got) != 0 {
 		t.Errorf("opened %v for a stale panel file", got)
+	}
+}
+
+// start sweeps old redirect files, then reuses a running panel before it listens:
+// asked for the running panel's own port, it opens a tab there instead of failing.
+func TestUIStartReusesBeforeListening(t *testing.T) {
+	recordOpens(t)
+	u := newTestUI(t, uiOpts{NoOpen: true})
+	runUI(t, u)
+	waitUntil(t, "panel.json", func() bool { return panelFileExists(u.root) })
+	old := filepath.Join(os.TempDir(), "claude-sessions-panel-1.html") // isolateUI: also the Linux home
+	writeFile(t, old, "")
+	then := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(old, then, then); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := newUIServer(uiOpts{ClaudeDir: u.root, Port: u.panel.Port(), NoOpen: true, IdleAfter: time.Hour, Tick: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := second.start(&out); err != nil {
+		t.Fatalf("start with the running panel's port: %v", err)
+	}
+	if want := fmt.Sprintf("Open this address once: http://127.0.0.1:%d/k/", u.panel.Port()); !strings.HasPrefix(out.String(), want) {
+		t.Errorf("printed %q, want %s<key>", out.String(), want)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("start left a redirect file from an earlier run (%v)", err)
+	}
+}
+
+func TestUIPortInUse(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	port := l.Addr().(*net.TCPAddr).Port
+	u := newTestUI(t, uiOpts{NoOpen: true, Port: port})
+	err = u.start(io.Discard)
+	if want := fmt.Sprintf("port %d is in use: choose another with --port, or leave it out", port); err == nil || err.Error() != want {
+		t.Errorf("start on a busy port: %v, want %q", err, want)
+	}
+	if panelFileExists(u.root) {
+		t.Error("a panel that never listened wrote panel.json")
+	}
+}
+
+// Started from the shortcut there is no terminal: whatever catches its output must
+// not get a keyed address, from a new panel or from a reused one.
+func TestShortcutPanelPrintsNoKey(t *testing.T) {
+	rec := recordOpens(t)
+	u := newTestUI(t, uiOpts{FromShortcut: true})
+	var out bytes.Buffer
+	var startErr error
+	done := make(chan struct{})
+	go func() { startErr = u.start(&out); close(done) }()
+	t.Cleanup(func() {
+		u.stopSoon()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("start did not return after Stop")
+		}
+	})
+	waitUntil(t, "the browser to be opened", func() bool { return len(rec.get()) == 1 })
+	waitUntil(t, "panel.json", func() bool { return panelFileExists(u.root) })
+
+	second, err := newUIServer(uiOpts{ClaudeDir: u.root, FromShortcut: true, IdleAfter: time.Hour, Tick: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out2 bytes.Buffer
+	if err := second.start(&out2); err != nil || len(rec.get()) != 2 {
+		t.Fatalf("a second shortcut launch: %v, opened %v", err, rec.get())
+	}
+	os.Remove(rec.get()[1])
+	if out2.Len() != 0 {
+		t.Errorf("a reused shortcut panel printed %q", out2.String())
+	}
+	u.stopSoon()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("start did not return after Stop")
+	}
+	if startErr != nil {
+		t.Errorf("start: %v", startErr)
+	}
+	if out.Len() != 0 {
+		t.Errorf("a shortcut panel printed %q", out.String())
 	}
 }
 
@@ -398,10 +512,13 @@ func TestStopWaitsForTheJob(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || strings.TrimSpace(body) != `{"label":"Back up now","stopping":"after"}` {
 		t.Fatalf("/api/stop during a job gave %d %s", resp.StatusCode, body)
 	}
+	if panelFileExists(u.root) {
+		t.Error("panel.json is still there once the panel is stopping: a new `ui` would open a tab on it")
+	}
 	_, body = send(t, u, http.MethodGet, u.url("/api/state"), cookie)
 	var st struct {
 		Stopping bool
-		Job      *panel.State
+		Job      *panel.Summary
 	}
 	if err := json.Unmarshal([]byte(body), &st); err != nil || !st.Stopping || st.Job == nil || st.Job.Label != "Back up now" {
 		t.Errorf("/api/state while stopping: %s", body)
@@ -434,6 +551,35 @@ func TestStopWhenIdleStopsNow(t *testing.T) {
 	}
 	if panelFileExists(u.root) {
 		t.Error("panel.json is left behind")
+	}
+}
+
+// The page polls /api/state every 5 s per tab: a long job's log must not ride along
+// (Ruling P47). Its lines come from /api/jobs/events alone.
+func TestUIStateCarriesNoJobLog(t *testing.T) {
+	u := newTestUI(t, uiOpts{NoOpen: true})
+	wrote, release := make(chan struct{}), make(chan struct{})
+	if _, err := u.jobs.Start("push", "Back up now", func(log io.Writer) (any, error) {
+		for i := 0; i < 5000; i++ {
+			fmt.Fprintf(log, "%0100d\n", i)
+		}
+		close(wrote)
+		<-release
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runUI(t, u)
+	t.Cleanup(func() { close(release) })
+	cookie := login(t, u)
+	<-wrote
+
+	const job = `{"id":"1","action":"push","label":"Back up now","running":true}`
+	if _, body := send(t, u, http.MethodGet, u.url("/api/jobs/current"), cookie); strings.TrimSpace(body) != job {
+		t.Errorf("/api/jobs/current = %.200s, want %s", body, job)
+	}
+	if _, body := send(t, u, http.MethodGet, u.url("/api/state"), cookie); len(body) > 512 || !strings.Contains(body, `"job":`+job) {
+		t.Errorf("/api/state is %d bytes: %.200s", len(body), body)
 	}
 }
 
@@ -519,6 +665,18 @@ func TestReadPageIsSandboxed(t *testing.T) {
 		if csp := resp.Header.Get("Content-Security-Policy"); csp != panel.PageCSP {
 			t.Errorf("%s: CSP %q", p, csp)
 		}
+	}
+
+	// An archive whose html folder itself is a link: the same page is refused there.
+	linked := t.TempDir()
+	if os.Symlink(filepath.Join(dest, "html"), filepath.Join(linked, "html")) != nil {
+		return
+	}
+	if err := archive.SaveConfig(root, archive.Config{Destination: linked}); err != nil {
+		t.Fatal(err)
+	}
+	if resp, body := send(t, u, http.MethodGet, u.url("/read/web-app/"+id), cookie); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a page through a linked html folder gave %d %q", resp.StatusCode, body)
 	}
 }
 

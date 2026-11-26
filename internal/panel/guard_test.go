@@ -303,9 +303,13 @@ func TestLaunchNeedsTheSecret(t *testing.T) {
 	if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("right secret: %d, Cache-Control %q", w.Code, w.Header().Get("Cache-Control"))
 	}
-	var got struct{ Key string }
+	var got struct{ Key, Proof string }
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || len(got.Key) != 64 {
 		t.Fatalf("body %q: %v", w.Body.String(), err)
+	}
+	// Signed with the proof key, which the request never carries.
+	if got.Proof != LaunchProof(s.ProofKey(), got.Key) || s.ProofKey() == s.LaunchSecret() || got.Proof == LaunchProof(s.LaunchSecret(), got.Key) {
+		t.Errorf("proof %q does not sign the key with the proof key", got.Proof)
 	}
 	if w := do(s, http.MethodGet, "/k/"+got.Key); w.Code != http.StatusOK {
 		t.Errorf("launch key first use: %d, want 200", w.Code)

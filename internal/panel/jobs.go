@@ -188,6 +188,23 @@ func (j *Job) State() State {
 		OK: j.ok, Result: j.result, Error: j.errText, Lines: lines}
 }
 
+// Summary is a job without its log or result, for views polled often: the log comes
+// from ServeEvents, the result from its done event (Ruling P47).
+type Summary struct {
+	ID      string `json:"id"`
+	Action  string `json:"action"`
+	Label   string `json:"label"`
+	Running bool   `json:"running"`
+}
+
+// Summary copies no lines, so it holds the job's lock only to read one bool.
+func (j *Job) Summary() Summary {
+	j.mu.Lock()
+	running := j.running
+	j.mu.Unlock()
+	return Summary{ID: j.id, Action: j.action, Label: j.label, Running: running}
+}
+
 // Label needs no lock: it never changes.
 func (j *Job) Label() string { return j.label }
 

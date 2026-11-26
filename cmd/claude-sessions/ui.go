@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -69,7 +70,13 @@ type panelFile struct {
 	PID          int    `json:"pid"`
 	Port         int    `json:"port"`
 	Launch       string `json:"launch"`
+	ProofKey     string `json:"proofKey"` // checks the reply to /launch; never sent
 	FromShortcut bool   `json:"fromShortcut"`
+}
+
+// ownPanelFile is what this panel writes to its panel file.
+func (u *uiServer) ownPanelFile() panelFile {
+	return panelFile{PID: os.Getpid(), Port: u.panel.Port(), Launch: u.panel.LaunchSecret(), ProofKey: u.panel.ProofKey(), FromShortcut: u.opts.FromShortcut}
 }
 
 func panelFilePath(root string) string { return filepath.Join(root, "session-sync-base", "panel.json") }
@@ -105,6 +112,9 @@ func newUIServer(o uiOpts) (*uiServer, error) {
 
 // start opens a new tab on the panel already running for this profile, or starts one.
 func (u *uiServer) start(out io.Writer) error {
+	if u.opts.FromShortcut {
+		out = io.Discard // no terminal: whatever catches the output must not get a keyed address
+	}
 	panel.CleanRedirects(time.Minute)
 	if ok, err := reuseRunning(u.root, u.opts.NoOpen, out); ok {
 		return err
@@ -123,12 +133,16 @@ func (u *uiServer) start(out io.Writer) error {
 // run serves l until Ctrl-C, Stop, or - started from the shortcut - IdleAfter without
 // a heartbeat and no job running.
 func (u *uiServer) run(l net.Listener, out io.Writer) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	sigs := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	if !signal.Ignored(syscall.SIGHUP) { // under nohup it stays ignored
+		sigs = append(sigs, syscall.SIGHUP) // the terminal was closed
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), sigs...)
 	defer cancel()
 	srv := &http.Server{Handler: u.panel.Handler(), ReadHeaderTimeout: 10 * time.Second}
 
 	u.beat() // the start counts as a heartbeat
-	pf := panelFile{PID: os.Getpid(), Port: u.panel.Port(), Launch: u.panel.LaunchSecret(), FromShortcut: u.opts.FromShortcut}
+	pf := u.ownPanelFile()
 	b, _ := json.Marshal(pf)
 	if err := archive.WriteFileAtomic(panelFilePath(u.root), b, 0o600); err != nil {
 		l.Close()
@@ -244,13 +258,16 @@ func launchKey(pf panelFile) (string, bool) {
 	}
 	defer resp.Body.Close()
 	var k struct {
-		Key string `json:"key"`
+		Key   string `json:"key"`
+		Proof string `json:"proof"`
 	}
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<10)).Decode(&k) != nil {
 		return "", false
 	}
-	// The port may be another program's by now: take only a key of the panel's form.
-	if b, err := hex.DecodeString(k.Key); err != nil || len(b) != 32 {
+	// The port may be another program's by now, which has just seen pf.Launch: only the
+	// panel itself holds pf.ProofKey, so only its key is opened.
+	if b, err := hex.DecodeString(k.Key); err != nil || len(b) != 32 || pf.ProofKey == "" ||
+		!hmac.Equal([]byte(k.Proof), []byte(panel.LaunchProof(pf.ProofKey, k.Key))) {
 		return "", false
 	}
 	return k.Key, true
@@ -274,6 +291,7 @@ func (u *uiServer) idle() bool {
 // the panel is stopping (Ruling P22). A job that started just after an idle check is
 // waited for like any other.
 func (u *uiServer) stopSoon() *panel.Job {
+	removePanelFile(u.root, u.ownPanelFile()) // the next `ui` starts a new panel, not a tab on this one
 	j := u.jobs.Close()
 	if j == nil {
 		u.stopOnce.Do(func() { close(u.stop) })
@@ -310,10 +328,10 @@ func sendJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func currentJob(r *panel.Runner) *panel.State {
+func currentJob(r *panel.Runner) *panel.Summary {
 	if j := r.Current(); j != nil {
-		st := j.State()
-		return &st
+		s := j.Summary()
+		return &s
 	}
 	return nil
 }
@@ -328,11 +346,11 @@ func (u *uiServer) apiState(w http.ResponseWriter, r *http.Request) {
 	default:
 	}
 	sendJSON(w, struct {
-		Version      string       `json:"version"`
-		Machine      string       `json:"machine"`
-		FromShortcut bool         `json:"fromShortcut"`
-		Stopping     bool         `json:"stopping"`
-		Job          *panel.State `json:"job"`
+		Version      string         `json:"version"`
+		Machine      string         `json:"machine"`
+		FromShortcut bool           `json:"fromShortcut"`
+		Stopping     bool           `json:"stopping"`
+		Job          *panel.Summary `json:"job"`
 	}{version, machineName(), u.opts.FromShortcut, stopping, currentJob(u.jobs)})
 }
 
