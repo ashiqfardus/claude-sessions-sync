@@ -71,7 +71,7 @@ func runRender(s streams, o renderOpts) (render.Result, error) {
 		if !o.Quiet {
 			fmt.Fprintf(s.Out, "Excluding %s from now on (saved to %s and %s).\n",
 				strings.Join(o.Exclude, ", "), archive.ConfigPath(root), archive.SharedExcludePath(dest))
-			fmt.Fprintln(s.Out, "To publish again, remove it from renderExclude there and from render-exclude.txt.")
+			fmt.Fprintln(s.Out, "To publish it again: claude-sessions render --include <pattern>")
 		}
 	}
 	if len(o.Include) > 0 {

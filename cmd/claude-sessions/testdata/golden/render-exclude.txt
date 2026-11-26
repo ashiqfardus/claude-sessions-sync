@@ -2,7 +2,7 @@ $ claude-sessions render --claude-dir <CLAUDE> --exclude notes
 exit 0
 --- stdout
 Excluding notes from now on (saved to <CLAUDE>/session-sync.json and <ARCHIVE>/render-exclude.txt).
-To publish again, remove it from renderExclude there and from render-exclude.txt.
+To publish it again: claude-sessions render --include <pattern>
 
 Rendered 0, 2 already up to date -> <ARCHIVE>/html
 1 project(s) excluded; 1 previously published page(s) removed.
