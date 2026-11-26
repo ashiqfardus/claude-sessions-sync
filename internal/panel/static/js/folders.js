@@ -38,7 +38,7 @@ export function chooseFolder({ title, start } = {}) {
     }
 
     async function go(to) {
-      const mine = ++n
+      const mine = ++n, before = path.value // what the field held when this listing was asked for
       status.textContent = 'Loading…'
       let v
       try {
@@ -52,7 +52,8 @@ export function chooseFolder({ title, start } = {}) {
         return
       }
       if (mine !== n) return
-      current = path.value = v.path || ''
+      current = v.path || ''
+      if (path.value === before) path.value = current // never over a path typed while it loaded
       home = (v.roots && v.roots[0] && v.roots[0].path) || home // Roots puts the home folder first
       if (home.includes('\\')) hint.textContent = 'Type a full path, such as ~\\Documents or D:\\Backups.'
       parent = v.parent || ''
