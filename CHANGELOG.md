@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-27
+
 ### Fixed
 - **A drive root was still named `\` in the panel.** A computer on 0.7.1 wrote `\`
   for `E:\`, and the panel showed that. It now names the project from its path. Its
