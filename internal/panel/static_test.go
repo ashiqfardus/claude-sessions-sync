@@ -512,3 +512,26 @@ func TestScreensRegisterTheirName(t *testing.T) {
 		}
 	}
 }
+
+// The archive folder is chosen in one place, chooseArchive, which confirms a change with
+// the old and new folders (Ruling P62): a second chooser could re-point the archive on
+// one click. The no-archive state and Settings' Change folder both go through it.
+func TestArchiveFolderIsChosenInOnePlace(t *testing.T) {
+	files := staticFiles(t)
+	for p, s := range files {
+		want := 0
+		if p == "static/js/app.js" {
+			want = 1
+		}
+		if n := strings.Count(s, "'Choose the archive folder'"); path.Ext(p) == ".js" && n != want {
+			t.Errorf("%s opens the archive folder chooser %d times; only chooseArchive in app.js may", p, n)
+		}
+	}
+	app := files["static/js/app.js"]
+	if !regexp.MustCompile(`async function setArchive[^}]*chooseArchive\(`).MatchString(app) {
+		t.Error("app.js setArchive does not choose through chooseArchive")
+	}
+	if !strings.Contains(files["static/js/settings.js"], "chooseArchive(") {
+		t.Error("settings.js Change folder does not choose through chooseArchive")
+	}
+}

@@ -3,7 +3,7 @@
 // pages, the full backup file, the log and About. Each control runs the CLI's command
 // as a panel action, then reads the page again. Names, paths and log lines come from
 // the archive or this computer: they reach the page only through h() and textContent.
-import { h, icon, api, follow, toast, modal, confirmDialog, register, noArchive, when, allowExternal, README, GENERIC } from './app.js'
+import { h, icon, api, follow, toast, modal, confirmDialog, register, noArchive, chooseArchive, when, allowExternal, README, GENERIC } from './app.js'
 import { combo } from './combo.js'
 import { chooseFolder } from './folders.js'
 
@@ -324,10 +324,8 @@ register('settings', {
     // The new folder is confirmed with the old one, a detected one too (Ruling P62).
     changeFolder.addEventListener('click', async (e) => {
       const btn = e.currentTarget
-      const path = await chooseFolder({ title: 'Choose the archive folder' }) // the detected sync folders first (Ruling P52)
+      const path = await chooseArchive(v.archive ? v.archive.path : null, tilde)
       if (!path) return
-      if (v.archive && !await confirmDialog({ title: `Change the archive folder to ${tilde(path)}?`,
-        body: `Your other computers keep using ${tilde(v.archive.path)} until you change them too.`, confirm: 'Change folder' })) return
       if (!await config(btn, 'Changing the archive folder…', 'set-destination', path)) return
       toast('Changed the archive folder.')
       await reload(btn)

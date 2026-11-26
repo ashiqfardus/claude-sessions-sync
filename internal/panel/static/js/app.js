@@ -293,17 +293,35 @@ export function confirmDialog({ title, body, items, confirm, danger }) {
 // --- No archive, loading and errors ------------------------------------------------
 
 // noArchive(problem, retry) is the shared empty state for a view whose problem is
-// "none" or "unreachable". Choose folder runs config set-destination, then reloads.
+// "none" or "unreachable". Choose folder runs config set-destination, then reloads. An
+// unreachable folder is most often a sync app not started yet, so there Try again comes
+// first and a new folder is confirmed against the old one (Ruling P62).
 export function noArchive(problem, retry) {
   const unreachable = problem === 'unreachable'
   return h('div', { class: 'panel pad stack' }, h('p', null, unreachable ? UNREACHABLE : NO_ARCHIVE),
     h('div', { class: 'row' },
-      h('button', { type: 'button', class: 'btn primary', onclick: setArchive }, 'Choose folder'),
-      unreachable && retry && h('button', { type: 'button', class: 'btn', onclick: retry }, 'Try again')))
+      unreachable && retry && h('button', { type: 'button', class: 'btn primary', onclick: retry }, 'Try again'),
+      h('button', { type: 'button', class: unreachable ? 'btn' : 'btn primary', onclick: () => setArchive(unreachable) }, 'Choose folder')))
 }
 
-async function setArchive() {
-  const path = await chooseFolder({ title: 'Choose the archive folder' })
+// chooseArchive(old, show) asks for the archive folder, a detected sync folder too, and
+// confirms a change with the old and new folders (Ruling P62). old is null for a first
+// folder (nothing to confirm), '' when it is not known; it may be a promise of either.
+// show formats a path for the dialog. It gives the new path, or null.
+export async function chooseArchive(old, show = (p) => p) {
+  const path = await chooseFolder({ title: 'Choose the archive folder' }) // the detected sync folders first (Ruling P52)
+  if (!path || old == null) return path
+  const was = await old
+  if (path === was) return path
+  const ok = await confirmDialog({ title: `Change the archive folder to ${show(path)}?`,
+    body: `Your other computers keep using ${was ? show(was) : 'the old folder'} until you change them too.`, confirm: 'Change folder' })
+  return ok ? path : null
+}
+
+async function setArchive(unreachable) {
+  // The folder that can't be reached is the old one; read while the chooser is open.
+  const old = unreachable ? api.get('/api/settings').then((s) => (s && s.config && s.config.inUse) || '', () => '') : null
+  const path = await chooseArchive(old)
   if (!path) return
   try {
     const st = await api.run('config', { action: 'set-destination', args: [path] }, { wait: true })
