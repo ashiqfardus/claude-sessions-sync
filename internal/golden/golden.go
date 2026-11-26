@@ -46,10 +46,7 @@ func Normalize(s string, roots map[string]string) string {
 	})
 	for _, p := range pairs {
 		if p.from != "" {
-			// A whole name only: /x/001 is not the start of /x/0012. Roots end in a
-			// letter or digit, so \b ends the match at a separator, quote, space, "-",
-			// punctuation or the end of the text.
-			s = regexp.MustCompile(regexp.QuoteMeta(p.from)+`\b`).ReplaceAllLiteralString(s, p.to)
+			s = replaceWhole(s, p.from, p.to)
 		}
 	}
 	s = strings.ReplaceAll(s, "\r\n", "\n")
@@ -57,6 +54,33 @@ func Normalize(s string, roots map[string]string) string {
 	// A JSON-escaped separator (\\) is one slash, as the / it is on the other OSes. This
 	// also hides a wrong separator in the output, and turns JSON's \" and \u003c into /" and /u003c.
 	return strings.NewReplacer(`\\`, "/", `\`, "/").Replace(s)
+}
+
+// replaceWhole replaces each from in s that is a whole name: /x/001 is not the start of
+// /x/0012. A match ends at anything but a letter, digit or _ - a separator, quote,
+// space, "-", punctuation or the end of the text - whatever from itself ends in.
+func replaceWhole(s, from, to string) string {
+	var b strings.Builder
+	for {
+		i := strings.Index(s, from)
+		if i < 0 {
+			break
+		}
+		if end := i + len(from); end < len(s) && wordByte(s[end]) {
+			b.WriteString(s[:i+1])
+			s = s[i+1:]
+			continue
+		}
+		b.WriteString(s[:i])
+		b.WriteString(to)
+		s = s[i+len(from):]
+	}
+	b.WriteString(s)
+	return b.String()
+}
+
+func wordByte(c byte) bool {
+	return c == '_' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 // Check compares got with testdata/golden/<name>.txt, or writes that file when the
