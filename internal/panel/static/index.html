@@ -359,14 +359,14 @@
       <button type="button" class="btn" data-slot="rename">Rename</button>
       <p class="muted small full-line">Each computer needs its own name. A Mac's network name can change, so a fixed name keeps its history together.</p>
     </div>
-    <div class="panel table-box">
+    <div class="panel table-box" data-slot="computers-box">
       <table class="num computers-table">
         <caption class="sr">Computers using this archive</caption>
         <thead><tr><th scope="col">Computer</th><th scope="col">Version</th><th scope="col">Last backup</th><th scope="col">Ready for compression and deleting</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
         <tbody data-slot="computers"></tbody>
       </table>
     </div>
-    <p class="muted small">Compression and deleting wait until every computer is ready. Forget a computer you no longer use; its conversations stay in the archive.</p>
+    <p class="muted small" data-slot="computers-note">Compression and deleting wait until every computer is ready. Forget a computer you no longer use; its conversations stay in the archive.</p>
   </section>
 
   <div class="cols">
@@ -397,7 +397,7 @@
     <section aria-labelledby="map-h" class="section">
       <h2 id="map-h">Where the other computers' folders go here</h2>
       <ul class="panel rows" data-slot="maps"></ul>
-      <div class="row"><button type="button" class="btn" data-slot="add-folder">Add a folder</button><button type="button" class="btn" data-slot="add-project">Add a project</button></div>
+      <div class="row"><button type="button" class="btn" data-slot="add-folder">Add a folder</button><button type="button" class="btn" data-slot="add-project">Add a project</button><span class="muted small" role="status" data-slot="map-status"></span></div>
     </section>
 
     <section aria-labelledby="auto-backup-h" class="section">
@@ -430,17 +430,20 @@
 
     <section aria-labelledby="full-h" class="panel pad row">
       <div class="grow stack gap-3"><h2 id="full-h">Full backup file</h2><p class="muted">One zip of everything on this computer: conversations, subagents, memory and settings. Keep it somewhere safe; it may hold passwords from your conversations.</p></div>
-      <div class="row"><button type="button" class="btn" data-slot="backup-preview">Preview</button><button type="button" class="btn" data-slot="backup">Create backup file</button></div>
+      <div class="row"><button type="button" class="btn" data-slot="backup-preview">Preview</button><button type="button" class="btn" data-slot="backup">Create backup file</button><span class="muted small num" role="status" data-slot="backup-result"></span></div>
     </section>
   </div>
 
   <section aria-labelledby="log-h" class="section">
     <h2 id="log-h">Log</h2>
-    <pre class="mono log" data-slot="log"></pre>
-    <div class="row"><button type="button" class="btn" data-slot="open-log">Open the log file</button></div>
+    <pre class="mono log" tabindex="0" aria-labelledby="log-h" data-slot="log"></pre>
+    <div class="row"><button type="button" class="btn" data-slot="open-log">Open the log file</button><button type="button" class="btn" data-slot="full-check">Run full check</button><span class="muted small grow">The full check also tests writing to the archive folder and reads archived conversations, so it can take a while.</span></div>
   </section>
 
-  <p class="muted small" data-slot="about"></p>
+  <div class="stack gap-8">
+    <p class="muted small" data-slot="about"></p>
+    <div class="row"><button type="button" class="btn sm" data-slot="stop">Stop the panel</button><span class="muted small" role="status" data-slot="stop-note"></span></div>
+  </div>
 </template>
 
 <template id="t-commands">

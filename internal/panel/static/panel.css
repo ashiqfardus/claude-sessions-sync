@@ -299,11 +299,21 @@ p.status{white-space:normal}
 .every{flex:0 1 230px;min-width:180px}
 .profile-list{margin:0;padding-left:18px}
 .log{margin:0;padding:14px 16px;background:var(--ink);color:#DDE5E1;border-radius:12px;overflow-x:auto;line-height:1.65}
+[data-slot=auto-state]>svg{flex:none;align-self:flex-start;margin-top:2px} /* beside a long sentence it must not shrink */
+.log{max-height:24em;overflow-y:auto}
+.log:focus-visible{outline-color:#9FD3C0} /* on --ink, as .archive's */
+.map-target{overflow-wrap:anywhere}
+.compare-list{max-height:min(50vh,360px);overflow-y:auto}
+.compare-list>li{flex-direction:column;align-items:stretch;gap:4px;padding:10px 14px}
+.compare-copies{list-style:none;margin:0;padding:0}
+.compare-copies>li{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:2px 0}
 
 /* Commands */
 .commands-table{min-width:760px}
 .col-terminal{width:42%}
 .commands-table th[scope=rowgroup]{padding:16px 18px 6px;border-bottom:0;font-size:15px;font-weight:600;color:var(--ink);background:var(--surface-2)}
+.commands-table td{padding-top:9px;padding-bottom:9px}
+.commands-table tbody:not(:last-child) tr:last-child td{border-bottom:1px solid var(--line-soft)} /* one tbody per group */
 
 /* Searchable dropdown (Combo.dc.html) */
 .combo{position:relative;min-width:150px}

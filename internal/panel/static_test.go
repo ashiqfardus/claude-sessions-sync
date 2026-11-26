@@ -388,16 +388,31 @@ func TestPageScriptsKeepTheRules(t *testing.T) {
 // The README is the panel's only external link: app.js holds it as README, and
 // allowExternal is only ever called as allowExternal(README) (it also throws on any
 // other URL): never with a variable, never renamed, never taken from a dynamic import.
-// No caller is needed: Settings (Task 23) adds the one call.
+// It is called exactly once, by Settings for its About link (Ruling P32).
 func TestOnlyTheReadmeIsExternal(t *testing.T) {
 	files := staticFiles(t)
 	if !strings.Contains(files["static/js/app.js"], readmeLine) {
 		t.Errorf("app.js lacks %s", readmeLine)
 	}
+	calls := 0
 	for p, s := range files {
-		if path.Ext(p) == ".js" && externalMisuse(p, s) {
+		if path.Ext(p) != ".js" {
+			continue
+		}
+		if externalMisuse(p, s) {
 			t.Errorf("%s uses allowExternal other than as allowExternal(README)", p)
 		}
+		if p == "static/js/app.js" { // the definition, whose comment names the call
+			continue
+		}
+		if n := len(readmeCall.FindAllString(s, -1)); n > 0 && p != "static/js/settings.js" {
+			t.Errorf("%s calls allowExternal(README); only Settings' About link may", p)
+		} else {
+			calls += n
+		}
+	}
+	if calls != 1 {
+		t.Errorf("settings.js calls allowExternal(README) %d times, want exactly once", calls)
 	}
 }
 
