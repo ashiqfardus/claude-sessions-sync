@@ -321,6 +321,8 @@ func (u *uiServer) routes() []panel.Route {
 			w.WriteHeader(http.StatusNoContent)
 		}},
 		{Method: post, Path: "/api/stop", Handler: u.apiStop},
+		{Method: post, Path: "/api/run/", Prefix: true, Handler: u.apiRun},
+		{Method: get, Path: "/api/commands", Handler: func(w http.ResponseWriter, r *http.Request) { sendJSON(w, commandMap) }},
 		{Method: get, Path: "/api/jobs/current", Handler: func(w http.ResponseWriter, r *http.Request) { sendJSON(w, currentJob(u.jobs)) }},
 		{Method: get, Path: "/api/jobs/events", Handler: u.jobs.ServeEvents},
 		{Method: get, Path: "/api/log", Handler: u.apiLog},
