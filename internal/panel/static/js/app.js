@@ -151,6 +151,7 @@ export const api = {
   get(path, params) {
     const url = path + query(params)
     if (!inflight.has(url)) {
+      if (path === '/api/summary') summaryAt = Date.now()
       inflight.set(url, call(url).then((v) => { if (path === '/api/summary') lastBackup(v); return v })
         .finally(() => inflight.delete(url)))
     }
@@ -411,6 +412,7 @@ function isolate(h1) {
 // --- Heartbeat, stopped notice, rail foot ------------------------------------------
 
 let dead = false, leaving = false, beatTimer, pollTimer, busy = null
+let footText = '', summaryAt = 0 // the last summary's foot text, and when a summary was last asked for
 addEventListener('pagehide', () => { leaving = true })
 addEventListener('pageshow', () => { leaving = false })
 
@@ -441,29 +443,32 @@ function beat() {
 async function poll() {
   clearTimeout(pollTimer)
   if (dead) return
+  const asked = Date.now()
   let st
   try { st = await api.get('/api/state') } catch { return }
   if (!st) return
   nav.querySelector('[data-slot="machine"]').textContent = st.machine || ''
   const job = st.job && st.job.running ? st.job : null
+  const foot = nav.querySelector('[data-slot="foot"]')
   nav.querySelector('[data-slot="dot"]').classList.toggle('live', !!job)
   if (job) {
-    nav.querySelector('[data-slot="foot"]').textContent = job.label
+    foot.textContent = 'Running: ' + job.label // a state, not the button's words
     pollTimer = setTimeout(poll, 5000)
-  } else if (busy !== false && Date.now() - summaryAt > 3000) {
-    // The first poll, or a job just ended, and no screen has just read the summary.
-    api.get('/api/summary').catch(() => { /* the foot keeps its text */ })
+  } else if (busy !== false) {
+    // The first poll, or a job just ended: the last backup again, read afresh unless a
+    // screen has asked for the summary since this poll began.
+    if (footText) foot.textContent = footText
+    if (summaryAt < asked) api.get('/api/summary').catch(() => { /* the foot keeps its text */ })
   }
   busy = !!job
 }
 
-let summaryAt = 0
-
-// lastBackup shows a summary's last backup in the rail foot, unless a job is running.
+// lastBackup keeps a summary's last backup as the rail foot's text, shown unless a job
+// is running; poll shows it once the job ends.
 function lastBackup(summary) {
-  summaryAt = Date.now()
   const t = when(summary && summary.lastBackup)
-  if (!busy) nav.querySelector('[data-slot="foot"]').textContent = t ? 'Backed up ' + t.replace(/^Yesterday/, 'yesterday') : 'Not backed up yet'
+  footText = t ? 'Backed up ' + t.replace(/^Yesterday/, 'yesterday') : 'Not backed up yet'
+  if (!busy) nav.querySelector('[data-slot="foot"]').textContent = footText
 }
 
 rail(nav, document.querySelector('.grip[role="separator"]'))
