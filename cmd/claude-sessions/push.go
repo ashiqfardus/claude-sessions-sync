@@ -391,7 +391,7 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 			}
 			res.Sessions++
 
-			summary, _ := claude.ScanHead(t.Path, headScanLines)
+			summary, _ := claude.ScanTitle(t.Path, headScanLines)
 			if summary.Cwd != "" && t.ModTime.After(newestAt) {
 				newestAt = t.ModTime
 				newestCwd = summary.Cwd

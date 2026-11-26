@@ -232,7 +232,7 @@ func localTranscripts(root string) map[string]string {
 // or "Conversation <the start of its id>".
 func convTitle(path, id string) string {
 	if path != "" {
-		if s, err := claude.ScanHead(path, headScanLines); err == nil && strings.TrimSpace(s.FirstPrompt) != "" {
+		if s, err := claude.ScanTitle(path, headScanLines); err == nil && strings.TrimSpace(s.FirstPrompt) != "" {
 			return s.FirstPrompt
 		}
 	}

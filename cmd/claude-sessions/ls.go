@@ -87,7 +87,8 @@ func runLs(s streams, o lsOpts) ([]sessionRow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", dir, err)
 	}
-	if o.Archived || o.ArchiveDir != "" {
+	archived := o.Archived || o.ArchiveDir != ""
+	if archived {
 		buckets = withZipped(buckets)
 	}
 
@@ -118,7 +119,12 @@ func runLs(s streams, o lsOpts) ([]sessionRow, error) {
 		if o.Limit > 0 && len(rows) >= o.Limit {
 			break
 		}
-		sum, err := scanHead(s.Err, c.t.Path, headScanLines)
+		var sum claude.Summary
+		if archived {
+			sum, err = scanHead(s.Err, c.t.Path, headScanLines)
+		} else {
+			sum, err = claude.ScanTitle(c.t.Path, headScanLines) // on this disk: may read on for a title
+		}
 		if err != nil {
 			if isZip(c.t.Path) {
 				continue // noted on s.Err by scanHead

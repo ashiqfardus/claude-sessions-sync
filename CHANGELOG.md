@@ -5,6 +5,15 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **0.7.4 left some conversations with no title.** A conversation opened by a request
+  from another Claude session is titled by that request again, as on 0.7.3, without the
+  lines Claude Code adds around it. One opened by an agent's report, with nothing typed
+  in its first 200 lines, is now titled by the first thing you typed after them. To find
+  it, `ls`, `push` and the panel read on, up to 8 MB into this computer's copy.
+  `ls --archived` still reads only the first 200 lines of an archived copy. An agent's
+  report is still never a title.
+
 ## [0.7.4] - 2026-11-27
 
 ### Fixed

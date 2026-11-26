@@ -27,6 +27,7 @@ type Record struct {
 
 	title string // what this user turn would be listed by, "" for none; see title
 	typed bool   // title is text the user typed, not recovered from a wrapper
+	end   int64  // bytes read through this line, near enough to bound a scan
 }
 
 // Block is one piece of a message's content.
@@ -108,8 +109,10 @@ func Walk(path string, fn func(Record) bool) (Stats, error) {
 	// whole files and tool output, so read with a Reader, which grows to fit.
 	r := bufio.NewReaderSize(f, 256*1024)
 
+	var end int64
 	for {
 		line, readErr := readLine(r)
+		end += int64(len(line)) + 1
 		if line != "" || readErr == nil {
 			st.Lines++
 			if st.Lines == 1 {
@@ -141,6 +144,7 @@ func Walk(path string, fn func(Record) bool) (Stats, error) {
 						SessionID: e.SessionID,
 						IsMeta:    e.IsMeta,
 						Line:      st.Lines,
+						end:       end,
 					}
 					if typ == "user" {
 						rec.title, rec.typed = title(text)
@@ -202,13 +206,26 @@ func Cwds(path string) ([]string, error) {
 }
 
 // ScanAll reads the whole transcript.
-func ScanAll(path string) (Summary, error) { return scan(path, 0) }
+func ScanAll(path string) (Summary, error) { return scan(path, 0, 0) }
 
 // ScanHead reads at most maxLines lines, stopping as soon as it has both the cwd and
 // a first prompt.
-func ScanHead(path string, maxLines int) (Summary, error) { return scan(path, maxLines) }
+func ScanHead(path string, maxLines int) (Summary, error) { return scan(path, maxLines, 0) }
 
-func scan(path string, maxLines int) (Summary, error) {
+// ScanTitle is ScanHead that, when no line of the head gives a title, reads on until
+// one does, up to titleScanBytes into the file. It is for a copy on this computer's
+// disk: an archived copy may be on a drive that downloads what is read.
+func ScanTitle(path string, maxLines int) (Summary, error) {
+	return scan(path, maxLines, titleScanBytes)
+}
+
+// titleScanBytes bounds ScanTitle. A session opened by an agent's report can run a few
+// hundred tool results before the user types; 8 MB holds thousands of such lines, and
+// is read from a local disk in a fraction of a second. A bound in lines would not do:
+// a run of screenshots is a megabyte a line, and push rereads every session each time.
+const titleScanBytes = 8 << 20
+
+func scan(path string, maxLines int, titleBytes int64) (Summary, error) {
 	s := Summary{Path: path}
 	var title Title
 
@@ -232,7 +249,7 @@ func scan(path string, maxLines int) (Summary, error) {
 			if s.Cwd != "" && typed {
 				return false
 			}
-			if r.Line >= maxLines {
+			if r.Line >= maxLines && (title.String() != "" || r.end >= titleBytes) {
 				return false
 			}
 		}
@@ -289,14 +306,18 @@ var wrapper = func() *regexp.Regexp {
 
 // title is what a user turn would be listed by, and whether the user typed it.
 //
-// The text left once every wrapper block is removed is typed. A turn of wrappers alone
-// falls back to its slash command and arguments, or to the first line of a paste. A message
-// from another session or agent is another agent's text, not the user's: it gives none. The rest - reminders, an opened file or selection, browser
-// instructions, hook output, task notices, ! commands and their output - give none: a
-// title made of them says nothing about the conversation, and a later turn may.
+// The text left once every wrapper block, and the envelope around a message from
+// another session or agent, is removed is typed. A turn of wrappers alone falls back
+// to its slash command and arguments, or to the first line of a paste or of another
+// session's request: a peer's request is the task, as a paste is. An agent's message
+// is its report, not a task, and gives none. The rest - reminders, an opened file or
+// selection, browser instructions, hook output, task notices, ! commands and their
+// output - give none: a title made of them says nothing about the conversation, and a
+// later turn may.
 func title(text string) (string, bool) {
 	var rest strings.Builder
 	var name, args, line string
+	var peer bool
 	last := 0
 	for _, m := range wrapper.FindAllStringSubmatchIndex(text, -1) {
 		rest.WriteString(text[last:m[0]])
@@ -314,18 +335,41 @@ func title(text string) (string, bool) {
 				args = content
 			case line == "" && tag == "pasted_content":
 				line, _, _ = strings.Cut(content, "\n")
+			case line == "" && tag == "cross-session-message":
+				line = peerRequest(content)
 			}
+			peer = peer || tag == "cross-session-message" || tag == "agent-message"
 			break
 		}
 	}
 	rest.WriteString(text[last:])
-	if t := collapse(rest.String()); t != "" {
+	typed := rest.String()
+	if peer {
+		typed = peerEnvelope.ReplaceAllString(typed, " ")
+	}
+	if t := collapse(typed); t != "" {
 		return t, true
 	}
 	if name != "" {
 		return collapse("/" + name + " " + args), false
 	}
 	return collapse(line), false
+}
+
+// peerEnvelope is what Claude Code writes around a message from another session or
+// agent: a line before it, and after it a paragraph that ends the turn.
+var peerEnvelope = regexp.MustCompile(`(?s)^\s*(?:Another Claude session sent a message(?: while you were working)?|A peer session sent a message while you were working):` +
+	`|(?:This came from another Claude session|This is from another Claude session|IMPORTANT: This is NOT from your user|That "other Claude session" is an agent).*`)
+
+// peerRequest is the first line of another session's message that is the peer's own:
+// a hand-back frame above a relayed report is Claude Code's.
+func peerRequest(body string) string {
+	for _, l := range strings.Split(body, "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "[Subagent hand-back]") {
+			return l
+		}
+	}
+	return ""
 }
 
 // readLine returns one line without its terminator, however long it is.
