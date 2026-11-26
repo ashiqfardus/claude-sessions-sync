@@ -17,7 +17,28 @@ All notable changes to this project are documented here. This project follows
   terminal, a line such as `still reading the archive: 812 of 3657 conversations
   (2m10s)` now appears at most every 12 seconds. Piped or scripted output is unchanged.
 
+### Changed
+- **`import --dry-run` no longer downloads your conversations to preview them.** It
+  opened every compressed conversation and listed every conversation's folder, then
+  printed nothing it found there. On Google Drive streaming that took 15 minutes for a
+  4.7 GB archive. It now reads only what its report needs, and prints the same report.
+  A real import also writes rewritten conversations in larger pieces, which is faster
+  on a synced drive.
+- **`import` reports the other computers' work folders when it places them, before the
+  conversations.** A real import unpacks them first, and it can take minutes, but it
+  only reported them after every conversation line. A dry run lists them in the same
+  place.
+
 ### Fixed
+- **`import --dry-run` put a Desktop, Documents or Downloads folder in a different place
+  from the real import.** When another computer's work files make that folder here,
+  only the real run matched the folder's conversations to it. The dry run said "no
+  folder named "Desktop" under the search roots". The dry run now places them as the
+  real run does.
+- **`import --dry-run` counted far fewer work-folder files than the real import
+  unpacks.** It counted only the files stored loose in the archive and skipped the
+  files inside each packed folder. It now counts every file that would land. Both runs
+  also give the unpacked size, as in `; 464.5 MB filed`.
 - **`import --dry-run` read as if it had already filed conversations.** It said "N
   conversation(s) here still point at other machines' work folders". A dry run now says
   "after this import, N conversation(s) would still point at other machines' work
