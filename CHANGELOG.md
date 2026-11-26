@@ -5,6 +5,11 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-26
+
+There is no 0.6.0: its compression, deleting and several-computer work ship here with the
+browser panel.
+
 Upgrading: update every computer and let each push once. Zipping, `prune --yes` and the
 age rule wait until all of them have, and `doctor` names any they wait for. The
 panel's compression and deleting wait for every computer too, as the CLI does.
