@@ -210,7 +210,9 @@ func RemoveOrphanTemps(dest string) []string {
 	var removed []string
 	cutoff := time.Now().Add(-OrphanTempAge)
 	remove := func(path string, d fs.DirEntry) {
-		if !d.Type().IsRegular() || !strings.HasPrefix(d.Name(), ".tmp-") {
+		// Only names this tool's CreateTemp calls make: a user's own ".tmp-notes",
+		// archived from a work folder, is a real file.
+		if !d.Type().IsRegular() || !IsOwnTemp(d.Name()) {
 			return
 		}
 		if info, err := d.Info(); err == nil && info.ModTime().Before(cutoff) && os.Remove(path) == nil {

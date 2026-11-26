@@ -6,6 +6,9 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **A file of yours whose name starts with `.tmp-`, in a work folder, could be deleted
+  from the archive.** The leftover-file sweep took every `.tmp-` name for one of its own.
+  It now removes only the names this tool gives its temporary files.
 - **The log names every temporary file an automatic run deletes.** `push` logged
   only "removed 1 temporary file(s) left by an interrupted run". It now logs each path.
   On one laptop that line came back on every push because the same leftover was
@@ -51,6 +54,8 @@ All notable changes to this project are documented here. This project follows
   conversations of a project at `E:\` under the name `\`, and put every drive root of
   every Windows computer in that one project. It now shows `E:\`, and a project at `/`
   shows `/`. The name is corrected on that Windows computer's next push.
+  A keep entry saved under the old name `\` still protects every drive root, and one
+  saved as `E:\` is honoured by computers still writing `\`.
 
 ## [0.7.2] - 2026-11-26
 

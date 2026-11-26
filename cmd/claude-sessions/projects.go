@@ -38,6 +38,24 @@ func projectsOf(dest string) (map[string]archive.Project, error) {
 // projectLeaf is the folder name a project at path p is listed and matched by: its last
 // segment, from either OS, or for a root the root itself. filepath.Base made a Windows
 // drive root "\", which the panel listed as a project.
+// rootLeaf reports whether a folder name is one projectLeaf gives a root: "/", "\"
+// (every root before 0.7.3) or a drive letter's X:\.
+func rootLeaf(l string) bool {
+	return l == "/" || l == `\` || len(l) == 3 && l[1] == ':' && (l[2] == '\\' || l[2] == '/')
+}
+
+// rootPath reports whether p is a root: "/", a drive's X:\, or a UNC share \\host\share.
+func rootPath(p string) bool {
+	t := strings.TrimRight(p, `/\`)
+	if t == "" || len(t) == 2 && t[1] == ':' {
+		return p != ""
+	}
+	if rest, ok := strings.CutPrefix(t, `\\`); ok {
+		return strings.Count(strings.Trim(rest, `\`), `\`) == 1
+	}
+	return false
+}
+
 func projectLeaf(p string) string {
 	t := strings.TrimRight(p, `/\`)
 	switch {
@@ -186,7 +204,15 @@ func keptBy(r archive.Retention, projects map[string]archive.Project) func(id st
 // name matches a bucket that has the remote, as sameProject would say.
 func keeps(e archive.KeepEntry, p archive.Project, projects map[string]archive.Project) bool {
 	if e.Leaf != "" {
-		return p.Leaf != "" && strings.EqualFold(p.Leaf, e.Leaf)
+		if p.Leaf == "" {
+			return false
+		}
+		// Builds before 0.7.3 wrote "\" as the folder name of every drive root, where
+		// 0.7.3 writes E:\. A root kept under either name still protects every root, so
+		// nothing kept is deleted while computers run mixed versions.
+		// shortcut: a UNC share root kept as "share" is not matched to an older build's
+		// "\"; upgrade if a UNC project is ever kept (import refuses UNC projects today).
+		return strings.EqualFold(p.Leaf, e.Leaf) || rootLeaf(e.Leaf) && (rootLeaf(p.Leaf) || rootPath(p.Path))
 	}
 	if e.Remote == "" {
 		return false

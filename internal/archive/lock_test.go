@@ -197,3 +197,24 @@ func TestRemoveOwnTemps(t *testing.T) {
 		t.Errorf("removed %d from a missing folder", n)
 	}
 }
+
+// A user's own file whose name starts with ".tmp-", archived from a work folder, is
+// a real file: only names this tool's CreateTemp calls make are swept from the archive.
+func TestRemoveOrphanTempsKeepsAUsersTmpFile(t *testing.T) {
+	dest := t.TempDir()
+	user := filepath.Join(dest, "work", "MAC", "Users", "a", "notes", ".tmp-notes")
+	ours := filepath.Join(dest, "work", "MAC", "Users", "a", "notes", ".tmp-r.md-123")
+	stale := time.Now().Add(-OrphanTempAge - time.Minute)
+	for _, p := range []string{user, ours} {
+		mustWriteFile(t, p, "x")
+		if err := os.Chtimes(p, stale, stale); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := RemoveOrphanTemps(dest); len(got) != 1 || got[0] != ours {
+		t.Errorf("removed %q, want only %s", got, ours)
+	}
+	if _, err := os.Stat(user); err != nil {
+		t.Errorf("the user's .tmp-notes was removed: %v", err)
+	}
+}
