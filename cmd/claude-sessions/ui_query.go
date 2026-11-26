@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -315,8 +316,8 @@ func (q *convQuery) check() (since, until time.Time, err error) {
 // queryConversations is one page of the conversations q selects: the archive's, one
 // row per conversation across computers, or this computer's. A file in the archive that
 // cannot be read is counted in Unreadable and left out, not an error: the archive is
-// shared, and a sync app may have half written it.
-func queryConversations(root, dest string, q convQuery, now time.Time) (convPage, error) {
+// shared, and a sync app may have half written it. list is listBucket, or a cache of it.
+func queryConversations(root, dest string, q convQuery, now time.Time, list func(dest, b string, zips bool) bucketFiles) (convPage, error) {
 	since, until, err := q.check()
 	if err != nil {
 		return convPage{}, err
@@ -429,7 +430,7 @@ func queryConversations(root, dest string, q convQuery, now time.Time) (convPage
 		for _, r := range rows {
 			for _, b := range r.Buckets {
 				if _, ok := files[b]; !ok {
-					files[b] = listBucket(dest, b, q.Look == "archive")
+					files[b] = list(dest, b, q.Look == "archive")
 				}
 			}
 			for _, b := range r.Buckets {
@@ -555,6 +556,47 @@ func listBucket(dest, b string, zips bool) bucketFiles {
 	return f
 }
 
+// listings keeps listBucket's answers for a minute, so that turning a page or changing
+// a filter lists no archive folder again. A panel job drops them (dropCaches); what a
+// backup from the hook changed shows within the minute.
+type listings struct {
+	mu  sync.Mutex
+	gen int // drop's count: a listing made across a drop is not kept
+	m   map[string]listed
+}
+
+type listed struct {
+	files bucketFiles
+	until time.Time
+}
+
+func (c *listings) list(dest, b string, zips bool) bucketFiles {
+	key := fmt.Sprintf("%s\x00%s\x00%t", dest, b, zips)
+	c.mu.Lock()
+	l, ok := c.m[key]
+	gen := c.gen
+	c.mu.Unlock()
+	if ok && time.Now().Before(l.until) {
+		return l.files
+	}
+	f := listBucket(dest, b, zips)
+	c.mu.Lock()
+	if c.gen == gen {
+		if c.m == nil {
+			c.m = map[string]listed{}
+		}
+		c.m[key] = listed{f, time.Now().Add(time.Minute)}
+	}
+	c.mu.Unlock()
+	return f
+}
+
+func (c *listings) drop() {
+	c.mu.Lock()
+	c.m, c.gen = nil, c.gen+1
+	c.mu.Unlock()
+}
+
 // panelDest is the archive folder, or why the panel has none: "none" when no folder is
 // chosen, "unreachable" when it cannot be reached.
 func panelDest(root string) (dest, problem string) {
@@ -669,7 +711,7 @@ func (u *uiServer) apiConversations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var pg convPage
-		if pg, err = queryConversations(u.root, dest, q, time.Now()); err == nil {
+		if pg, err = queryConversations(u.root, dest, q, time.Now(), u.listings.list); err == nil {
 			sendJSON(w, pg)
 			return
 		}

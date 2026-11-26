@@ -1255,11 +1255,12 @@ func (u *uiServer) healthNow() []healthItem {
 	return u.health.do("", []healthItem{}, func() ([]healthItem, time.Duration) { return queryHealth(u.root, u.logf, &u.profiles) })
 }
 
-// dropCaches forgets the health and storage answers kept, for a job whose changes they
-// would not show yet: a panel job calls it when it ends.
+// dropCaches forgets the health, storage and folder-listing answers kept, for a job
+// whose changes they would not show yet: a panel job calls it when it ends.
 func (u *uiServer) dropCaches() {
 	u.health.drop()
 	u.storage.drop()
+	u.listings.drop()
 }
 
 func (u *uiServer) apiSettings(w http.ResponseWriter, r *http.Request) {

@@ -100,6 +100,7 @@ type uiServer struct {
 	health   flight[[]healthItem]
 	storage  flight[storageView]
 	profiles profileCache
+	listings listings // the Conversations page's folder listings
 }
 
 func newUIServer(o uiOpts) (*uiServer, error) {

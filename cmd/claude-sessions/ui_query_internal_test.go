@@ -162,7 +162,7 @@ func optionByKey(t *testing.T, opts []projectOption, key string) projectOption {
 
 func conversations(t *testing.T, root, dest string, q convQuery) convPage {
 	t.Helper()
-	pg, err := queryConversations(root, dest, q, time.Now())
+	pg, err := queryConversations(root, dest, q, time.Now(), listBucket)
 	if err != nil {
 		t.Fatalf("%+v: %v", q, err)
 	}
@@ -475,7 +475,7 @@ func TestConversationsRefuseBadValues(t *testing.T) {
 	for _, q := range []convQuery{{Age: "forever"}, {State: "lost"}, {Look: "cloud"}, {Role: "system"},
 		{Since: "2026-13-01"}, {Until: "yesterday"}, {Per: 101}, {Per: -1}, {Page: -1}, {Limit: -1},
 		{Text: "(", Regexp: true}} {
-		if _, err := queryConversations(root, dest, q, time.Now()); err == nil {
+		if _, err := queryConversations(root, dest, q, time.Now(), listBucket); err == nil {
 			t.Errorf("%+v was accepted", q)
 		} else if _, ok := err.(badQuery); !ok {
 			t.Errorf("%+v: %T %v", q, err, err)
@@ -695,4 +695,37 @@ func TestViewsAnswerWhenTheArchiveHangs(t *testing.T) {
 	close(release)
 	released = true
 	waitUntil(t, "the archive to answer again", func() bool { _, problem := panelDest(root); return problem == "" })
+}
+
+// Minor PA M3: turning a page or changing a filter lists no archive folder again; the
+// listings are kept a minute, and until a panel job ends.
+func TestConversationListingsKeptUntilAJobEnds(t *testing.T) {
+	root, dest := queryFixture(t)
+	u := newTestUI(t, uiOpts{ClaudeDir: root, NoOpen: true})
+	runUI(t, u)
+	cookie := login(t, u)
+	readable := func(path string) bool {
+		var pg convPage
+		getJSON(t, u, cookie, path, &pg)
+		for _, r := range pg.Rows {
+			if r.ID == qWeb {
+				return r.Readable
+			}
+		}
+		t.Fatalf("%s has no %s", path, qWeb)
+		return false
+	}
+	if !readable("/api/conversations") {
+		t.Fatal("the fixture's page is not seen")
+	}
+	if err := os.Remove(pagePath(dest, qbWeb, qWeb)); err != nil {
+		t.Fatal(err)
+	}
+	if !readable("/api/conversations?age=7d") {
+		t.Error("a filter change listed the folders again")
+	}
+	u.dropCaches()
+	if readable("/api/conversations?age=7d") {
+		t.Error("after a job the old listing was used")
+	}
 }
