@@ -15,6 +15,7 @@ import (
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/panel"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/render"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
 )
 
 // uiAction is one command the panel runs as a job. Run calls the command's runX, which
@@ -137,9 +138,76 @@ type (
 var panelConfigActions = []string{"show", "set-destination", "map", "unmap", "set-machine", "work", "work-placement",
 	"map-folder", "unmap-folder", "exclude-folder", "unexclude-folder", "keep", "unkeep", "keep-days", "zip-sessions"}
 
+// refusal is a body refused with a sentence the page shows as it is.
+type refusal string
+
+func (r refusal) Error() string { return string(r) }
+
+// notFull refuses a relative path: the panel's working folder is no one's choice, so
+// a path resolved against it lands where nobody picked.
+const notFull refusal = "Give the full path, starting from the top of the drive or from ~."
+
+// fullPath refuses p, when given, unless it is absolute here once ~ is expanded.
+func fullPath(p string) error {
+	if p != "" && !filepath.IsAbs(expandHome(p)) {
+		return notFull
+	}
+	return nil
+}
+
+// projectRef refuses what prune --project and config keep resolve against the working
+// folder: ".", ".." or a relative path. A project's name, or a path from any computer,
+// stays.
+func projectRef(p string) error {
+	if p = expandHome(p); p == "." || p == ".." || !rewrite.AbsoluteAnywhere(p) && strings.ContainsAny(p, `/\`) {
+		return notFull
+	}
+	return nil
+}
+
+func (b *restoreBody) check() error { return errors.Join(fullPath(b.Source), fullPath(b.ProjectPath)) }
+
+func (b *backupBody) check() error { return fullPath(b.Out) }
+
+func (b *importBody) check() error {
+	for _, r := range strings.Split(b.SearchRoot, ",") { // as import splits it
+		if err := fullPath(strings.TrimSpace(r)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *pruneBody) check() error {
+	for _, p := range b.Projects {
+		if err := projectRef(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (b *configBody) check() error {
 	if !slices.Contains(panelConfigActions, b.Action) {
 		return fmt.Errorf("%q is not a config action", b.Action)
+	}
+	arg := func(i int) string {
+		if i < len(b.Args) {
+			return b.Args[i]
+		}
+		return ""
+	}
+	switch b.Action {
+	case "set-destination":
+		return fullPath(arg(0))
+	case "map", "map-folder": // the folder here; map-folder's first is another computer's path
+		return fullPath(arg(1))
+	case "unexclude-folder": // as exclude-folder stored it, which may be another system's form
+		if p := expandHome(arg(0)); p != "" && !rewrite.AbsoluteAnywhere(p) {
+			return notFull
+		}
+	case "keep", "unkeep":
+		return projectRef(arg(0))
 	}
 	return nil
 }
@@ -244,7 +312,8 @@ const (
 )
 
 // apiRun starts the action /api/run/<name> names, with the request's body, and answers
-// {"id"}, or with ?wait=1 the job's final state.
+// {"id"}, or with ?wait=1 the job's final State, its lines and result included: that
+// is for tests and scripts, the page reads lines from /api/jobs/events.
 func (u *uiServer) apiRun(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/run/")
 	a, ok := uiActions[name]
@@ -258,7 +327,11 @@ func (u *uiServer) apiRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		u.logf("PANEL: %s: refused the request: %v", name, err)
-		sendStatus(w, http.StatusBadRequest, map[string]string{"error": badRun})
+		msg, r := badRun, refusal("")
+		if errors.As(err, &r) {
+			msg = string(r)
+		}
+		sendStatus(w, http.StatusBadRequest, map[string]string{"error": msg})
 		return
 	}
 	j, err := u.jobs.Start(name, a.Label, func(log io.Writer) (any, error) {
@@ -278,8 +351,8 @@ func (u *uiServer) apiRun(w http.ResponseWriter, r *http.Request) {
 		sendStatus(w, http.StatusConflict, map[string]string{"error": "The panel is stopping, so it starts nothing new."})
 		return
 	}
-	if r.URL.Query().Get("wait") == "1" {
-		sendJSON(w, j.Wait())
+	if r.URL.Query().Get("wait") == "1" { // for tests: the page follows the event stream
+		sendJSON(w, j.Wait()) // the full State, every line included
 		return
 	}
 	sendJSON(w, map[string]string{"id": j.Summary().ID})
@@ -323,10 +396,11 @@ func activityText(name string, result any) string {
 	case []importRow: // import and pull
 		convs, work := 0, 0
 		for _, row := range r {
-			if row.Kind == "work" {
+			switch n := row.Filed + row.Updated; {
+			case row.Kind != "work":
+				convs += n
+			case n > 0: // a folder placed again, unchanged, is no news
 				work++
-			} else {
-				convs += row.Filed + row.Updated
 			}
 		}
 		switch {
@@ -366,8 +440,14 @@ func activityText(name string, result any) string {
 	case backupResult:
 		return "Made a full backup file of " + plural(r.Transcripts, "conversation")
 	case installResult:
+		if r.SweepFailed != "" {
+			return "Set up automatic backup after each reply; the scheduled backup could not be changed"
+		}
 		return "Set up automatic backup"
 	case uninstallResult:
+		if strings.HasPrefix(r.Sweep, "FAILED") {
+			return "Turned off automatic backup after each reply; the scheduled backup could not be removed"
+		}
 		return "Turned off automatic backup"
 	case forgetResult:
 		return "Forgot the computer " + r.Forgot

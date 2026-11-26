@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"regexp"
 	"slices"
@@ -142,5 +143,36 @@ func TestConfigActionsMatchTheCLI(t *testing.T) {
 	sort.Strings(panelActions)
 	if !slices.Equal(cli, panelActions) {
 		t.Errorf("config -h lists %v; panelConfigActions is %v", cli, panelActions)
+	}
+}
+
+// Every flag the map says a panel action runs has a field in that action's body, so it
+// can be set from the page. A field named otherwise than its flag is listed here.
+func TestCoveredFlagsHaveABodyField(t *testing.T) {
+	renamed := map[string]string{"prune --older-than": "olderThanDays", "prune --project": "projects",
+		"machines --forget": "name", "prune --undo": "ids"}
+	n := 0
+	for _, e := range commandMap {
+		a, ok := strings.CutPrefix(e.Route, "/api/run/")
+		if !ok {
+			continue
+		}
+		for _, k := range e.Covers {
+			_, flag, ok := strings.Cut(k, " --")
+			if !ok {
+				continue
+			}
+			field := renamed[k]
+			if field == "" {
+				field = lowerCamel(flag)
+			}
+			n++
+			if err := uiActions[a].decode(json.RawMessage(`{"` + field + `": null}`)); err != nil {
+				t.Errorf("%s runs on %s, whose body has no %q field: %v", k, e.Route, field, err)
+			}
+		}
+	}
+	if n < 30 {
+		t.Errorf("checked only %d flags", n)
 	}
 }

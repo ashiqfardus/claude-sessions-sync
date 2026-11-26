@@ -389,23 +389,38 @@ func actionPanel(t *testing.T, root string) (*uiServer, string) {
 // postRun sends POST /api/run/<path> with body, as the page does.
 func postRun(t *testing.T, u *uiServer, cookie, path, body string) (*http.Response, string) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, u.url("/api/run/"+path), strings.NewReader(body))
+	resp, text, err := tryRun(u, cookie, path, body)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return resp, text
+}
+
+// tryRun is postRun for a goroutine, which must not stop the test itself.
+func tryRun(u *uiServer, cookie, path, body string) (*http.Response, string, error) {
+	req, err := http.NewRequest(http.MethodPost, u.url("/api/run/"+path), strings.NewReader(body))
+	if err != nil {
+		return nil, "", err
 	}
 	req.Header.Set("Cookie", cookie)
 	req.Header.Set("Origin", "http://"+req.URL.Host)
 	req.Header.Set("X-CS-Token", u.panel.Token())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
+	return resp, string(b), err
+}
+
+// lowerCamel is a flag's name as a body field: no-write-probe is noWriteProbe.
+func lowerCamel(flag string) string {
+	parts := strings.Split(flag, "-")
+	for i := 1; i < len(parts); i++ {
+		parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
 	}
-	return resp, string(b)
+	return strings.Join(parts, "")
 }
 
 type finalState struct {
@@ -508,6 +523,8 @@ func TestEveryActionHasAParityCase(t *testing.T) {
 // panel, and the others belong to the hooks, the sweep and diagnostics.
 func TestRunRefusesUnknownFields(t *testing.T) {
 	isolateUI(t)
+	fakeSweep(t) // should a refusal fail, no sweep is registered and no log opened
+	recordOpens(t)
 	root, _ := queryFixture(t)
 	u, cookie := actionPanel(t, root)
 	if resp, body := postRun(t, u, cookie, "push", `{"quiet": true}`); resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, badRun) {
@@ -517,15 +534,9 @@ func TestRunRefusesUnknownFields(t *testing.T) {
 	// Every exempt flag, by its Go and its JSON names, to every action.
 	names := []string{"noHTML", "noProbe", "keepLegacy", "archiveDir", "replaceLegacySweep", "claudeDir", "json"}
 	for _, x := range mapExempt {
-		i := strings.Index(x, "--")
-		if i < 0 {
-			continue // a command
+		if i := strings.Index(x, "--"); i >= 0 { // not a command
+			names = append(names, lowerCamel(x[i+2:]))
 		}
-		parts := strings.Split(x[i+2:], "-") // --no-write-probe is noWriteProbe
-		for j := 1; j < len(parts); j++ {
-			parts[j] = strings.ToUpper(parts[j][:1]) + parts[j][1:]
-		}
-		names = append(names, strings.Join(parts, ""))
 	}
 	for name := range uiActions {
 		for _, f := range names {
@@ -619,7 +630,11 @@ func TestDoubleSubmitStartsOneJob(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			resp, body := postRun(t, u, cookie, "prune", `{"ids": ["`+pWeb2+`"], "yes": true}`)
+			resp, body, err := tryRun(u, cookie, "prune", `{"ids": ["`+pWeb2+`"], "yes": true}`)
+			if err != nil {
+				t.Error(err)
+				return
+			}
 			answers <- answer{resp.StatusCode, body}
 		}()
 	}
@@ -798,5 +813,81 @@ func TestRunAfterStopIsRefused(t *testing.T) {
 	resp, body := postRun(t, u, cookie, "push", `{}`)
 	if resp.StatusCode != http.StatusConflict || !strings.Contains(body, "The panel is stopping, so it starts nothing new.") {
 		t.Errorf("a run after Stop gave %d %s", resp.StatusCode, body)
+	}
+}
+
+// A path the panel would resolve against its own working folder is refused with a
+// plain sentence, before any job; a full path, ~, or a project's name is not.
+func TestRunRefusesRelativePaths(t *testing.T) {
+	isolateUI(t)
+	fakeSweep(t)
+	recordOpens(t)
+	root, _ := queryFixture(t)
+	u, cookie := actionPanel(t, root)
+	abs := t.TempDir()
+	for _, c := range []struct{ action, body string }{
+		{"restore", `{"source": "transcripts", "projectPath": "` + jsonPath(abs) + `"}`},
+		{"restore", `{"source": "` + jsonPath(abs) + `", "projectPath": "dev/web-app"}`},
+		{"backup", `{"out": "backups"}`},
+		{"import", `{"searchRoot": "` + jsonPath(abs) + `, dev"}`},
+		{"config", `{"action": "set-destination", "args": ["archive"]}`},
+		{"config", `{"action": "map", "args": ["-Users-you-dev-api", "dev/api"]}`},
+		{"config", `{"action": "map-folder", "args": ["/Users/you/reports", "reports"]}`},
+		{"config", `{"action": "unexclude-folder", "args": ["dev/notes"]}`},
+		{"prune", `{"projects": ["."]}`},
+		{"prune", `{"projects": ["notes", ".."]}`},
+		{"prune", `{"projects": ["dev/web-app"]}`},
+		{"config", `{"action": "keep", "args": ["./web-app"]}`},
+		{"config", `{"action": "unkeep", "args": ["dev\\web-app"]}`},
+	} {
+		resp, body := postRun(t, u, cookie, c.action, c.body)
+		if want := `{"error":"` + string(notFull) + `"}`; resp.StatusCode != http.StatusBadRequest || strings.TrimSpace(body) != want {
+			t.Errorf("%s %s gave %d %s, want 400 %s", c.action, c.body, resp.StatusCode, body, want)
+		}
+	}
+	if u.jobs.Current() != nil || u.jobs.Get("1") != nil {
+		t.Error("a refused path started a job")
+	}
+
+	for _, c := range []struct{ action, body string }{
+		{"restore", `{"source": "` + jsonPath(abs) + `", "projectPath": "~/dev/web-app"}`},
+		{"backup", `{"out": "~/claude-backups"}`},
+		{"backup", `{}`},
+		{"import", `{"searchRoot": "` + jsonPath(abs) + `, ~/dev"}`},
+		{"config", `{"action": "set-destination", "args": ["` + jsonPath(abs) + `"]}`},
+		{"config", `{"action": "map-folder", "args": ["E:\\work\\reports", "` + jsonPath(abs) + `"]}`},
+		{"config", `{"action": "unexclude-folder", "args": ["E:\\work\\reports"]}`},
+		{"prune", `{"projects": ["web-app", "/Users/you/dev/api", "E:\\web-app"]}`},
+		{"config", `{"action": "keep", "args": ["web-app"]}`},
+		{"config", `{"action": "unkeep", "args": ["` + qWeb + `"]}`},
+	} {
+		if err := uiActions[c.action].decode(json.RawMessage(c.body)); err != nil {
+			t.Errorf("%s %s was refused: %v", c.action, c.body, err)
+		}
+	}
+}
+
+// jsonPath is p as a JSON string's content.
+func jsonPath(p string) string { return strings.ReplaceAll(p, `\`, `\\`) }
+
+// A changing run's activity line says what changed, and nothing for a run that changed
+// nothing; a sweep that could not be changed is said too.
+func TestActivityTextSaysWhatChanged(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		result any
+		want   string
+	}{
+		{"import", []importRow{{Filed: 2}, {Kind: "work", Machine: "LAP-2"}}, "Brought in 2 conversations"},
+		{"import", []importRow{{Skipped: 3}, {Kind: "work", Machine: "LAP-2"}}, ""},
+		{"pull", []importRow{{Updated: 1}, {Kind: "work", Filed: 1}}, "Brought in 1 conversation and 1 work folder"},
+		{"install", installResult{Sweep: "launchd: every 30 minutes"}, "Set up automatic backup"},
+		{"install", installResult{SweepFailed: "access denied"}, "Set up automatic backup after each reply; the scheduled backup could not be changed"},
+		{"uninstall", uninstallResult{Sweep: "removed"}, "Turned off automatic backup"},
+		{"uninstall", uninstallResult{Sweep: "FAILED: access denied"}, "Turned off automatic backup after each reply; the scheduled backup could not be removed"},
+	} {
+		if got := activityText(c.name, c.result); got != c.want {
+			t.Errorf("activityText(%s, %+v) = %q, want %q", c.name, c.result, got, c.want)
+		}
 	}
 }
