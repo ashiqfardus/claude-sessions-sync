@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -489,5 +490,21 @@ func TestDoctorProbeFailureAdvice(t *testing.T) {
 	}
 	if m, _ := filepath.Glob(filepath.Join(dest, ".cs-probe-*")); len(m) != 0 {
 		t.Errorf("probe left behind: %v", m)
+	}
+}
+
+func TestDoctorProbeRawFailureKeepsOldAdvice(t *testing.T) {
+	if os.Getuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("needs a read-only folder")
+	}
+	claudeDir := t.TempDir()
+	os.MkdirAll(filepath.Join(claudeDir, "projects"), 0o755)
+	dest := filepath.Join(t.TempDir(), "claude-sessions")
+	os.MkdirAll(dest, 0o755)
+	os.Chmod(dest, 0o555)
+	t.Cleanup(func() { os.Chmod(dest, 0o755) })
+	out, _ := captured(t, func() error { return cmdDoctor([]string{"--claude-dir", claudeDir, "--archive", dest}) })
+	if !strings.Contains(out, "The archive cannot be written to") || strings.Contains(out, "Linux and other sync apps") {
+		t.Errorf("wrong advice:\n%s", out)
 	}
 }

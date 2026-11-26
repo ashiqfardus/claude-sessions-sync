@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -24,14 +25,57 @@ type probeOps struct {
 
 var realProbeOps = probeOps{os.OpenFile, os.Rename, os.Chtimes}
 
+var gvfsRun = regexp.MustCompile(`^/run/user/[0-9]+/gvfs(/|$)`)
+
+// FolderProblem is a folder that cannot act as a synced folder (as opposed to a raw
+// OS error such as read-only or out of quota). doctor gives sync-app advice for it.
+type FolderProblem struct{ msg string }
+
+func (e *FolderProblem) Error() string { return e.msg }
+
+func problem(msg string) error { return &FolderProblem{msg} }
+
+// IsFolderProblem reports whether err is a FolderProblem.
+func IsFolderProblem(err error) bool {
+	var fp *FolderProblem
+	return errors.As(err, &fp)
+}
+
 // isGvfs reports whether p is GNOME Online Accounts' Drive view (a gvfs mount), which
-// is not a normal folder: no rename-over, no kept times.
+// is not a normal folder: no rename-over, no kept times. Links are resolved first,
+// best effort, so a link to the mount is caught.
 func isGvfs(p string) bool {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		p = r
+	}
 	p = filepath.ToSlash(p)
-	return strings.Contains(p, "/gvfs/") || strings.Contains(p, "/.gvfs") || strings.Contains(p, "google-drive:")
+	if gvfsRun.MatchString(p) {
+		return true
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".gvfs" || strings.HasPrefix(seg, "google-drive:") {
+			return true
+		}
+	}
+	return false
 }
 
 const gvfsMessage = "This is GNOME's Google Drive view, which is not a normal folder. Use a sync app that keeps a real folder: see Linux and other sync apps in the README."
+
+// Antivirus and indexers briefly lock a file just written; retry before failing.
+var probeRetryDelay = 150 * time.Millisecond
+
+func retry3(ok func() bool) bool {
+	for i := 0; i < 3; i++ {
+		if i > 0 {
+			time.Sleep(probeRetryDelay)
+		}
+		if ok() {
+			return true
+		}
+	}
+	return false
+}
 
 // Writable reports whether dir behaves like a synced folder: it can be written to,
 // creates files exclusively, replaces a file by renaming over it and keeps file times.
@@ -41,7 +85,7 @@ const gvfsMessage = "This is GNOME's Google Drive view, which is not a normal fo
 // exposes --no-write-probe to skip it.
 func Writable(dir string) error {
 	if isGvfs(dir) {
-		return errors.New(gvfsMessage)
+		return problem(gvfsMessage)
 	}
 	return probeFolder(dir, realProbeOps)
 }
@@ -71,25 +115,32 @@ func probeFolder(dir string, ops probeOps) error {
 	}
 	if g, err := ops.open(a, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err == nil {
 		g.Close()
-		return errors.New("this folder does not support creating a file only if it is new")
+		return problem("this folder does not support creating a file only if it is new")
 	}
 
 	if err := os.WriteFile(b, []byte("second"), 0o600); err != nil {
 		return err
 	}
-	if err := ops.rename(b, a); err != nil {
-		return errors.New("this folder cannot replace a file by renaming")
-	}
-	if got, err := os.ReadFile(a); err != nil || !bytes.Equal(got, []byte("second")) {
-		return errors.New("this folder cannot replace a file by renaming")
+	if !retry3(func() bool {
+		if ops.rename(b, a) != nil {
+			return false
+		}
+		got, err := os.ReadFile(a)
+		return err == nil && bytes.Equal(got, []byte("second"))
+	}) {
+		return problem("this folder cannot replace a file by renaming")
 	}
 
-	want := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
-	if err := ops.chtimes(a, want, want); err != nil {
-		return errors.New("this folder does not keep file times")
-	}
-	if st, err := os.Lstat(a); err != nil || !SameMTime(st.ModTime(), want) {
-		return errors.New("this folder does not keep file times")
+	// An even second: FAT truncates to 2 s, so an odd one would sit on the tolerance edge.
+	want := time.Date(2020, 1, 2, 3, 4, 6, 0, time.UTC)
+	if !retry3(func() bool {
+		if ops.chtimes(a, want, want) != nil {
+			return false
+		}
+		st, err := os.Lstat(a)
+		return err == nil && SameMTime(st.ModTime(), want)
+	}) {
+		return problem("this folder does not keep file times")
 	}
 	return nil
 }

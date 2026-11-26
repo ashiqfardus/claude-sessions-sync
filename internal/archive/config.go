@@ -525,6 +525,9 @@ func PrepareDestination(claudeRoot, dest string) (string, error) {
 	if err := ValidateDestination(claudeRoot, abs); err != nil {
 		return "", err
 	}
+	if isGvfs(abs) {
+		return "", problem(gvfsMessage)
+	}
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return "", err
 	}

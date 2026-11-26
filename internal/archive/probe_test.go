@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+func init() { probeRetryDelay = 0 }
+
 func probeLeft(t *testing.T, dir string) []string {
 	t.Helper()
 	m, _ := filepath.Glob(filepath.Join(dir, ".cs-probe-*"))
@@ -56,17 +58,41 @@ func TestProbeNamesTheFailedProperty(t *testing.T) {
 }
 
 func TestProbeRefusesGvfs(t *testing.T) {
-	for _, p := range []string{"/run/user/1000/gvfs/google-drive:host=x/My Drive", "/home/u/.gvfs/x", "/mnt/google-drive:foo/x"} {
+	for _, p := range []string{"/run/user/1000/gvfs/google-drive:host=x/My Drive", "/home/u/.gvfs/x", "/mnt/google-drive:foo/x", "/run/user/1000/gvfs"} {
 		if !isGvfs(p) {
 			t.Errorf("%s should be gvfs", p)
 		}
 	}
-	if isGvfs("/home/u/Insync/a@b/Google Drive") {
-		t.Error("Insync folder is not gvfs")
+	for _, p := range []string{"/home/u/Insync/a@b/Google Drive", "/home/u/work/gvfs/archive", "/.gvfs-old/x", "/home/u/my google-drive: notes/x", "/run/user/abc/gvfs/x"} {
+		if isGvfs(p) {
+			t.Errorf("%s is not gvfs", p)
+		}
+	}
+	d := t.TempDir()
+	os.MkdirAll(filepath.Join(d, ".gvfs", "x"), 0o755)
+	link := filepath.Join(d, "link")
+	if err := os.Symlink(filepath.Join(d, ".gvfs", "x"), link); err == nil {
+		if !isGvfs(link) {
+			t.Error("a link to a gvfs path must be refused")
+		}
 	}
 	err := Writable("/run/user/1000/gvfs/google-drive:host=x")
 	if err == nil || !strings.HasPrefix(err.Error(), "This is GNOME's Google Drive view, which is not a normal folder.") {
 		t.Errorf("got %v", err)
+	}
+}
+
+func TestProbeRetriesTransientFailure(t *testing.T) {
+	ops := realProbeOps
+	n := 0
+	ops.rename = func(a, b string) error {
+		if n++; n < 3 {
+			return errors.New("locked")
+		}
+		return os.Rename(a, b)
+	}
+	if err := probeFolder(t.TempDir(), ops); err != nil {
+		t.Fatal(err)
 	}
 }
 
