@@ -564,10 +564,10 @@ func keepLabel(e archive.KeepEntry) string {
 	switch {
 	case e.Session != "":
 		return "conversation " + e.Session
-	case e.Remote != "":
-		return "project with remote " + e.Remote
+	case e.Remote != "": // printed without a token it may hold; stored as it is
+		return "project with remote " + identity.RedactRemote(e.Remote)
 	case e.ForRemote != "":
-		return "project folder " + e.Leaf + ", kept with remote " + e.ForRemote
+		return "project folder " + e.Leaf + ", kept with remote " + identity.RedactRemote(e.ForRemote)
 	}
 	return "project folder " + e.Leaf
 }

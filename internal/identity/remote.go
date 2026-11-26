@@ -132,6 +132,59 @@ func SameRemote(a, b string) bool {
 // github.com/o/r, with no user, password or token.
 func NormalRemote(u string) string { return normaliseRemote(u) }
 
+// scpUser is where the user of an scp-form remote, [user@]host:path, ends: at the last
+// @ before host:path, so an @ in the path stays. -1 when there is none, or u is not scp
+// form, which git takes it for only when a : comes before any /: /data/a@b:c/repo is a
+// path.
+func scpUser(u string) int {
+	c := strings.Index(u, ":")
+	if c < 0 || strings.Contains(u[:c], "/") {
+		return -1
+	}
+	for j := strings.LastIndex(u, "@"); j >= 0; j = strings.LastIndex(u[:j], "@") {
+		if strings.Contains(u[j+1:], ":") {
+			return j
+		}
+	}
+	return -1
+}
+
+// RedactRemote is a remote as written, less what can hold a secret, for printing: a
+// password, a query, and over http the user, where a token often stands. A user alone
+// elsewhere stays, as git in git@host:o/r.
+func RedactRemote(u string) string {
+	u = strings.TrimSpace(u)
+	i := strings.Index(u, "://")
+	if i < 0 {
+		if j := scpUser(u); j >= 0 && strings.Contains(u[:j], ":") {
+			return u[j+1:]
+		}
+		return u
+	}
+	p, err := url.Parse(u)
+	if err != nil { // as in normaliseRemote
+		rest := u[i+3:]
+		if j := strings.LastIndex(rest, "@"); j >= 0 {
+			rest = rest[j+1:]
+		}
+		rest, _, _ = strings.Cut(rest, "?")
+		return u[:i+3] + rest
+	}
+	changed := false
+	if p.User != nil {
+		if _, pw := p.User.Password(); pw || p.Scheme == "http" || p.Scheme == "https" {
+			p.User, changed = nil, true
+		}
+	}
+	if p.RawQuery != "" || p.ForceQuery {
+		p.RawQuery, p.ForceQuery, changed = "", false, true
+	}
+	if !changed {
+		return u
+	}
+	return p.String()
+}
+
 // hostPort matches a leading host with an explicit port, e.g. "github.com:22/".
 // A port is a transport detail, not part of the repository's identity.
 var hostPort = regexp.MustCompile(`^([^/:]+):\d+(/|$)`)
@@ -142,34 +195,31 @@ func normaliseRemote(u string) string {
 	// A user, password or token is never part of the identity, and a caller may show it.
 	if i := strings.Index(u, "://"); i >= 0 {
 		if p, err := url.Parse(u); err == nil {
-			u = p.Hostname() + p.EscapedPath() // no user, port or query
+			path := p.RawPath // the path as written, as an scp form or plain path has it
+			if path == "" {
+				path = p.EscapedPath()
+			}
+			u = p.Hostname() + path // no user, port or query
 			if p.Fragment != "" {
 				u += "#" + p.EscapedFragment() // to git, part of the path
 			}
 		} else {
-			// Not a URL Go reads, as with a / in a password: what precedes the last @ is
-			// taken for credentials.
-			u, _, _ = strings.Cut(u[i+3:], "?")
+			// Not a URL Go reads, as with a / or ? in a password: what precedes the last @
+			// is taken for credentials.
+			u = u[i+3:]
 			if j := strings.LastIndex(u, "@"); j >= 0 {
 				u = u[j+1:]
 			}
+			u, _, _ = strings.Cut(u, "?")
 			// Drop an explicit port before the scp-style colon is rewritten, or
 			// ssh://host:22/ would turn into host/22/. Only a URL has a port: in scp
 			// form git@host:1234/repo, 1234 is the owner.
 			u = hostPort.ReplaceAllString(u, "$1$2")
 		}
-	} else {
-		// scp form, [user@]host:path: the user ends at the last @ before host:path, so an
-		// @ in the path stays.
-		cut := false
-		for j := strings.LastIndex(u, "@"); j >= 0 && !cut; j = strings.LastIndex(u[:j], "@") {
-			if strings.Contains(u[j+1:], ":") {
-				u, cut = u[j+1:], true
-			}
-		}
-		if i := strings.Index(u, "@"); !cut && i >= 0 && !strings.Contains(u[:i], "/") {
-			u = u[i+1:]
-		}
+	} else if j := scpUser(u); j >= 0 {
+		u = u[j+1:]
+	} else if i := strings.Index(u, "@"); i >= 0 && !strings.Contains(u[:i], "/") {
+		u = u[i+1:]
 	}
 
 	// scp-style host:path -> host/path

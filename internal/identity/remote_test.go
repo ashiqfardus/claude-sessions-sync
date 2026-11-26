@@ -130,6 +130,9 @@ func TestNormalRemoteDropsCredentials(t *testing.T) {
 		"git@github.com:o/r@v2.git":                   "github.com/o/r@v2",
 		"https://host/a#b.git":                        "host/a#b",
 		"/srv/git/repo.git":                           "/srv/git/repo",
+		"https://user:p?ss@hosta/x":                   "hosta/x",          // a ? in the password
+		"/data/a@b:c/repo":                            "/data/a@b/c/repo", // a path, not scp form
+		"/data/z@b:c/repo":                            "/data/z@b/c/repo",
 	} {
 		if got := NormalRemote(in); got != want {
 			t.Errorf("NormalRemote(%q) = %q, want %q", in, got, want)
@@ -137,5 +140,36 @@ func TestNormalRemoteDropsCredentials(t *testing.T) {
 	}
 	if !SameRemote("https://user:tok/x@github.com/o/r.git", "git@github.com:o/r") {
 		t.Error("a remote with a token is not the same as without")
+	}
+	// A path compares as written, in a URL or not.
+	for a, b := range map[string]string{
+		"https://gitea.example/ü/repo.git": "git@gitea.example:ü/repo.git",
+		"file:///srv/git/my repo.git":      "/srv/git/my repo.git",
+		"https://host/o/my%20repo.git":     "git@host:o/my%20repo.git",
+	} {
+		if !SameRemote(a, b) {
+			t.Errorf("%q and %q are not the same remote: %q, %q", a, b, NormalRemote(a), NormalRemote(b))
+		}
+	}
+	if SameRemote("/data/a@b:c/repo", "/data/z@b:c/repo") {
+		t.Error("two paths that differ before an @ are the same remote")
+	}
+}
+
+func TestRedactRemote(t *testing.T) {
+	for in, want := range map[string]string{
+		"git@github.com:example/api.git":              "git@github.com:example/api.git",
+		"https://github.com/example/api.git":          "https://github.com/example/api.git",
+		"ssh://git@github.com:22/o/r.git":             "ssh://git@github.com:22/o/r.git",
+		"https://you:tok@github.com/o/r.git":          "https://github.com/o/r.git",
+		"https://tok@github.com/o/r.git":              "https://github.com/o/r.git",
+		"https://github.com/o/r.git?access_token=tok": "https://github.com/o/r.git",
+		"https://user:tok/x@github.com/o/r.git":       "https://github.com/o/r.git",
+		"user:tok@github.com:o/r.git":                 "github.com:o/r.git",
+		"/data/a@b:c/repo":                            "/data/a@b:c/repo",
+	} {
+		if got := RedactRemote(in); got != want {
+			t.Errorf("RedactRemote(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

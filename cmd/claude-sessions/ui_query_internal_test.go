@@ -650,3 +650,13 @@ func TestSearchWithNoConversationsFolder(t *testing.T) {
 		}
 	}
 }
+
+// config keep and unkeep print a kept remote without the token it may hold.
+func TestKeepLabelHidesTokens(t *testing.T) {
+	const raw = "https://you:placeholder-token@github.com/example-org/api.git"
+	for _, e := range []archive.KeepEntry{{Remote: raw}, {Leaf: "api", ForRemote: raw}} {
+		if l := keepLabel(e); strings.Contains(l, "placeholder-token") || !strings.Contains(l, "https://github.com/example-org/api.git") {
+			t.Errorf("%+v: %s", e, l)
+		}
+	}
+}
