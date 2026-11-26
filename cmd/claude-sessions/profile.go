@@ -36,11 +36,13 @@ var profileDirs = []string{"skills", "agents", "commands", "output-styles"}
 
 const noPluginsHelp = "do not install plugins that are enabled on another machine and missing here"
 const noWorkHelp = "bring conversations only; skip other machines' work folders"
+const noProfileHelp = "skip rules, skills, CLAUDE.md and the other profile files (plugins: see --no-plugins)"
 
 // updateProfileHelp: --update alone never replaces a rule or skill file. One machine's
 // shorter CLAUDE.md, saved later, would otherwise replace the other's on every import.
 const updateProfileHelp = "also replace rule and skill files here with newer archived copies (this machine's are kept in the archive's profile/replaced/)"
 const noWorkNote = "work folders skipped (--no-work)"
+const noProfileNote = "rules and skills skipped (--no-profile)"
 
 func profileDir(dest string) string { return filepath.Join(dest, "profile") }
 
@@ -194,12 +196,13 @@ func (p pluginRun) Command() string { return "claude " + strings.Join(p.Args, " 
 // other machines.
 //
 // Plugins enabled on any machine and not here are installed with `claude plugin
-// install`, unless installPlugins is false.
+// install`, unless installPlugins is false. With files false no rule or skill file is
+// filed or recorded: --no-profile.
 //
 // An unzipped `backup` mirrors ~/.claude, so its profile is its top folder, and its
 // settings.json names the plugins that were enabled. That settings.json itself is
 // never restored: its hooks run programs at paths only the old machine has.
-func restoreProfile(root, dest string, dryRun, update, installPlugins bool) profileResult {
+func restoreProfile(root, dest string, dryRun, update, installPlugins, files bool) profileResult {
 	res := profileResult{From: "another machine's newer copy", KeptIn: replacedDir(dest, machineName())}
 	src := profileDir(dest)
 	pluginLists := archivedPluginLists(src)
@@ -225,7 +228,11 @@ func restoreProfile(root, dest string, dryRun, update, installPlugins bool) prof
 	if !backup {
 		held = loadHeldProfile(root)
 	}
-	for _, rel := range profileFiles(src) {
+	var rels []string // none with --no-profile
+	if files {
+		rels = profileFiles(src)
+	}
+	for _, rel := range rels {
 		from := filepath.Join(src, filepath.FromSlash(rel))
 		to := filepath.Join(root, filepath.FromSlash(rel))
 		info, err := os.Stat(from)
@@ -261,7 +268,7 @@ func restoreProfile(root, dest string, dryRun, update, installPlugins bool) prof
 		}
 		res.Files = append(res.Files, rel)
 	}
-	if !dryRun {
+	if !dryRun && files {
 		noteHeldProfile(root, profileFiles(root))
 	}
 

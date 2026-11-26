@@ -361,3 +361,39 @@ func TestProfileOnlyRefusesCombinations(t *testing.T) {
 		}
 	}
 }
+
+// --no-profile files the conversations and leaves every rule and skill file alone, in
+// a dry run and a real one; it says so, and refuses the flags that file them.
+func TestImportNoProfileLeavesRulesAndSkills(t *testing.T) {
+	f := profileImportFixture(t)
+	p := filepath.Join(f.archive, "profile")
+	mustWrite(t, filepath.Join(p, "CLAUDE.md"), "archived rules\n")
+	mustWrite(t, filepath.Join(p, "skills", "graphify", "SKILL.md"), "graphify\n")
+
+	for _, extra := range [][]string{{"--dry-run"}, nil} {
+		out, err := f.run(t, append([]string{"import", "--search-root", f.dev, "--no-plugins", "--no-profile"}, extra...)...)
+		if err != nil {
+			t.Fatalf("import --no-profile %v failed: %v\n%s", extra, err, out)
+		}
+		if !strings.Contains(out, "rules and skills skipped (--no-profile)") || strings.Contains(out, "profile:") {
+			t.Errorf("import --no-profile %v does not say it skips the profile:\n%s", extra, out)
+		}
+		for _, rel := range []string{"CLAUDE.md", "skills", filepath.Join("session-sync-base", "profile-held.json")} {
+			if _, err := os.Lstat(filepath.Join(f.claudeDir, rel)); err == nil {
+				t.Errorf("import --no-profile %v wrote %s", extra, rel)
+			}
+		}
+	}
+	if got, _ := filepath.Glob(filepath.Join(f.claudeDir, "projects", "*", "11111111-1111-1111-1111-111111111111.jsonl")); len(got) != 1 {
+		t.Errorf("import --no-profile did not file the conversation: %v", got)
+	}
+
+	for _, args := range [][]string{{"--profile-only"}, {"--search-root", f.dev, "--update-profile"}} {
+		if out, err := f.run(t, append([]string{"import", "--no-profile"}, args...)...); err == nil || !strings.Contains(out, "--no-profile") {
+			t.Errorf("--no-profile with %v ran: %v\n%s", args, err, out)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(f.claudeDir, "CLAUDE.md")); err == nil {
+		t.Error("a refused --no-profile run filed CLAUDE.md")
+	}
+}

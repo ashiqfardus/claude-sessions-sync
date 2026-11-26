@@ -25,9 +25,11 @@ type mapEntry struct {
 //   - --quiet, --from-hook, --sweep and --lock-wait are the hooks' and the sweep's;
 //   - push --no-html, doctor --no-write-probe and doctor --exclude are diagnostics;
 //   - the PowerShell flags only migrate the old Windows setup;
-//   - ui's launch options cannot be set from inside a running panel.
+//   - ui's launch options cannot be set from inside a running panel;
+//   - import --no-profile is the terminal's: the panel's Bring in files rules and skills
+//     as it always has, and Settings, Rules and skills takes them on their own.
 var mapExempt = []string{"completion", "--json", "--claude-dir", "--archive", "--quiet", "--from-hook", "--sweep", "--lock-wait",
-	"push --no-html", "doctor --no-write-probe", "doctor --exclude",
+	"push --no-html", "doctor --no-write-probe", "doctor --exclude", "import --no-profile",
 	"install --keep-powershell-hook", "install --replace-powershell-sweep", "uninstall --keep-powershell-hook",
 	"ui --no-open", "ui --port", "ui --from-shortcut"}
 

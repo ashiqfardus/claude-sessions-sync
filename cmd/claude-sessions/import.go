@@ -45,6 +45,7 @@ func cmdImport(args []string) error {
 	update := fs.Bool("update", false, updateHelp)
 	updateProfile := fs.Bool("update-profile", false, updateProfileHelp)
 	noPlugins := fs.Bool("no-plugins", false, noPluginsHelp)
+	noProfile := fs.Bool("no-profile", false, noProfileHelp)
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	profileOnly := fs.Bool("profile-only", false, "bring in only the newer rules and skills: no conversations, memory or work folders, no plugins")
 	noWork := fs.Bool("no-work", false, noWorkHelp)
@@ -54,7 +55,7 @@ func cmdImport(args []string) error {
 	}
 	o := importOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, SearchRoot: *roots, Depth: *depth,
 		DryRun: *dryRun, BareName: *bareName, Update: *update, UpdateProfile: *updateProfile,
-		NoPlugins: *noPlugins, NoWork: *noWork, Repoint: *repoint, ProfileOnly: *profileOnly}
+		NoPlugins: *noPlugins, NoWork: *noWork, Repoint: *repoint, ProfileOnly: *profileOnly, NoProfile: *noProfile}
 	s := stdStreams()
 	if *asJSON {
 		s = jsonStreams()
@@ -73,7 +74,7 @@ type importOpts struct {
 	ClaudeDir, ArchiveDir, SearchRoot                                   string
 	Depth                                                               int
 	DryRun, BareName, Update, UpdateProfile, NoPlugins, NoWork, Repoint bool
-	ProfileOnly                                                         bool
+	ProfileOnly, NoProfile                                              bool
 }
 
 type importResult struct {
@@ -89,7 +90,7 @@ func runImport(s streams, o importOpts) (importResult, error) {
 			set  bool
 			name string
 		}{{o.Update, "update"}, {o.Repoint, "repoint"}, {o.NoWork, "no-work"}, {o.SearchRoot != "", "search-root"},
-			{o.Depth != 0, "depth"}, {o.BareName, "include-bare-name"}} {
+			{o.Depth != 0, "depth"}, {o.BareName, "include-bare-name"}, {o.NoProfile, "no-profile"}} {
 			if c.set {
 				return importResult{}, fmt.Errorf("--profile-only brings in rules and skills only; it cannot be combined with --%s", c.name)
 			}
@@ -97,6 +98,9 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	}
 	if o.Depth == 0 { // unset
 		o.Depth = 3
+	}
+	if o.NoProfile && o.UpdateProfile {
+		return importResult{}, fmt.Errorf("--no-profile and --update-profile cannot be combined: --update-profile replaces rule and skill files that --no-profile leaves alone")
 	}
 	if o.NoWork && o.Repoint {
 		return importResult{}, fmt.Errorf("--no-work and --repoint cannot be combined: --repoint rewrites conversations to work folders that --no-work does not restore")
@@ -123,7 +127,7 @@ func runImport(s streams, o importOpts) (importResult, error) {
 			return importResult{}, err
 		}
 		defer lock.Release()
-		p := restoreProfile(root, dest, o.DryRun, true, false)
+		p := restoreProfile(root, dest, o.DryRun, true, false, true)
 		p.Files, p.Replaced, p.Plugins = nonNil(p.Files), nonNil(p.Replaced), nonNil(p.Plugins)
 		if len(p.Files) == 0 {
 			fmt.Fprintln(s.Out, "No rules or skills here are older than the archive's.")
@@ -489,7 +493,7 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	}
 	imported.finish(s.Err)
 
-	profile := restoreProfile(root, dest, o.DryRun, o.UpdateProfile, !o.NoPlugins)
+	profile := restoreProfile(root, dest, o.DryRun, o.UpdateProfile, !o.NoPlugins, !o.NoProfile)
 	// A caller that encodes the result gets [] for an empty list, never null.
 	profile.Files, profile.Replaced, profile.Plugins = nonNil(profile.Files), nonNil(profile.Replaced), nonNil(profile.Plugins)
 	result := importResult{Rows: nonNil(rows), Profile: profile}
@@ -504,6 +508,9 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	}
 	if o.NoWork {
 		fmt.Fprintln(s.Out, noWorkNote)
+	}
+	if o.NoProfile {
+		fmt.Fprintln(s.Out, noProfileNote)
 	}
 	if len(workRes.Placed) > 0 {
 		fmt.Fprintln(s.Out, "  to place them elsewhere: claude-sessions config map-folder '<path from above>' '<local folder>', or claude-sessions config work-placement home|machine")
@@ -809,7 +816,7 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 	}
 	imported.finish(s.Err)
 
-	profile := restoreProfile(root, dest, o.DryRun, o.UpdateProfile, !o.NoPlugins)
+	profile := restoreProfile(root, dest, o.DryRun, o.UpdateProfile, !o.NoPlugins, true)
 	// Work folders at their recorded paths, under the same safety rules as import.
 	var workRes workRestoreResult
 	if cfg, err := archive.LoadConfig(root); err == nil && !o.NoWork {
