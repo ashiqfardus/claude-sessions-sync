@@ -186,7 +186,7 @@ func TestInstallStopsAnIdlePanelOfAnotherVersion(t *testing.T) {
 	if oldRun.running() {
 		t.Error("install left the old panel running")
 	}
-	if !strings.Contains(buf.String(), "  archive ") || !strings.Contains(buf.String(), "\n  panel     Stopped the running panel of version 0.7.2.\n  binary ") {
+	if !strings.Contains(buf.String(), "  archive ") || !strings.Contains(buf.String(), "\n  panel     Stopped the running panel of version 0.7.2.\n            Open the panel again to start "+version+".\n  binary ") {
 		t.Errorf("install printed:\n%s", buf.String())
 	}
 }
@@ -276,5 +276,32 @@ func TestInstallAndPushRemoveOldBinaries(t *testing.T) {
 	logged, _ := os.ReadFile(filepath.Join(root, "session-sync.log"))
 	if !strings.Contains(string(logged), "CLEAN: removed a binary an upgrade replaced while it ran: "+old) {
 		t.Errorf("the log has:\n%s", logged)
+	}
+}
+
+// Only an older release is replaced, so two builds on one computer cannot stop each
+// other's panel on every launch.
+func TestOlderVersion(t *testing.T) {
+	for _, c := range []struct {
+		running, ours string
+		want          bool
+	}{
+		{"0.7.3", "0.7.4", true},
+		{"v0.7.3", "0.7.4", true},
+		{"0.7.9", "0.7.10", true},
+		{"0.6.9", "0.7.0", true},
+		{"0.7.4", "0.7.4", false},
+		{"0.7.4", "0.7.3", false}, // a downgrade, or the stale shortcut binary
+		{"0.7.10", "0.7.9", false},
+		{"0.7.3-rc1", "0.7.3", false},
+		{"0.7.3", "dev", true},
+		{"dev", "0.7.4", false},
+		{"", "0.7.4", false},
+		{"garbage", "0.7.4", false},
+		{"0.7.3", "garbage", false},
+	} {
+		if got := olderVersion(c.running, c.ours); got != c.want {
+			t.Errorf("olderVersion(%q, %q) = %v, want %v", c.running, c.ours, got, c.want)
+		}
 	}
 }

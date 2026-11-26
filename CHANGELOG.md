@@ -14,8 +14,8 @@ All notable changes to this project are documented here. This project follows
   agent or session is no longer used as a title; the next thing you typed is, or none.
 - **After an upgrade, the panel kept running the old version.** With its tab still open,
   the old panel never stopped, and the shortcut only opened another tab on it. Opening
-  the panel, or running `install`, now stops a panel of another version and starts the
-  new one. A panel busy with a job is left to finish it; the next time you open the
+  the panel, or running `install`, now stops a panel of an older version and starts the
+  new one. A newer panel is left running, so a stale copy of the program cannot stop it. A panel busy with a job is left to finish it; the next time you open the
   panel after that, you get the new version.
 - **An upgrade on Windows left a copy of the old program in `.claude\bin`.** `install`
   moves a program that is still running aside, as `claude-sessionsw.exe.old-<number>`

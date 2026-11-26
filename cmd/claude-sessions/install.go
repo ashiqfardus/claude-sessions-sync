@@ -113,8 +113,11 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 	// longer in use and the shortcut starts this version at once.
 	if pf, ok := readPanelFile(root); ok {
 		if key, ok := launchKey(pf); ok {
-			if _, note := replaceOtherVersion(pf, key); note != "" {
+			if stopped, note := replaceOtherVersion(pf, key); note != "" {
 				fmt.Fprintf(s.Out, "  panel     %s\n", note)
+				if stopped {
+					fmt.Fprintf(s.Out, "            Open the panel again to start %s.\n", version)
+				}
 			}
 		}
 	}

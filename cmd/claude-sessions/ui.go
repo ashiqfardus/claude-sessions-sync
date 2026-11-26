@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -323,7 +324,10 @@ func replaceOtherVersion(pf panelFile, key string) (stopped bool, note string) {
 		Version string         `json:"version"`
 		Job     *panel.Summary `json:"job"`
 	}
-	if c.login(key) != nil || c.getJSON("/api/state", &st) != nil || st.Version == "" || st.Version == version {
+	// Only an older panel is replaced. Two builds that disagree - a package manager
+	// updated the one on PATH but not the shortcut's - would otherwise stop each
+	// other's panel, and its open tab, on every launch.
+	if c.login(key) != nil || c.getJSON("/api/state", &st) != nil || !olderVersion(st.Version, version) {
 		return false, ""
 	}
 	busy := func(label string) string {
@@ -343,6 +347,50 @@ func replaceOtherVersion(pf panelFile, key string) (stopped bool, note string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return true, fmt.Sprintf("Stopped the running panel of version %s.", st.Version)
+}
+
+// olderVersion reports whether running is a release older than ours. A development
+// build ("dev") counts as newer than every release; a version either side cannot read
+// is never taken for older, so that panel is handed off to as before.
+func olderVersion(running, ours string) bool {
+	r, ok := releaseParts(running)
+	if !ok {
+		return false
+	}
+	if ours == "dev" {
+		return true
+	}
+	o, ok := releaseParts(ours)
+	if !ok {
+		return false
+	}
+	for i := range r {
+		if r[i] != o[i] {
+			return r[i] < o[i]
+		}
+	}
+	return false
+}
+
+// releaseParts reads "0.7.3" or "v0.7.3" (a suffix such as "-rc1" is ignored).
+func releaseParts(v string) ([3]int, bool) {
+	var out [3]int
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
 
 // panelClient makes a running panel's requests as its page does. Panels already
