@@ -74,12 +74,14 @@ register('conversations', {
     const unchecked = !retention || retention.problem || !Array.isArray(retention.holdouts)
     const holdouts = unchecked ? [] : retention.holdouts
     const blocked = unchecked || holdouts.length > 0
+    // config keep refuses a retention.json it can't read: say so before the click, as Delete does.
+    const keepPaused = !!(retention && retention.retentionUnreadable)
     const search = slot('q'), since = slot('since'), until = slot('until')
     const line = slot('summary'), fix = slot('fix'), rowsEl = slot('rows'), all = slot('select-all')
     const tableBox = rowsEl.closest('.table-box'), pages = slot('pages')
     const bar = slot('selection'), keepBtn = slot('keep'), delBtn = slot('delete')
     const selected = new Map() // id -> row, of the rows shown
-    let shown = [], seq = 0, timer, busy = false
+    let shown = [], seq = 0, timer, busy = '' // busy: what the running action is doing, said in the bar
 
     // The combos. A value from an older link that no option has any more stays shown.
     const lists = {
@@ -221,12 +223,12 @@ register('conversations', {
       all.indeterminate = n > 0 && n < shown.length
       let bytes = 0
       for (const r of selected.values()) bytes += r.size
-      const text = n ? `${number(n)} selected, ${size(bytes)}` : ''
+      const text = busy || (n ? `${number(n)} selected, ${size(bytes)}` : '')
       if (n) slot('selected').textContent = text
       slot('selected-say').textContent = text // a live region outside the bar, which is hidden until now
       bar.hidden = !n
-      keepBtn.disabled = busy
-      delBtn.disabled = busy || blocked
+      keepBtn.disabled = !!busy || keepPaused
+      delBtn.disabled = !!busy || blocked
     }
 
     all.addEventListener('change', () => {
@@ -241,6 +243,10 @@ register('conversations', {
       slot('wait').hidden = false
       delBtn.setAttribute('aria-describedby', 'conv-wait')
     }
+    if (keepPaused) {
+      slot('keep-unread').hidden = false
+      keepBtn.setAttribute('aria-describedby', 'conv-keep-unread')
+    }
 
     // After an action the bar is gone: focus goes to the control after it.
     const refocus = () => { if (!el.contains(document.activeElement) || bar.contains(document.activeElement)) (tableBox.hidden ? el : all).focus() }
@@ -249,7 +255,7 @@ register('conversations', {
     // waits for its job, so the list finishes even if the screen goes meanwhile.
     keepBtn.addEventListener('click', async () => {
       const rows = [...selected.values()]
-      busy = true
+      busy = `Adding ${plural(rows.length)} to Never delete…`
       mark()
       let added = 0, err = ''
       for (const r of rows) {
@@ -262,7 +268,7 @@ register('conversations', {
           break
         }
       }
-      busy = false
+      busy = ''
       const said = added ? `Added ${plural(added)} to Never delete` : ''
       toast(said && err ? said + '. ' + err : said || err)
       if (signal.aborted) return
@@ -279,7 +285,7 @@ register('conversations', {
         (kept ? ` ${number(kept)} of these ${kept === 1 ? 'is' : 'are'} on Never delete and will be skipped.` : '')
       const items = rows.map((r) => titleOf(r) + (r.kept ? ' (Never delete, skipped)' : ''))
       if (!await confirmDialog({ title, body, items, confirm: title, danger: true })) return
-      busy = true
+      busy = `Deleting ${plural(ids.length)}…`
       mark()
       let st
       try {
@@ -287,7 +293,7 @@ register('conversations', {
       } catch (e) {
         st = { ok: false, error: plain(e) }
       }
-      busy = false
+      busy = ''
       // A run that fails partway still says what it deleted (Ruling P44).
       const res = st.result || {}, n = res.deleted || 0, skipped = (res.plan && res.plan.kept) || 0
       let text = `Deleted ${plural(n)} from the archive` + (skipped ? `. ${plural(skipped)} on Never delete ${skipped === 1 ? 'was' : 'were'} skipped` : '')
@@ -305,12 +311,14 @@ register('conversations', {
       try {
         st = await api.run('prune-undo', { ids }, { wait: true })
       } catch (e) {
-        return toast(plain(e))
+        st = { ok: false, error: plain(e) }
       }
-      if (!st.ok) return toast(st.error || GENERIC)
-      const n = st.result && Array.isArray(st.result.undone) ? st.result.undone.length : ids.length
-      toast(`Restored ${plural(n)}. Each comes back at the next backup of a computer that still has it.`)
-      if (!signal.aborted) load()
+      if (!st.ok) toast(st.error || GENERIC)
+      else toast(`Restored ${plural(st.result && Array.isArray(st.result.undone) ? st.result.undone.length : ids.length)}. Each comes back at the next backup of a computer that still has it.`)
+      if (signal.aborted) return
+      if (st.ok) await load()
+      // Focus left with the toast's Restore button: it goes to the list, not the page.
+      if (document.activeElement === el || document.activeElement === document.body) (tableBox.hidden ? el.querySelector('h1') : all).focus()
     }
 
     paint(first)
