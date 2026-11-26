@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-27
+
 ### Fixed
 - **A file of yours whose name starts with `.tmp-`, in a work folder, could be deleted
   from the archive.** The leftover-file sweep took every `.tmp-` name for one of its own.
