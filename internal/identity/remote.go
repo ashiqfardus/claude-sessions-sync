@@ -197,8 +197,9 @@ func RedactRemote(u string) string {
 // (user:p%zz@host): at the last @, unless the text before the first / is a host[:port],
 // whose path holds each @. -1 when there are none.
 //
-// shortcut: user:1234/x@host reads as host:port/path and keeps its password; no git
-// remote names a repository without a path.
+// shortcut: user:1234/x@host, a password with a / whose start reads as a port, is taken
+// for host:port/path and keeps its password; upgrade if a remote like it is ever kept,
+// by refusing to print what follows "://" of any remote Go cannot read.
 func credEnd(rest string) int {
 	for j := 0; ; {
 		k := strings.Index(rest[j:], "@")
