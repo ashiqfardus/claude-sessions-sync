@@ -1,0 +1,13 @@
+$ claude-sessions config --claude-dir <CLAUDE> keep web-app --json
+exit 0
+--- stdout
+{
+  "action": "keep",
+  "lines": [
+    "Kept: project with remote git@github.com:example/api.git",
+    "Kept: project folder web-app, kept with remote git@github.com:example/api.git",
+    "  <HOME-SLUG>-Documents-GitHub-example-org-web-app  LAP-1  <HOME>/Documents/GitHub/example-org/web-app",
+    "A bucket of this project that a computer adds later is kept too."
+  ]
+}
+--- stderr

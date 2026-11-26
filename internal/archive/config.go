@@ -53,6 +53,10 @@ type Config struct {
 	// ZipSessions false stops push zipping idle conversations; nil means on.
 	ZipSessions *bool `json:"zipSessions,omitempty"`
 
+	// SweepEvery is the interval, in minutes, install gave the scheduled sweep: -1 for
+	// none (--no-sweep), 0 when unknown (an older install), which means the default 30.
+	SweepEvery int `json:"sweepEvery,omitempty"`
+
 	// InstallID is this install's random ID, made by its first push. Its shard carries
 	// it, so a second computer pushing under the same name is noticed.
 	InstallID string `json:"installId,omitempty"`
@@ -179,6 +183,9 @@ func SaveConfig(claudeRoot string, c Config) error {
 	}
 	if c.InstallID != "" {
 		merged["installId"] = c.InstallID
+	}
+	if c.SweepEvery != 0 {
+		merged["sweepEvery"] = c.SweepEvery
 	}
 
 	data, err := json.MarshalIndent(merged, "", "  ")

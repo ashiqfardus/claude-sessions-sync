@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -48,64 +50,139 @@ flags:
 `)
 		fs.PrintDefaults()
 	}
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := parseFlags(fs, positionalAfterAction(args), true); err != nil {
 		return err
 	}
-
-	root, _, err := resolveRoot(*claudeDir)
+	o := configOpts{ClaudeDir: *claudeDir}
+	if rest := fs.Args(); len(rest) > 0 {
+		o.Action, o.Args = rest[0], rest[1:]
+	}
+	if !*asJSON {
+		_, err := runConfig(stdStreams(), o)
+		return err
+	}
+	res, err := runConfig(jsonStreams(), o)
 	if err != nil {
 		return err
 	}
+	return encodeJSON(os.Stdout, res)
+}
 
-	rest := fs.Args()
-	action := "show"
-	if len(rest) > 0 {
-		action = rest[0]
+type configOpts struct {
+	ClaudeDir, Action string // Action "" is show
+	Args              []string
+}
+
+// configResult is what config printed, line by line, and for show the settings.
+type configResult struct {
+	Action string      `json:"action"`
+	Lines  []string    `json:"lines"`
+	View   *configView `json:"view,omitempty"`
+}
+
+// configView is config show's settings, defaults resolved.
+type configView struct {
+	ConfigFile    string            `json:"configFile"`
+	Destination   string            `json:"destination"` // as saved, "" when not
+	InUse         string            `json:"inUse"`       // the archive commands use, from Source
+	Source        string            `json:"source"`
+	Placement     string            `json:"placement"`
+	WorkOn        bool              `json:"workOn"`
+	WorkMap       map[string]string `json:"workMap"`
+	ProjectMap    map[string]string `json:"projectMap"`
+	WorkExclude   []string          `json:"workExclude"`
+	RenderExclude []string          `json:"renderExclude"`
+	ZipSessions   bool              `json:"zipSessions"`
+	SweepEvery    int               `json:"sweepEvery"` // minutes, -1 for no sweep
+}
+
+// runConfig runs one config action, printing on s.Out as the CLI does.
+func runConfig(s streams, o configOpts) (configResult, error) {
+	if o.Action == "" {
+		o.Action = "show"
 	}
+	var out bytes.Buffer
+	w := io.MultiWriter(s.Out, &out)
+	res := configResult{Action: o.Action}
+	root, _, err := resolveRoot(o.ClaudeDir)
+	if err == nil && o.Action == "show" {
+		res.View, err = configShow(w, root)
+	} else if err == nil {
+		err = configAction(w, root, append([]string{o.Action}, o.Args...))
+	}
+	res.Lines = []string{}
+	if out.Len() > 0 {
+		res.Lines = strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	}
+	return res, err
+}
 
+func configShow(w io.Writer, root string) (*configView, error) {
+	cfg, err := archive.LoadConfig(root)
+	if err != nil {
+		return nil, err
+	}
+	dest, src, err := archive.ResolveDestination(root, "")
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(w, "config file  %s\n", archive.ConfigPath(root))
+	if cfg.Destination == "" {
+		fmt.Fprintf(w, "destination  (not set)\n")
+	} else {
+		fmt.Fprintf(w, "destination  %s\n", cfg.Destination)
+	}
+	if dest != "" && src != archive.SourceConfig {
+		fmt.Fprintf(w, "in use       %s (%s)\n", dest, src)
+		fmt.Fprintf(w, "\nRun `claude-sessions config set-destination %q` to make that permanent.\n", dest)
+	}
+	on := "on"
+	if !cfg.WorkOn() {
+		on = "off"
+	}
+	placement := cfg.WorkPlacement
+	if placement == "" {
+		placement = "home"
+	}
+	fmt.Fprintf(w, "work backup  %s\n", on)
+	fmt.Fprintf(w, "placement    %s\n", placement)
+	keys := make([]string, 0, len(cfg.WorkMap))
+	for k := range cfg.WorkMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(w, "work map     %s -> %s\n", k, cfg.WorkMap[k])
+	}
+	for _, x := range cfg.WorkExclude {
+		fmt.Fprintf(w, "excluded     %s\n", x)
+	}
+	v := &configView{ConfigFile: archive.ConfigPath(root), Destination: cfg.Destination, InUse: dest,
+		Source: string(src), Placement: placement, WorkOn: cfg.WorkOn(), WorkMap: cfg.WorkMap,
+		ProjectMap: cfg.ProjectMap, WorkExclude: cfg.WorkExclude, RenderExclude: cfg.RenderExclude,
+		ZipSessions: cfg.ZipOn(), SweepEvery: cfg.SweepEvery}
+	if v.SweepEvery == 0 {
+		v.SweepEvery = 30 // an install older than the setting, or none: the default
+	}
+	// {} and [], not null, for the panel.
+	for _, m := range []*map[string]string{&v.WorkMap, &v.ProjectMap} {
+		if *m == nil {
+			*m = map[string]string{}
+		}
+	}
+	for _, l := range []*[]string{&v.WorkExclude, &v.RenderExclude} {
+		if *l == nil {
+			*l = []string{}
+		}
+	}
+	return v, nil
+}
+
+// configAction runs every action but show, printing on w.
+func configAction(w io.Writer, root string, rest []string) (err error) {
+	action := rest[0]
 	switch action {
-	case "show":
-		cfg, err := archive.LoadConfig(root)
-		if err != nil {
-			return err
-		}
-		dest, src, err := archive.ResolveDestination(root, "")
-		if err != nil {
-			return err
-		}
-		fmt.Printf("config file  %s\n", archive.ConfigPath(root))
-		if cfg.Destination == "" {
-			fmt.Printf("destination  (not set)\n")
-		} else {
-			fmt.Printf("destination  %s\n", cfg.Destination)
-		}
-		if dest != "" && src != archive.SourceConfig {
-			fmt.Printf("in use       %s (%s)\n", dest, src)
-			fmt.Printf("\nRun `claude-sessions config set-destination %q` to make that permanent.\n", dest)
-		}
-		on := "on"
-		if !cfg.WorkOn() {
-			on = "off"
-		}
-		placement := cfg.WorkPlacement
-		if placement == "" {
-			placement = "home"
-		}
-		fmt.Printf("work backup  %s\n", on)
-		fmt.Printf("placement    %s\n", placement)
-		keys := make([]string, 0, len(cfg.WorkMap))
-		for k := range cfg.WorkMap {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			fmt.Printf("work map     %s -> %s\n", k, cfg.WorkMap[k])
-		}
-		for _, x := range cfg.WorkExclude {
-			fmt.Printf("excluded     %s\n", x)
-		}
-		return nil
-
 	case "set-destination":
 		if len(rest) < 2 {
 			return fmt.Errorf("usage: claude-sessions config set-destination <folder>")
@@ -117,8 +194,8 @@ flags:
 		if err := archive.SaveConfig(root, archive.Config{Destination: abs}); err != nil {
 			return err
 		}
-		fmt.Printf("Destination set to %s\n", abs)
-		fmt.Printf("Saved in %s\n", archive.ConfigPath(root))
+		fmt.Fprintf(w, "Destination set to %s\n", abs)
+		fmt.Fprintf(w, "Saved in %s\n", archive.ConfigPath(root))
 		return nil
 
 	case "map":
@@ -128,7 +205,7 @@ flags:
 		}
 		if len(rest) == 1 {
 			if len(cfg.ProjectMap) == 0 {
-				fmt.Println("no projects mapped")
+				fmt.Fprintln(w, "no projects mapped")
 			}
 			keys := make([]string, 0, len(cfg.ProjectMap))
 			for k := range cfg.ProjectMap {
@@ -136,7 +213,7 @@ flags:
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
-				fmt.Printf("%s -> %s\n", k, cfg.ProjectMap[k])
+				fmt.Fprintf(w, "%s -> %s\n", k, cfg.ProjectMap[k])
 			}
 			return nil
 		}
@@ -166,7 +243,7 @@ flags:
 		if err := archive.SaveConfig(root, cfg); err != nil {
 			return err
 		}
-		fmt.Printf("%s -> %s\nRun `claude-sessions import` to file it.\n", bucket, local)
+		fmt.Fprintf(w, "%s -> %s\nRun `claude-sessions import` to file it.\n", bucket, local)
 		return nil
 
 	case "unmap":
@@ -191,7 +268,7 @@ flags:
 		if err := archive.SaveConfig(root, cfg); err != nil {
 			return err
 		}
-		fmt.Printf("%s unmapped\n", rest[1])
+		fmt.Fprintf(w, "%s unmapped\n", rest[1])
 		return nil
 
 	case "set-machine":
@@ -219,10 +296,10 @@ flags:
 		if err := archive.SaveConfig(root, cfg); err != nil {
 			return err
 		}
-		fmt.Printf("This machine is now known as %s (saved in %s).\n", name, archive.ConfigPath(root))
+		fmt.Fprintf(w, "This machine is now known as %s (saved in %s).\n", name, archive.ConfigPath(root))
 		if !strings.EqualFold(previous, name) {
-			fmt.Printf("It was %s. Run `claude-sessions push`, then `claude-sessions machines --forget %s`\n", previous, previous)
-			fmt.Println("so the archive does not keep listing the old name as another machine.")
+			fmt.Fprintf(w, "It was %s. Run `claude-sessions push`, then `claude-sessions machines --forget %s`\n", previous, previous)
+			fmt.Fprintln(w, "so the archive does not keep listing the old name as another machine.")
 		}
 		return nil
 
@@ -230,13 +307,13 @@ flags:
 		if len(rest) != 2 || (rest[1] != "on" && rest[1] != "off") {
 			return fmt.Errorf("usage: claude-sessions config work on|off")
 		}
-		return saveWork(root, func(c *archive.Config) { c.WorkBackup = rest[1] }, "Work folder backup is "+rest[1])
+		return saveWork(w, root, func(c *archive.Config) { c.WorkBackup = rest[1] }, "Work folder backup is "+rest[1])
 
 	case "work-placement":
 		if len(rest) != 2 || (rest[1] != "home" && rest[1] != "machine") {
 			return fmt.Errorf("usage: claude-sessions config work-placement home|machine")
 		}
-		return saveWork(root, func(c *archive.Config) { c.WorkPlacement = rest[1] }, "Work folders are filed under "+rest[1])
+		return saveWork(w, root, func(c *archive.Config) { c.WorkPlacement = rest[1] }, "Work folders are filed under "+rest[1])
 
 	case "map-folder":
 		if len(rest) != 3 {
@@ -255,7 +332,7 @@ flags:
 		if st, err := os.Stat(local); err != nil || !st.IsDir() {
 			return fmt.Errorf("%s does not exist or is not a folder", local)
 		}
-		return saveWork(root, func(c *archive.Config) {
+		return saveWork(w, root, func(c *archive.Config) {
 			m := map[string]string{}
 			for k, v := range c.WorkMap {
 				if k != rest[1] {
@@ -281,7 +358,7 @@ flags:
 			}
 			return fmt.Errorf("%s is not mapped", rest[1])
 		}
-		return saveWork(root, func(c *archive.Config) {
+		return saveWork(w, root, func(c *archive.Config) {
 			m := map[string]string{} // non-nil, so the saved file drops the old entry
 			for k, v := range c.WorkMap {
 				if k != rest[1] {
@@ -304,7 +381,7 @@ flags:
 				return err
 			}
 		}
-		if err := saveWork(root, func(c *archive.Config) {
+		if err := saveWork(w, root, func(c *archive.Config) {
 			if !slices.Contains(c.WorkExclude, folder) {
 				c.WorkExclude = append(append([]string{}, c.WorkExclude...), folder)
 			}
@@ -313,30 +390,30 @@ flags:
 		}
 		dest, _, err := archive.ResolveDestination(root, "")
 		if err != nil || dest == "" {
-			fmt.Println("The archive is not reachable; the next push removes the archived copy.")
+			fmt.Fprintln(w, "The archive is not reachable; the next push removes the archived copy.")
 			return nil
 		}
 		if _, err := os.Stat(dest); err != nil {
-			fmt.Println("The archive is not reachable; the next push removes the archived copy.")
+			fmt.Fprintln(w, "The archive is not reachable; the next push removes the archived copy.")
 			return nil
 		}
 		lock, err := archive.AcquireLockWait(root, 45*time.Second)
 		if err != nil { // a push is running and rewrites the shard: let it do the removal
-			fmt.Println("A push is running; the next push removes the archived copy.")
+			fmt.Fprintln(w, "A push is running; the next push removes the archived copy.")
 			return nil
 		}
 		defer lock.Release()
 		gone, err := purgeWork(root, dest, machineName(), folder)
 		for _, g := range gone {
-			fmt.Printf("removed %s\n", g)
+			fmt.Fprintf(w, "removed %s\n", g)
 		}
 		if err != nil {
 			return err
 		}
 		if len(gone) > 0 {
-			fmt.Println("They may still be in the sync service's trash or version history.")
+			fmt.Fprintln(w, "They may still be in the sync service's trash or version history.")
 		} else {
-			fmt.Println("Nothing archived under that folder.")
+			fmt.Fprintln(w, "Nothing archived under that folder.")
 		}
 		return nil
 
@@ -351,7 +428,7 @@ flags:
 		if !slices.ContainsFunc(cfg.WorkExclude, func(x string) bool { return x == rest[1] || x == expandHome(rest[1]) }) {
 			return fmt.Errorf("%s is not excluded", rest[1])
 		}
-		return saveWork(root, func(c *archive.Config) {
+		return saveWork(w, root, func(c *archive.Config) {
 			keep := []string{} // non-nil, so the saved file drops the old entry
 			for _, x := range c.WorkExclude {
 				if x != rest[1] && x != expandHome(rest[1]) {
@@ -370,16 +447,16 @@ flags:
 			return err
 		}
 		if len(rest) == 1 {
-			return listKeep(dest)
+			return listKeep(w, dest)
 		}
 		arg := expandHome(rest[1])
 		if runtime.GOOS == "windows" && gitBashRewritten(arg) {
 			return gitBashError(arg)
 		}
 		if action == "keep" {
-			return keepOne(dest, arg)
+			return keepOne(w, dest, arg)
 		}
-		return unkeepOne(dest, arg)
+		return unkeepOne(w, dest, arg)
 
 	case "keep-days":
 		dest, err := retentionDest(root)
@@ -392,9 +469,9 @@ flags:
 		}
 		if len(rest) == 1 {
 			if r.KeepDays == 0 {
-				fmt.Println("keep-days is off")
+				fmt.Fprintln(w, "keep-days is off")
 			} else {
-				fmt.Printf("keep-days is %d\n", r.KeepDays)
+				fmt.Fprintf(w, "keep-days is %d\n", r.KeepDays)
 			}
 			return nil
 		}
@@ -426,19 +503,19 @@ flags:
 			return err
 		}
 		if days == 0 {
-			fmt.Println("keep-days is off: nothing is deleted for its age.")
+			fmt.Fprintln(w, "keep-days is off: nothing is deleted for its age.")
 			return nil
 		}
 		// The list as saved: another computer's edit in the same sync window may have
 		// dropped an entry from it.
-		fmt.Printf("keep-days is %d: every computer deletes archived conversations idle longer, except those on the keep list:\n", days)
+		fmt.Fprintf(w, "keep-days is %d: every computer deletes archived conversations idle longer, except those on the keep list:\n", days)
 		if len(r.Keep) == 0 {
-			fmt.Println("  nothing is kept")
+			fmt.Fprintln(w, "  nothing is kept")
 		}
 		for _, e := range r.Keep {
-			fmt.Println("  " + keepLabel(e))
+			fmt.Fprintln(w, "  "+keepLabel(e))
 		}
-		fmt.Printf("Each computer starts a day after its first run with a new or lower setting; run `claude-sessions prune --older-than %dd` to see what it deletes.\n", days)
+		fmt.Fprintf(w, "Each computer starts a day after its first run with a new or lower setting; run `claude-sessions prune --older-than %dd` to see what it deletes.\n", days)
 		return nil
 
 	case "zip-sessions":
@@ -446,7 +523,7 @@ flags:
 			return fmt.Errorf("usage: claude-sessions config zip-sessions on|off")
 		}
 		on := rest[1] == "on"
-		return saveWork(root, func(c *archive.Config) { c.ZipSessions = &on }, "Zipping idle conversations is "+rest[1]+"; zips already made stay readable")
+		return saveWork(w, root, func(c *archive.Config) { c.ZipSessions = &on }, "Zipping idle conversations is "+rest[1]+"; zips already made stay readable")
 
 	default:
 		return fmt.Errorf("unknown config action %q (try: show, set-destination, map, unmap, set-machine, work, work-placement, map-folder, unmap-folder, exclude-folder, unexclude-folder, keep, unkeep, keep-days)", action)
@@ -469,16 +546,16 @@ func retentionDest(root string) (string, error) {
 	return dest, nil
 }
 
-func listKeep(dest string) error {
+func listKeep(w io.Writer, dest string) error {
 	r, err := archive.LoadRetention(dest)
 	if err != nil {
 		return err
 	}
 	if len(r.Keep) == 0 {
-		fmt.Println("nothing is kept")
+		fmt.Fprintln(w, "nothing is kept")
 	}
 	for _, e := range r.Keep {
-		fmt.Println(keepLabel(e))
+		fmt.Fprintln(w, keepLabel(e))
 	}
 	return nil
 }
@@ -543,7 +620,7 @@ func keepEntriesFor(dest, arg string) ([]archive.KeepEntry, []string, map[string
 	return entries, buckets, projects, nil
 }
 
-func keepOne(dest, arg string) error {
+func keepOne(w io.Writer, dest, arg string) error {
 	r, err := archive.LoadRetention(dest)
 	if err != nil {
 		return err
@@ -557,12 +634,12 @@ func keepOne(dest, arg string) error {
 		// A folder name kept for a remote is an entry of its own, so unkeeping that
 		// remote leaves the folder name kept by itself, or for another remote.
 		if slices.ContainsFunc(r.Keep, func(k archive.KeepEntry) bool { return sameKeep(k, e) }) {
-			fmt.Printf("Already kept: %s\n", keepLabel(e))
+			fmt.Fprintf(w, "Already kept: %s\n", keepLabel(e))
 			continue
 		}
 		r.Keep = append(r.Keep, e)
 		added = true
-		fmt.Printf("Kept: %s\n", keepLabel(e))
+		fmt.Fprintf(w, "Kept: %s\n", keepLabel(e))
 	}
 	if added {
 		if err := archive.SaveRetention(dest, r); err != nil {
@@ -571,10 +648,10 @@ func keepOne(dest, arg string) error {
 	}
 	for _, b := range buckets {
 		p := projects[b]
-		fmt.Printf("  %s  %s  %s\n", b, p.Owner(), p.Path)
+		fmt.Fprintf(w, "  %s  %s  %s\n", b, p.Owner(), p.Path)
 	}
 	if len(buckets) > 0 {
-		fmt.Println("A bucket of this project that a computer adds later is kept too.")
+		fmt.Fprintln(w, "A bucket of this project that a computer adds later is kept too.")
 	}
 	return nil
 }
@@ -584,7 +661,7 @@ func keepOne(dest, arg string) error {
 // can still go. Only that last matches a folder name kept for any remote: a path names
 // one repository, not another of the same folder name. A remote goes with the folder
 // names kept for it, either way round.
-func unkeepOne(dest, arg string) error {
+func unkeepOne(w io.Writer, dest, arg string) error {
 	r, err := archive.LoadRetention(dest)
 	if err != nil {
 		return err
@@ -620,7 +697,7 @@ func unkeepOne(dest, arg string) error {
 		return err
 	}
 	for _, k := range gone {
-		fmt.Printf("No longer kept: %s\n", keepLabel(k))
+		fmt.Fprintf(w, "No longer kept: %s\n", keepLabel(k))
 	}
 	return nil
 }
@@ -660,7 +737,7 @@ func gitBashError(p string) error {
 	return fmt.Errorf("%s looks like Git Bash rewrote the path; run it from PowerShell or prefix it with MSYS_NO_PATHCONV=1", p)
 }
 
-func saveWork(root string, change func(*archive.Config), msg string) error {
+func saveWork(w io.Writer, root string, change func(*archive.Config), msg string) error {
 	cfg, err := archive.LoadConfig(root)
 	if err != nil {
 		return err
@@ -669,14 +746,14 @@ func saveWork(root string, change func(*archive.Config), msg string) error {
 	if err := archive.SaveConfig(root, cfg); err != nil {
 		return err
 	}
-	fmt.Println(msg)
+	fmt.Fprintln(w, msg)
 	return nil
 }
 
 // positionalAfterAction keeps the arguments of map, unmap and set-machine from being
 // read as flags: a bucket name on macOS or Linux starts with "-", and the command
 // import prints for it failed exactly as printed. After the action only --claude-dir
-// is a flag.
+// and --json are flags.
 var positionalActions = []string{"map", "unmap", "set-machine", "work", "work-placement", "map-folder", "unmap-folder", "exclude-folder", "unexclude-folder", "keep", "unkeep", "keep-days"}
 
 func positionalAfterAction(args []string) []string {
@@ -695,7 +772,8 @@ func positionalAfterAction(args []string) []string {
 					j++
 					flags = append(flags, args[j])
 				}
-			case strings.HasPrefix(r, "--claude-dir=") || strings.HasPrefix(r, "-claude-dir="):
+			case strings.HasPrefix(r, "--claude-dir=") || strings.HasPrefix(r, "-claude-dir="),
+				r == "--json" || r == "-json":
 				flags = append(flags, r)
 			default:
 				pos = append(pos, r)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
@@ -64,15 +65,46 @@ func TestGoldenInstall(t *testing.T) {
 
 	roots := map[string]string{"<CLAUDE>": root, "<ARCHIVE>": dest, "<HOME>": home}
 	for _, c := range []struct {
-		name string
-		cmd  func([]string) error
-	}{{"install", cmdInstall}, {"uninstall", cmdUninstall}} {
-		out, err := captureStdout(t, func() error { return c.cmd([]string{"--claude-dir", root}) })
-		got := golden.Normalize(fmt.Sprintf("$ claude-sessions %s --claude-dir %s\nerr %v\n--- stdout\n%s", c.name, root, err, out), roots)
+		name, cmdName string
+		cmd           func([]string) error
+		flags         []string
+	}{
+		{"install", "install", cmdInstall, nil},
+		{"uninstall", "uninstall", cmdUninstall, nil},
+		{"install-json", "install", cmdInstall, []string{"--json"}},
+	} {
+		args := append([]string{"--claude-dir", root}, c.flags...)
+		out, err := captureStdout(t, func() error { return c.cmd(args) })
+		got := golden.Normalize(fmt.Sprintf("$ claude-sessions %s %s\nerr %v\n--- stdout\n%s", c.cmdName, strings.Join(args, " "), err, out), roots)
 		// The OS's name.
 		got = regexp.MustCompile(`Installing on \w+`).ReplaceAllString(got, "Installing on <OS>")
 		// Windows names the binary claude-sessions.exe.
 		got = regexp.MustCompile(`(<CLAUDE>/bin/claude-sessions)\.exe\b`).ReplaceAllString(got, "$1")
 		golden.Check(t, c.name, got)
+	}
+
+	// The interval install used is saved, -1 for none, for the panel to show.
+	sweepEvery := func() int {
+		cfg, err := archive.LoadConfig(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.SweepEvery
+	}
+	if got := sweepEvery(); got != 30 {
+		t.Errorf("after install, sweepEvery = %d, want 30", got)
+	}
+	out, err := captureStdout(t, func() error {
+		_, err := runInstall(quietStreams(), installOpts{ClaudeDir: root, NoSweep: true})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "" {
+		t.Errorf("runInstall printed to stdout: %q", out)
+	}
+	if got := sweepEvery(); got != -1 {
+		t.Errorf("after install --no-sweep, sweepEvery = %d, want -1", got)
 	}
 }

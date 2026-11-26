@@ -57,6 +57,10 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   shows "-".
 - `pull --json` and `restore --json`; `import --json` also lists each computer's work
   folders (`kind: "work"`) and each project's computer (`machine`).
+- **`config`, `install` and `uninstall` take `--json`.** `config` prints the lines it
+  would have printed, and for `show` the settings with their defaults filled in.
+  `install` saves the sweep's interval in `session-sync.json` (`sweepEvery`, -1 with
+  `--no-sweep`), and `config show --json` reports it.
 
 ### Fixed
 - **`doctor` sat silent on a sync folder that streams files.** Where Google Drive

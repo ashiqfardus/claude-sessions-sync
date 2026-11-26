@@ -32,45 +32,77 @@ func cmdInstall(args []string) error {
 	keepLegacy := fs.Bool("keep-powershell-hook", false, "leave an existing sync-claude-sessions.ps1 hook in place")
 	noSweep := fs.Bool("no-sweep", false, "install the session hook only, without the scheduled sweep")
 	replaceLegacySweep := fs.Bool("replace-powershell-sweep", false, "also remove the scheduled task registered by the PowerShell predecessor")
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
-
-	root, _, err := resolveRoot(*claudeDir)
+	o := installOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, Every: *every,
+		NoSweep: *noSweep, KeepLegacy: *keepLegacy, ReplaceLegacySweep: *replaceLegacySweep}
+	if !*asJSON {
+		_, err := runInstall(stdStreams(), o)
+		return err
+	}
+	res, err := runInstall(jsonStreams(), o)
 	if err != nil {
 		return err
+	}
+	return encodeJSON(os.Stdout, res)
+}
+
+type installOpts struct {
+	ClaudeDir, ArchiveDir                   string
+	Every                                   int
+	NoSweep, KeepLegacy, ReplaceLegacySweep bool
+}
+
+// installResult is what install did, as its lines say it.
+type installResult struct {
+	Archive     string `json:"archive"`
+	Binary      string `json:"binary"`
+	Hook        string `json:"hook"`        // "new", or how many existing entries it replaced
+	Sweep       string `json:"sweep"`       // the job registered, or "skipped (--no-sweep)"
+	SweepFailed string `json:"sweepFailed"` // why the sweep is not registered, when it failed
+}
+
+// runInstall installs the hooks and the sweep, printing on s.Out as the CLI does.
+func runInstall(s streams, o installOpts) (installResult, error) {
+	var res installResult
+	root, _, err := resolveRoot(o.ClaudeDir)
+	if err != nil {
+		return res, err
 	}
 
 	// The destination is settled first: installing automation that has nowhere to
 	// write is worse than not installing it, because it looks like it worked.
-	dest, src, err := archive.ResolveDestination(root, *archiveDir)
+	dest, src, err := archive.ResolveDestination(root, o.ArchiveDir)
 	if err != nil {
-		return err
+		return res, err
 	}
 	switch {
 	case dest == "":
-		return fmt.Errorf("no archive destination. Run `claude-sessions config set-destination <folder>` first")
-	case *archiveDir != "":
+		return res, fmt.Errorf("no archive destination. Run `claude-sessions config set-destination <folder>` first")
+	case o.ArchiveDir != "":
 		// The same checks as config set-destination: a typo'd or unmounted drive used
 		// to be saved, followed by "Done. Sessions on this machine now archive".
 		if dest, err = archive.PrepareDestination(root, dest); err != nil {
-			return err
+			return res, err
 		}
 		if err := archive.SaveConfig(root, archive.Config{Destination: dest}); err != nil {
-			return err
+			return res, err
 		}
 		src = archive.SourceConfig
 	default:
 		if err := archive.ValidateDestination(root, dest); err != nil {
-			return err
+			return res, err
 		}
 		if st, err := os.Stat(filepath.Dir(dest)); err != nil || !st.IsDir() {
-			return fmt.Errorf("%s is not available - is the sync client mounted?", filepath.Dir(dest))
+			return res, fmt.Errorf("%s is not available - is the sync client mounted?", filepath.Dir(dest))
 		}
 	}
 
-	fmt.Printf("Installing on %s\n\n", runtime.GOOS)
-	fmt.Printf("  archive   %s (%s)\n", dest, src)
+	fmt.Fprintf(s.Out, "Installing on %s\n\n", runtime.GOOS)
+	fmt.Fprintf(s.Out, "  archive   %s (%s)\n", dest, src)
+	res.Archive = dest
 
 	// Copy the binary somewhere stable.
 	//
@@ -80,36 +112,43 @@ func cmdInstall(args []string) error {
 	// client being mounted.
 	binary, err := installBinary(root)
 	if err != nil {
-		return err
+		return res, err
 	}
-	fmt.Printf("  binary    %s\n", binary)
+	fmt.Fprintf(s.Out, "  binary    %s\n", binary)
+	res.Binary = binary
 
-	replaced, err := claude.InstallHook(claude.SettingsPath(root), binary, !*keepLegacy)
+	replaced, err := claude.InstallHook(claude.SettingsPath(root), binary, !o.KeepLegacy)
 	if err != nil {
-		return err
+		return res, err
 	}
-	hookNote := "new"
+	res.Hook = "new"
 	if replaced > 0 {
-		hookNote = fmt.Sprintf("replaced %d existing entr(y/ies)", replaced)
+		res.Hook = fmt.Sprintf("replaced %d existing entr(y/ies)", replaced)
 	}
-	fmt.Printf("  hook      SessionEnd (%s)\n", hookNote)
+	fmt.Fprintf(s.Out, "  hook      SessionEnd (%s)\n", res.Hook)
 
-	if *noSweep {
-		fmt.Printf("  sweep     skipped (--no-sweep)\n")
+	every := o.Every
+	if every <= 0 {
+		every = 30 // as hostagent registers it
+	}
+	if o.NoSweep {
+		every = -1
+		res.Sweep = "skipped (--no-sweep)"
+		fmt.Fprintf(s.Out, "  sweep     %s\n", res.Sweep)
 	} else {
 		// Report the predecessor's scheduled job rather than removing it. It belongs
 		// to another program; taking it away because the names looked similar is how
 		// a working backup disappears.
 		if action, exists := legacySweep(); exists {
-			if *replaceLegacySweep {
+			if o.ReplaceLegacySweep {
 				if err := removeLegacySweep(); err != nil {
-					fmt.Printf("  legacy    could not remove: %v\n", err)
+					fmt.Fprintf(s.Out, "  legacy    could not remove: %v\n", err)
 				} else {
-					fmt.Printf("  legacy    removed the PowerShell sweep\n")
+					fmt.Fprintf(s.Out, "  legacy    removed the PowerShell sweep\n")
 				}
 			} else {
-				fmt.Printf("  legacy    the PowerShell sweep is still registered:\n            %s\n", action)
-				fmt.Printf("            Both will now archive. Remove it yourself, or re-run with --replace-powershell-sweep.\n")
+				fmt.Fprintf(s.Out, "  legacy    the PowerShell sweep is still registered:\n            %s\n", action)
+				fmt.Fprintf(s.Out, "            Both will now archive. Remove it yourself, or re-run with --replace-powershell-sweep.\n")
 			}
 		}
 
@@ -119,60 +158,99 @@ func cmdInstall(args []string) error {
 		}
 		var status hostagent.Status
 		if err == nil {
-			status, err = installSweep(sweepJob(root, sweepBinary), *every)
+			status, err = installSweep(sweepJob(root, sweepBinary), o.Every)
 		}
 		if err != nil {
 			// The hook alone still archives every session that ends normally, so this
 			// is a degraded install, not a failed one.
-			fmt.Printf("  sweep     FAILED: %v\n", err)
-			fmt.Println("\nThe session hook is installed and will archive sessions that end normally.")
-			fmt.Println("Only abruptly-killed sessions need the sweep, so this is worth fixing but not urgent.")
-			return nil
+			res.SweepFailed = err.Error()
+			fmt.Fprintf(s.Out, "  sweep     FAILED: %v\n", err)
+			fmt.Fprintln(s.Out, "\nThe session hook is installed and will archive sessions that end normally.")
+			fmt.Fprintln(s.Out, "Only abruptly-killed sessions need the sweep, so this is worth fixing but not urgent.")
+			return res, nil
 		}
-		fmt.Printf("  sweep     %s: %s\n", status.Mechanism, status.Detail)
+		res.Sweep = fmt.Sprintf("%s: %s", status.Mechanism, status.Detail)
+		fmt.Fprintf(s.Out, "  sweep     %s\n", res.Sweep)
 	}
 
-	fmt.Println("\nDone. Sessions on this machine now archive automatically.")
-	fmt.Println("Run `claude-sessions doctor` to confirm, and restart Claude Code (or run /hooks)")
-	fmt.Println("so a running session picks up the new hook.")
-	return nil
+	// The interval, for the panel to show: a failed sweep above keeps the one saved before.
+	cfg, err := archive.LoadConfig(root)
+	if err == nil {
+		cfg.SweepEvery = every
+		err = archive.SaveConfig(root, cfg)
+	}
+	if err != nil {
+		return res, err
+	}
+
+	fmt.Fprintln(s.Out, "\nDone. Sessions on this machine now archive automatically.")
+	fmt.Fprintln(s.Out, "Run `claude-sessions doctor` to confirm, and restart Claude Code (or run /hooks)")
+	fmt.Fprintln(s.Out, "so a running session picks up the new hook.")
+	return res, nil
 }
 
 func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	keepLegacy := fs.Bool("keep-powershell-hook", true, "leave a sync-claude-sessions.ps1 hook alone")
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
-
-	root, _, err := resolveRoot(*claudeDir)
+	o := uninstallOpts{ClaudeDir: *claudeDir, KeepLegacy: *keepLegacy}
+	if !*asJSON {
+		_, err := runUninstall(stdStreams(), o)
+		return err
+	}
+	res, err := runUninstall(jsonStreams(), o)
 	if err != nil {
 		return err
 	}
+	return encodeJSON(os.Stdout, res)
+}
 
-	removed, err := claude.RemoveHook(claude.SettingsPath(root), !*keepLegacy)
+type uninstallOpts struct {
+	ClaudeDir  string
+	KeepLegacy bool // the CLI's default is true: false also removes the PowerShell hook
+}
+
+type uninstallResult struct {
+	HookEntries int    `json:"hookEntries"` // hook entries removed
+	Sweep       string `json:"sweep"`       // "removed", "none registered for <profile>" or "FAILED: <why>"
+}
+
+// runUninstall removes the hooks and the sweep, printing on s.Out as the CLI does.
+func runUninstall(s streams, o uninstallOpts) (uninstallResult, error) {
+	var res uninstallResult
+	root, _, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return res, err
 	}
-	fmt.Printf("  hook      removed %d entr(y/ies)\n", removed)
+
+	removed, err := claude.RemoveHook(claude.SettingsPath(root), !o.KeepLegacy)
+	if err != nil {
+		return res, err
+	}
+	res.HookEntries = removed
+	fmt.Fprintf(s.Out, "  hook      removed %d entr(y/ies)\n", removed)
 
 	if removed, err := uninstallSweep(sweepJob(root, "")); err != nil {
-		fmt.Printf("  sweep     FAILED: %v\n", err)
+		res.Sweep = fmt.Sprintf("FAILED: %v", err)
 	} else if removed {
-		fmt.Printf("  sweep     removed\n")
+		res.Sweep = "removed"
 	} else {
 		// Said "removed" before, which hid a sweep registered under another profile's
 		// name (installed with CLAUDE_CONFIG_DIR set, uninstalled without it).
-		fmt.Printf("  sweep     none registered for %s\n", root)
+		res.Sweep = "none registered for " + root
 	}
+	fmt.Fprintf(s.Out, "  sweep     %s\n", res.Sweep)
 
 	// The archive and the binary are left alone on purpose: the archive is the user's
 	// data, and removing the binary would delete the program that is running.
-	fmt.Println("\nYour archive and its transcripts are untouched.")
-	fmt.Printf("The binary is still at %s if you want to remove it.\n",
+	fmt.Fprintln(s.Out, "\nYour archive and its transcripts are untouched.")
+	fmt.Fprintf(s.Out, "The binary is still at %s if you want to remove it.\n",
 		filepath.Join(root, "bin"))
-	return nil
+	return res, nil
 }
 
 // installBinary copies the running executable into <claude-root>/bin.

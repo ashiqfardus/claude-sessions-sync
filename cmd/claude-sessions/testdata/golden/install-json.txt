@@ -1,0 +1,10 @@
+$ claude-sessions install --claude-dir <CLAUDE> --json
+err <nil>
+--- stdout
+{
+  "archive": "<ARCHIVE>",
+  "binary": "<CLAUDE>/bin/claude-sessions",
+  "hook": "new",
+  "sweep": "/u003cMECH/u003e: every 30 minutes",
+  "sweepFailed": ""
+}

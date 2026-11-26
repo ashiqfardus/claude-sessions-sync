@@ -215,6 +215,7 @@ func TestGoldenReadOnly(t *testing.T) {
 		{"ls-archived-archive-flag", []string{"ls", "--archive", "<ARCHIVE>"}, nil},
 		{"search-archive-flag", []string{"search", "--archive", "<ARCHIVE>", "migration"}, nil},
 		{"config-show", []string{"config", "show"}, nil},
+		{"config-show-json", []string{"config", "show", "--json"}, nil},
 		{"config-map-list", []string{"config", "map"}, nil},
 		{"config-keep-list", []string{"config", "keep"}, nil},
 		{"version", []string{"version"}, nil},
@@ -452,6 +453,7 @@ func TestGoldenChanging(t *testing.T) {
 		}, nil},
 		{"config-zip-sessions-off", pushed("config", "zip-sessions", "off"), nil},
 		{"config-keep", pushed("config", "keep", "web-app"), nil},
+		{"config-keep-json", pushed("config", "keep", "web-app", "--json"), nil},
 		{"config-unkeep", func(t *testing.T) string {
 			e := goldenFixture(t)
 			goldenStep(t, e, "config", "keep", "web-app")

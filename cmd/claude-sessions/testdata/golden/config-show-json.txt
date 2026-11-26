@@ -1,0 +1,27 @@
+$ claude-sessions config --claude-dir <CLAUDE> show --json
+exit 0
+--- stdout
+{
+  "action": "show",
+  "lines": [
+    "config file  <CLAUDE>/session-sync.json",
+    "destination  <ARCHIVE>",
+    "work backup  on",
+    "placement    home"
+  ],
+  "view": {
+    "configFile": "<CLAUDE>/session-sync.json",
+    "destination": "<ARCHIVE>",
+    "inUse": "<ARCHIVE>",
+    "source": "session-sync.json",
+    "placement": "home",
+    "workOn": true,
+    "workMap": {},
+    "projectMap": {},
+    "workExclude": [],
+    "renderExclude": [],
+    "zipSessions": false,
+    "sweepEvery": 30
+  }
+}
+--- stderr
