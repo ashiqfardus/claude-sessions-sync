@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-11-27
+
 ### Fixed
 - **0.7.4 left some conversations with no title.** A conversation opened by a request
   from another Claude session is titled by that request again, as on 0.7.3, without the
