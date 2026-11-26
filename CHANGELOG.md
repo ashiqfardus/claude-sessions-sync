@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-26
+
 ### Fixed
 - **`doctor` warned about mixed versions on computers running the same release.** A
   release download says `0.7.0` and a `go install` build said `v0.7.0`, so `doctor` and
