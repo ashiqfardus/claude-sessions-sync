@@ -832,6 +832,26 @@ func TestStorageKeptUntilAJobEnds(t *testing.T) {
 	}
 }
 
+// A walk kept for minutes is never served for an archive gone since: reachability comes
+// first, as in every other view.
+func TestStorageUnreachableIsNotTheKeptWalk(t *testing.T) {
+	root, dest := queryFixture(t)
+	u := newTestUI(t, uiOpts{ClaudeDir: root, NoOpen: true})
+	runUI(t, u)
+	cookie := login(t, u)
+	var a, b storageView
+	if getJSON(t, u, cookie, "/api/storage", &a); a.Problem != "" || a.Archive == nil || a.Sizes.Conversations == 0 {
+		t.Fatalf("reachable: %+v", a)
+	}
+	if err := os.Rename(dest, dest+"-away"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Rename(dest+"-away", dest) })
+	if getJSON(t, u, cookie, "/api/storage", &b); b.Problem != "unreachable" || b.Archive != nil || b.Sizes.Conversations != 0 {
+		t.Errorf("unreachable, but the kept walk was served: %+v", b)
+	}
+}
+
 // Ruling I3: copies of different sizes differ unread; one size is compared by hash; the
 // panel's cache reads nothing while every copy's size and time stand.
 func TestProfileDiffsReadOnlyWhatTheyMust(t *testing.T) {

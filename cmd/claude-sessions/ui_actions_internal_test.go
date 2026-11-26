@@ -807,6 +807,24 @@ func TestUndoWithoutIDsIsAnUndo(t *testing.T) {
 	}
 }
 
+// A push that only looks is a preview: the rail and a refused second run name it so.
+func TestPreviewBackupIsLabelledSo(t *testing.T) {
+	isolateUI(t)
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "LAP-1")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	e := parityFixture(t)
+	u, cookie := actionPanel(t, e.root)
+	for body, want := range map[string]string{`{"dryRun":true}`: "Preview backup", `{}`: "Back up now"} {
+		resp, text := postRun(t, u, cookie, "push?wait=1", body)
+		var st struct {
+			Label string `json:"label"`
+		}
+		if err := json.Unmarshal([]byte(text), &st); err != nil || resp.StatusCode != http.StatusOK || st.Label != want {
+			t.Errorf("push %s: %d %s, want the label %q", body, resp.StatusCode, text, want)
+		}
+	}
+}
+
 // A refused action is no backup: its log line is PANEL:, which Activity never shows
 // (Ruling P55), not ERROR:, which Activity reads as a backup that did not finish.
 func TestRefusedActionIsNoFailedBackup(t *testing.T) {

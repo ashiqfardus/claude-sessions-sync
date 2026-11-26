@@ -338,7 +338,11 @@ func (u *uiServer) apiRun(w http.ResponseWriter, r *http.Request) {
 		sendStatus(w, http.StatusBadRequest, map[string]string{"error": msg})
 		return
 	}
-	j, err := u.jobs.Start(name, a.Label, func(log io.Writer) (any, error) {
+	label := a.Label
+	if name == "push" && onlyLooks(name, body) {
+		label = "Preview backup" // the button's name: the rail says what is running
+	}
+	j, err := u.jobs.Start(name, label, func(log io.Writer) (any, error) {
 		defer u.dropCaches() // whatever it changed, even failing partway, shows on the next read
 		res, err := a.Run(u, body, streams{log, log})
 		if err == nil && a.Changes && !onlyLooks(name, body) {

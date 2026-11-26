@@ -1227,14 +1227,20 @@ func (u *uiServer) apiSummary(w http.ResponseWriter, r *http.Request) {
 // (dropCaches). The folder as configured is the key: nothing in the archive is read
 // before a kept answer is given.
 func (u *uiServer) apiStorage(w http.ResponseWriter, r *http.Request) {
-	key, _, _ := archive.ResolveDestination(u.root, "")
-	v := u.storage.do(key, emptyStorage(), func() (storageView, time.Duration) {
-		v := queryStorage(u.root, time.Now(), nil)
-		if v.Archive == nil {
-			return v, 0 // no folder to walk: look again next time
-		}
-		return v, 5 * time.Minute
-	})
+	// Reachability first, as every view: a walk kept 5 minutes must not stand in for an
+	// archive gone since.
+	key, problem := panelDest(u.root)
+	v := emptyStorage()
+	v.Problem = problem
+	if problem == "" {
+		v = u.storage.do(key, emptyStorage(), func() (storageView, time.Duration) {
+			v := queryStorage(u.root, time.Now(), nil)
+			if v.Archive == nil {
+				return v, 0 // no folder to walk: look again next time
+			}
+			return v, 5 * time.Minute
+		})
+	}
 	u.mu.Lock()
 	v.Duplicates = u.lastClean // a copy of the kept view, with this run's check
 	u.mu.Unlock()
