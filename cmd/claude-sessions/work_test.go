@@ -2935,3 +2935,55 @@ func TestImportUpdateThroughOverlayAndCompaction(t *testing.T) {
 		t.Fatalf("after compaction: f04 %q, f05 %q, files %v\n%s", f04, f05, got, out)
 	}
 }
+
+// Another computer's Desktop is this home's Desktop. A real import makes that folder
+// when it places a work file there, then files the Desktop conversations into it; the
+// dry run, which places nothing, said "no folder named Desktop" for the same import.
+func TestDryRunPlacesAHomeFolderAsTheRealRunDoes(t *testing.T) {
+	p := workPairAt(t, t.TempDir()) // A's conversation wrote Desktop/todo.md
+	desk := filepath.Join(p.homeA, "Desktop")
+	const id = "77777777-7777-7777-7777-777777777777"
+	mustWrite(t, filepath.Join(p.a.claudeDir, "projects", claude.Slug(desk), id+".jsonl"),
+		line(`{"type":"user","cwd":`+quoted(desk)+`,"sessionId":"`+id+`","message":{"role":"user","content":"tidy the desktop"}}`))
+	p.a.workRun(t, p.homeA, "push", "--no-html")
+	if err := os.RemoveAll(desk); err != nil { // A's own disk: not on this computer
+		t.Fatal(err)
+	}
+	elsewhere := t.TempDir()
+	placement := func(out string) string {
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Contains(l, " "+claude.Slug(desk)+":") || strings.Contains(l, " "+claude.Slug(desk)+" ->") {
+				return l
+			}
+		}
+		return ""
+	}
+
+	dry := placement(p.b.workRun(t, p.homeB, "import", "--no-plugins", "--search-root", elsewhere, "--dry-run"))
+	if _, err := os.Stat(filepath.Join(p.homeB, "Desktop")); !os.IsNotExist(err) {
+		t.Fatalf("the dry run made Desktop, or the fixture has one: %v", err)
+	}
+	real := placement(p.b.workRun(t, p.homeB, "import", "--no-plugins", "--search-root", elsewhere))
+	if want := "+ " + claude.Slug(desk) + " -> " + filepath.Join(p.homeB, "Desktop") + " (matched by home folder): 1 filed, 0 already present"; real != want {
+		t.Fatalf("real run: %q, want %q", real, want)
+	}
+	if dry != real {
+		t.Errorf("dry run: %q\nreal run: %q", dry, real)
+	}
+
+	// With Desktop here already, the two agree as they always did.
+	q := workPairAt(t, t.TempDir())
+	mustWrite(t, filepath.Join(q.a.claudeDir, "projects", claude.Slug(filepath.Join(q.homeA, "Desktop")), id+".jsonl"),
+		line(`{"type":"user","cwd":`+quoted(filepath.Join(q.homeA, "Desktop"))+`,"sessionId":"`+id+`","message":{"role":"user","content":"tidy"}}`))
+	q.a.workRun(t, q.homeA, "push", "--no-html")
+	desk = filepath.Join(q.homeA, "Desktop")
+	if err := os.RemoveAll(desk); err != nil {
+		t.Fatal(err)
+	}
+	mustMkdir(t, filepath.Join(q.homeB, "Desktop"))
+	dry = placement(q.b.workRun(t, q.homeB, "import", "--no-plugins", "--search-root", elsewhere, "--dry-run"))
+	real = placement(q.b.workRun(t, q.homeB, "import", "--no-plugins", "--search-root", elsewhere))
+	if dry != real || !strings.Contains(real, "(matched by home folder)") {
+		t.Errorf("with Desktop here, dry run: %q\nreal run: %q", dry, real)
+	}
+}

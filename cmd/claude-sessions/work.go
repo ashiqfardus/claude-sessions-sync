@@ -898,6 +898,7 @@ type workRestoreResult struct {
 	Filed, Kept, Beside, Refused int
 	Excluded                     int // folders and files left alone: excluded here
 	Notes                        []string
+	Made                         map[string]bool // the folders files land in, with dryRun would
 }
 
 // ownPaths reports whether p is a path of this machine's own (R17/R19): its home or
@@ -983,7 +984,7 @@ func forgetPrevious(root string, placed map[string]string) error {
 // each folder goes through work.Place, each file through the push filter and
 // work.SafeJoin, and files are written add-only, mode 0644, never through a link.
 func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive.Config, dryRun, update, sameLayout bool) ([]rewrite.Move, workRestoreResult) {
-	res := workRestoreResult{Placed: map[string]string{}, ByMachine: map[string]string{}}
+	res := workRestoreResult{Placed: map[string]string{}, ByMachine: map[string]string{}, Made: map[string]bool{}}
 	if !cfg.WorkOn() {
 		return nil, res
 	}
@@ -1154,6 +1155,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				}
 				same := func(a fs.FileInfo) bool { return a.Size() == fi.Size() && archive.SameMTime(a.ModTime(), fi.ModTime()) }
 				write := func(p string) bool {
+					res.Made[filepath.Dir(p)] = true
 					if dryRun {
 						return true
 					}
@@ -1239,6 +1241,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 					if dst := admit(wf.Path+sep+strings.ReplaceAll(r, "/", sep), r, size, at); dst != "" {
 						st, err := os.Lstat(dst)
 						if err != nil || update && !(st.Mode().IsRegular() && mine(dst, st) && st.Size() == size && archive.SameMTime(st.ModTime(), at)) {
+							res.Made[filepath.Dir(dst)] = true // unpacked, then filed below it
 							return false
 						}
 						n.Kept++ // as file would count it

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -245,6 +246,20 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	if hb.on() { // only then is each bucket listed for the count
 		hb.reading("conversations", conversationCount(dest, buckets))
 	}
+	// placedHere is whether dir is a folder here once the work folders are placed. A dry
+	// run places none, so a folder a placed file would make counts too: a real run makes
+	// ~/Desktop for another computer's Desktop/todo.md before any project is matched.
+	placedHere := func(dir string) bool {
+		if st, err := os.Stat(dir); err == nil || !o.DryRun {
+			return err == nil && st.IsDir()
+		}
+		for made := range workRes.Made {
+			if work.Within(made, dir, runtime.GOOS != "linux") {
+				return true
+			}
+		}
+		return false
+	}
 	resolve := func(bucket string, p archive.Project) identity.Match {
 		if local, ok := cfg.Mapped(bucket); ok {
 			if st, err := os.Stat(local); err != nil || !st.IsDir() {
@@ -261,12 +276,8 @@ func runImport(s streams, o importOpts) (importResult, error) {
 		// the work folders are placed: a container (~/Developer, a few loose files) does
 		// not bring the repositories in it, and a bucket for one not here would be
 		// pushed back with no identity.
-		// shortcut: a dry run places nothing, so a project only the work folder would
-		// bring reads as not found there; upgrade if dry runs must match exactly.
-		if t := placedPath(workRes.Placed, p.Path); t != "" {
-			if st, err := os.Stat(t); err == nil && st.IsDir() {
-				return identity.Match{How: byWorkFolder, Path: t}
-			}
+		if t := placedPath(workRes.Placed, p.Path); t != "" && placedHere(t) {
+			return identity.Match{How: byWorkFolder, Path: t}
 		}
 		if localHome == "" {
 			return m
@@ -282,8 +293,7 @@ func runImport(s streams, o importOpts) (importResult, error) {
 					if !strings.EqualFold(ps[len(ps)-1], name) {
 						continue
 					}
-					local := filepath.Join(localHome, name)
-					if st, err := os.Stat(local); err == nil && st.IsDir() {
+					if local := filepath.Join(localHome, name); placedHere(local) {
 						return identity.Match{How: identity.ByHomeFolder, Path: local}
 					}
 				}
