@@ -47,3 +47,17 @@ func TestKeepsMatchesRootsAcrossBuilds(t *testing.T) {
 		}
 	}
 }
+
+// A manifest a 0.7.1 computer wrote has "\" for a drive root: the panel names it from
+// the path, and its key and arg stay as they were.
+func TestPanelNamesAnOldRootLeafFromItsPath(t *testing.T) {
+	old := archive.Project{Leaf: `\`, Path: `E:\`, Machine: "LAP-100203-Administrator"}
+	opts, _ := groupProjects(map[string]archive.Project{"E--": old}, nil)
+	if len(opts) != 1 || opts[0].Name != `E:\` || opts[0].Key != `leaf:\` {
+		t.Fatalf("got %+v", opts)
+	}
+	two := map[string]archive.Project{"E--": old, "F--": {Leaf: `\`, Path: `F:\`, Machine: "B"}}
+	if opts, _ := groupProjects(two, nil); len(opts) != 1 || opts[0].Name != `E:\ and 1 more` {
+		t.Errorf("got %+v", opts)
+	}
+}

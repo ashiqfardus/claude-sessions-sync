@@ -148,7 +148,7 @@ func groupProjects(projects map[string]archive.Project, homes []string) ([]proje
 				on = append(on, mp.Machine)
 			}
 		}
-		switch o.Name = g.leaf; {
+		switch o.Name = displayLeaf(g.leaf, o.Paths); {
 		case len(on) > 0:
 			o.Name = "Home folder"
 		case g.leaf == "":
@@ -723,4 +723,27 @@ func (u *uiServer) apiConversations(w http.ResponseWriter, r *http.Request) {
 	}
 	u.logf("PANEL: conversations: %v", err)
 	sendStatus(w, http.StatusInternalServerError, map[string]string{"error": plainError(err)})
+}
+
+// displayLeaf is the name a project is listed by. A bare root leaf, which computers on
+// 0.7.1 wrote for every root, is named from its paths instead; the key, arg and keep
+// matching still use the stored leaf.
+func displayLeaf(leaf string, paths []machinePath) string {
+	if leaf != "/" && leaf != `\` {
+		return leaf
+	}
+	var names []string
+	for _, mp := range paths {
+		if n := projectLeaf(mp.Path); !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	switch len(names) {
+	case 0:
+		return leaf
+	case 1:
+		return names[0]
+	}
+	return fmt.Sprintf("%s and %d more", names[0], len(names)-1)
 }

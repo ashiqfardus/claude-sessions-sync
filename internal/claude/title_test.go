@@ -67,8 +67,9 @@ func TestTitleOfWrappersAlone(t *testing.T) {
 		{"slash command", "<command-message>loop</command-message>\n<command-name>/loop</command-name>\n<command-args>5m</command-args>", "/loop 5m"},
 		{"slash command, no args", "<command-name>/usage</command-name>\n<command-args></command-args>", "/usage"},
 		{"paste", "<pasted_content id=\"1\">\n  Traceback (most recent call last):\n  File x</pasted_content>", "Traceback (most recent call last):"},
-		{"bridge message", `<cross-session-message from="bridge:session_0123abcd">review the PR` + "\nthanks</cross-session-message>", "review the PR"},
-		{"agent message", `<agent-message from="planner">step one</agent-message>`, "step one"},
+		{"bridge message", `<cross-session-message from="bridge:session_0123abcd">review the PR` + "\nthanks</cross-session-message>", ""},
+		{"agent message", `<agent-message from="planner">step one</agent-message>`, ""},
+		{"hand-back", `<agent-message from="sub">[Subagent hand-back] The text below is the final report</agent-message>`, ""},
 		{"opened file", "<ide_opened_file>The user opened the file /home/me/a.go</ide_opened_file>", ""},
 		{"browser", "<browser_instruction># Claude in Chrome</browser_instruction>", ""},
 		{"command output", "<local-command-stdout>Set model to opus</local-command-stdout>", ""},
@@ -120,5 +121,18 @@ func TestScanTitleOfASlashCommandSession(t *testing.T) {
 	// A typed prompt still stops the head scan at once.
 	if s := scanLines(t, 20, append([]string{userLine("fix the build")}, lines...)...); s.FirstPrompt != "fix the build" || s.Lines != 1 {
 		t.Errorf("title = %q after %d line(s)", s.FirstPrompt, s.Lines)
+	}
+}
+
+// A hand-back is another agent's text: the real prompt after it titles the session.
+func TestScanTitleSkipsAgentMessage(t *testing.T) {
+	s := scanLines(t, 200,
+		userLine(`<agent-message from="sub">[Subagent hand-back] The text below is the final report</agent-message>`),
+		userLine("fix the build"))
+	if s.FirstPrompt != "fix the build" {
+		t.Errorf("title = %q", s.FirstPrompt)
+	}
+	if s := scanLines(t, 200, userLine(`<agent-message from="sub">[Subagent hand-back] x</agent-message>`)); s.FirstPrompt != "" {
+		t.Errorf("wrapper only: title = %q", s.FirstPrompt)
 	}
 }

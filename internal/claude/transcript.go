@@ -290,9 +290,8 @@ var wrapper = func() *regexp.Regexp {
 // title is what a user turn would be listed by, and whether the user typed it.
 //
 // The text left once every wrapper block is removed is typed. A turn of wrappers alone
-// falls back to its slash command and arguments, or to the first line of a paste or of
-// a message from another session or agent: a session opened that way and never typed
-// in had no title at all. The rest - reminders, an opened file or selection, browser
+// falls back to its slash command and arguments, or to the first line of a paste. A message
+// from another session or agent is another agent's text, not the user's: it gives none. The rest - reminders, an opened file or selection, browser
 // instructions, hook output, task notices, ! commands and their output - give none: a
 // title made of them says nothing about the conversation, and a later turn may.
 func title(text string) (string, bool) {
@@ -313,7 +312,7 @@ func title(text string) (string, bool) {
 				name = strings.TrimPrefix(content, "/")
 			case tag == "command-args" && args == "":
 				args = content
-			case line == "" && (tag == "pasted_content" || tag == "cross-session-message" || tag == "agent-message"):
+			case line == "" && tag == "pasted_content":
 				line, _, _ = strings.Cut(content, "\n")
 			}
 			break

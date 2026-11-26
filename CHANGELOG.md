@@ -5,6 +5,14 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **A drive root was still named `\` in the panel.** A computer on 0.7.1 wrote `\`
+  for `E:\`, and the panel showed that. It now names the project from its path. Its
+  key and what keep and prune match on are unchanged.
+- **A conversation titled by another agent's report.** A title could still read
+  `[Subagent hand-back] The text below is the final report…`. A message from another
+  agent or session is no longer used as a title; the next thing you typed is, or none.
+
 ## [0.7.3] - 2026-11-27
 
 ### Fixed
