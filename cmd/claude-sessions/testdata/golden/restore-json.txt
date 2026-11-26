@@ -1,0 +1,15 @@
+$ claude-sessions restore --claude-dir <CLAUDE> --source <HOME>/restore-from --project-path <HOME>/dev/web-app --rewrite-from <HOME>/Documents/GitHub/example-org/web-app --json
+exit 0
+--- stdout
+{
+  "bucket": "<CLAUDE>/projects/<HOME-SLUG>-dev-web-app",
+  "copied": 2,
+  "updated": 0,
+  "skipped": 0,
+  "memory": 0,
+  "hits": {
+    "json-escaped": 5
+  },
+  "bareLeftovers": 0
+}
+--- stderr

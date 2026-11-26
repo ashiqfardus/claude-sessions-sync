@@ -1,10 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,6 +28,8 @@ type importRow struct {
 	Updated  int    `json:"updated,omitempty"`
 	Skipped  int    `json:"skipped"`
 	Note     string `json:"note,omitempty"`
+	Machine  string `json:"machine,omitempty"` // the computer the project or work folder is from
+	Kind     string `json:"kind,omitempty"`    // "work" for a work folder, "" for a project
 }
 
 // cmdImport is the reason this project exists: it files an archive's sessions onto
@@ -49,30 +51,61 @@ func cmdImport(args []string) error {
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
-	if *noWork && *repoint {
-		return fmt.Errorf("--no-work and --repoint cannot be combined: --repoint rewrites conversations to work folders that --no-work does not restore")
+	o := importOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, SearchRoot: *roots, Depth: *depth,
+		DryRun: *dryRun, BareName: *bareName, Update: *update, UpdateProfile: *updateProfile,
+		NoPlugins: *noPlugins, NoWork: *noWork, Repoint: *repoint}
+	s := stdStreams()
+	if *asJSON {
+		s = jsonStreams()
+	}
+	res, err := runImport(s, o)
+	if err != nil || !*asJSON {
+		return err
+	}
+	if res.Rows == nil {
+		res.Rows = []importRow{}
+	}
+	return encodeJSON(os.Stdout, res.Rows)
+}
+
+type importOpts struct {
+	ClaudeDir, ArchiveDir, SearchRoot                                   string
+	Depth                                                               int
+	DryRun, BareName, Update, UpdateProfile, NoPlugins, NoWork, Repoint bool
+}
+
+type importResult struct {
+	Rows    []importRow   `json:"rows"`
+	Profile profileResult `json:"profile"`
+}
+
+// runImport files the archive's projects and work folders here, reports on s as it
+// goes, and returns a row for each.
+func runImport(s streams, o importOpts) (importResult, error) {
+	if o.NoWork && o.Repoint {
+		return importResult{}, fmt.Errorf("--no-work and --repoint cannot be combined: --repoint rewrites conversations to work folders that --no-work does not restore")
 	}
 
-	root, _, err := resolveRoot(*claudeDir)
+	root, _, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return importResult{}, err
 	}
-	dest, src, err := archive.ResolveDestination(root, *archiveDir)
+	dest, src, err := archive.ResolveDestination(root, o.ArchiveDir)
 	if err != nil {
-		return err
+		return importResult{}, err
 	}
 	if dest == "" {
-		return fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
+		return importResult{}, fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
 	}
 	if st, err := os.Stat(dest); err != nil || !st.IsDir() {
-		return fmt.Errorf("%s is not reachable - is the sync client mounted?", dest)
+		return importResult{}, fmt.Errorf("%s is not reachable - is the sync client mounted?", dest)
 	}
 
-	slowRead := hintIfSlow(true)
+	slowRead := hintIfSlowTo(s.Err)
 	manifest, bad, err := archive.Merged(dest)
 	slowRead()
 	if err != nil {
-		return err
+		return importResult{}, err
 	}
 
 	// A bucket the manifest does not know - a forgotten machine's, one from a restored
@@ -89,33 +122,31 @@ func cmdImport(args []string) error {
 		}
 	}
 	if len(manifest) == 0 {
-		return fmt.Errorf("nothing to import: %s holds no sessions - run `claude-sessions push` on a machine that has them first", dest)
+		return importResult{}, fmt.Errorf("nothing to import: %s holds no sessions - run `claude-sessions push` on a machine that has them first", dest)
 	}
 
 	// Writing into ~/.claude/projects while a scheduled push reads it is what the lock
 	// exists to prevent.
 	lock, err := archive.AcquireLock(root)
 	if err != nil {
-		return err
+		return importResult{}, err
 	}
 	defer lock.Release()
 
-	searchRoots := defaultSearchRoots(manifest, *roots)
+	searchRoots := defaultSearchRoots(manifest, o.SearchRoot)
 	// One walk of the search roots answers every project, instead of one walk each.
-	scanner := identity.NewScanner(searchRoots, *depth)
+	scanner := identity.NewScanner(searchRoots, o.Depth)
 
-	if !*asJSON {
-		fmt.Printf("archive      %s (%s)\n", dest, src)
-		fmt.Printf("search roots %s\n\n", strings.Join(searchRoots, ", "))
-		for _, r := range searchRoots {
-			// A typo here otherwise surfaces only as every project being "not found".
-			if st, err := os.Stat(r); err != nil || !st.IsDir() {
-				fmt.Printf("! search root %s does not exist\n", r)
-			}
+	fmt.Fprintf(s.Out, "archive      %s (%s)\n", dest, src)
+	fmt.Fprintf(s.Out, "search roots %s\n\n", strings.Join(searchRoots, ", "))
+	for _, r := range searchRoots {
+		// A typo here otherwise surfaces only as every project being "not found".
+		if st, err := os.Stat(r); err != nil || !st.IsDir() {
+			fmt.Fprintf(s.Out, "! search root %s does not exist\n", r)
 		}
-		for _, b := range bad {
-			fmt.Printf("! ignoring manifest file %s\n", b)
-		}
+	}
+	for _, b := range bad {
+		fmt.Fprintf(s.Out, "! ignoring manifest file %s\n", b)
 	}
 
 	// Every bucket in the archive, not only the ones the manifest knows. A bucket with
@@ -162,8 +193,8 @@ func cmdImport(args []string) error {
 	var workMoves []rewrite.Move
 	var workRes workRestoreResult
 	var remapNotes []string
-	if !*noWork {
-		workMoves, workRes = restoreWork(root, dest, shards, wcfg, *dryRun, *update, false)
+	if !o.NoWork {
+		workMoves, workRes = restoreWork(root, dest, shards, wcfg, o.DryRun, o.Update, false)
 		// A folder placed elsewhere since an earlier import repoints from where it was, until
 		// a --repoint has moved every conversation off it (spec §7a).
 		var remaps []rewrite.Move
@@ -266,23 +297,21 @@ func cmdImport(args []string) error {
 	moves = append(moves, workMoves...)
 	writers := sessionWriters(dest)
 	former := formerNames(dest)
-	imported := loadImported(root, !*dryRun)
+	imported := loadImported(root, !o.DryRun)
 
 	var rows []importRow
 	var filed, updated, sameLayout, notFound, ambiguous int
 
 	report := func(row importRow, marker string) {
 		rows = append(rows, row)
-		if !*asJSON {
-			fmt.Printf("%s %s: %s\n", marker, row.Bucket, row.Note)
-		}
+		fmt.Fprintf(s.Out, "%s %s: %s\n", marker, row.Bucket, row.Note)
 	}
 
 	for _, bucket := range buckets {
 		// Named like a file kept beside a project - imported.log - its memory base would
 		// take that file's path.
 		if !safeBucketName(bucket) {
-			report(importRow{Bucket: printable(bucket), Note: notBucket}, "!")
+			report(importRow{Bucket: printable(bucket), Note: notBucket, Machine: manifest[bucket].Owner()}, "!")
 			continue
 		}
 		p, known := manifest[bucket]
@@ -302,7 +331,7 @@ func cmdImport(args []string) error {
 			}
 			// No sessions to rewrite, but the project's memory still belongs somewhere.
 			match := resolve(bucket, p)
-			row := importRow{Bucket: bucket, Recorded: p.Path, How: string(match.How)}
+			row := importRow{Bucket: bucket, Recorded: p.Path, How: string(match.How), Machine: p.Owner()}
 			if match.Path == "" {
 				notFound++
 				row.Note = "memory only, and no local folder matches it; " + mapHint(bucket)
@@ -314,7 +343,7 @@ func cmdImport(args []string) error {
 				local = existing.Name
 			}
 			n := restoreProjectMemory(root, dest, bucket, filepath.Join(archived, "memory"),
-				filepath.Join(claude.ProjectsDir(root), local, "memory"), p.Owner(), *dryRun, *update)
+				filepath.Join(claude.ProjectsDir(root), local, "memory"), p.Owner(), o.DryRun, o.Update)
 			row.Local = match.Path
 			row.Note = fmt.Sprintf("memory only -> %s (matched by %s): %d memory file(s) filed", match.Path, match.How, n)
 			report(row, "+")
@@ -322,16 +351,14 @@ func cmdImport(args []string) error {
 		}
 
 		match := resolve(bucket, p)
-		row := importRow{Bucket: bucket, Recorded: p.Path, How: string(match.How)}
+		row := importRow{Bucket: bucket, Recorded: p.Path, How: string(match.How), Machine: p.Owner()}
 
 		switch match.How {
 		case mappedMissing:
 			row.Note = fmt.Sprintf("mapped to %s, which does not exist; %s", match.Candidates[0], mapHint(bucket))
 			notFound++
 			rows = append(rows, row)
-			if !*asJSON {
-				fmt.Printf("- %s: %s\n", bucket, row.Note)
-			}
+			fmt.Fprintf(s.Out, "- %s: %s\n", bucket, row.Note)
 			continue
 
 		case identity.NotFound:
@@ -343,26 +370,22 @@ func cmdImport(args []string) error {
 			rows = append(rows, row)
 			// Say so. A project that is silently absent from the output looks like it
 			// was handled, and the user has no reason to go looking for it.
-			if !*asJSON {
-				fmt.Printf("- %s: %s\n", bucket, row.Note)
-				for _, c := range match.Candidates {
-					fmt.Printf("      %s (different remote)\n", c)
-				}
-				fmt.Printf("      %s\n", mapHint(bucket))
+			fmt.Fprintf(s.Out, "- %s: %s\n", bucket, row.Note)
+			for _, c := range match.Candidates {
+				fmt.Fprintf(s.Out, "      %s (different remote)\n", c)
 			}
+			fmt.Fprintf(s.Out, "      %s\n", mapHint(bucket))
 			continue
 
 		case identity.Ambiguous:
 			row.Note = fmt.Sprintf("%d folders named %q and no git remote settles it", len(match.Candidates), p.Leaf)
 			ambiguous++
 			rows = append(rows, row)
-			if !*asJSON {
-				fmt.Printf("! %s: %s\n", bucket, row.Note)
-				for _, c := range match.Candidates {
-					fmt.Printf("      %s\n", c)
-				}
-				fmt.Printf("      %s\n", mapHint(bucket))
+			fmt.Fprintf(s.Out, "! %s: %s\n", bucket, row.Note)
+			for _, c := range match.Candidates {
+				fmt.Fprintf(s.Out, "      %s\n", c)
 			}
+			fmt.Fprintf(s.Out, "      %s\n", mapHint(bucket))
 			continue
 		}
 
@@ -376,31 +399,20 @@ func cmdImport(args []string) error {
 		}
 
 		res, err := restoreInto(root, archived, match.Path, rewriteFrom, moves,
-			restoreOpts{BareName: *bareName, DryRun: *dryRun, Update: *update,
+			restoreOpts{BareName: o.BareName, DryRun: o.DryRun, Update: o.Update,
 				Owner: p.Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", bucket), Archive: dest, FormerNames: former,
 				Imported: imported})
 		if errors.Is(err, errRecord) {
-			return err // never file what cannot be recorded
+			return importResult{}, err // never file what cannot be recorded
 		}
 		if err != nil {
 			row.Note = err.Error()
 			rows = append(rows, row)
-			if !*asJSON {
-				fmt.Printf("x %s: %s\n", bucket, err)
-			}
+			fmt.Fprintf(s.Out, "x %s: %s\n", bucket, err)
 			continue
 		}
 		row.Filed, row.Skipped, row.Updated = res.Copied, res.Skipped, res.Updated
-		if len(res.Failed) > 0 {
-			row.Note = fmt.Sprintf("%d transcript(s) not filed: %s", len(res.Failed), strings.Join(res.Failed, "; "))
-		}
-		if len(res.Diverged) > 0 {
-			row.Note = strings.TrimSpace(row.Note + fmt.Sprintf(" %d session(s) continued here and elsewhere, local kept and the other filed beside it: %s",
-				len(res.Diverged), strings.Join(res.Diverged, "; ")))
-		}
-		if len(res.Notes) > 0 {
-			row.Note = strings.TrimSpace(row.Note + " " + strings.Join(res.Notes, "; "))
-		}
+		row.Note = resultNote(res)
 		filed += res.Copied
 		updated += res.Updated
 		if match.How == identity.ByRecordedPath {
@@ -408,103 +420,126 @@ func cmdImport(args []string) error {
 		}
 		rows = append(rows, row)
 
-		if !*asJSON {
-			marker := "+"
-			if match.How == identity.ByRecordedPath {
-				marker = "="
-			}
-			fmt.Printf("%s %s -> %s (matched by %s): %d filed, %d already present",
-				marker, bucket, match.Path, match.How, res.Copied, res.Skipped)
-			if res.Updated > 0 {
-				fmt.Printf(", %d updated", res.Updated)
-			}
-			fmt.Println()
-			for _, f := range res.Failed {
-				fmt.Printf("    x %s\n", f)
-			}
-			for _, n := range res.Notes {
-				fmt.Printf("    ! %s\n", n)
-			}
-			for _, d := range res.Diverged {
-				fmt.Printf("    ! continued here and elsewhere - %s (resume either)\n", d)
-			}
+		marker := "+"
+		if match.How == identity.ByRecordedPath {
+			marker = "="
+		}
+		fmt.Fprintf(s.Out, "%s %s -> %s (matched by %s): %d filed, %d already present",
+			marker, bucket, match.Path, match.How, res.Copied, res.Skipped)
+		if res.Updated > 0 {
+			fmt.Fprintf(s.Out, ", %d updated", res.Updated)
+		}
+		fmt.Fprintln(s.Out)
+		for _, f := range res.Failed {
+			fmt.Fprintf(s.Out, "    x %s\n", f)
+		}
+		for _, n := range res.Notes {
+			fmt.Fprintf(s.Out, "    ! %s\n", n)
+		}
+		for _, d := range res.Diverged {
+			fmt.Fprintf(s.Out, "    ! continued here and elsewhere - %s (resume either)\n", d)
 		}
 	}
+	rows = append(rows, workRows(workRes.ByMachine)...)
 
 	// Conversations already here are rewritten only when asked: that edits the user's
 	// own files (spec §7a). Work-folder moves only, never project moves.
 	var rp repointResult
-	if *repoint {
-		rp = repointLocal(root, workMoves, time.Now(), *dryRun, imported)
+	if o.Repoint {
+		rp = repointLocal(root, workMoves, time.Now(), o.DryRun, imported)
 		if rp.Err != nil {
-			return rp.Err
+			return importResult{}, rp.Err
 		}
-		if !*dryRun && rp.Recent == 0 && rp.Skipped == 0 {
+		if !o.DryRun && rp.Recent == 0 && rp.Skipped == 0 {
 			if err := forgetPrevious(root, workRes.ByMachine); err != nil {
 				rp.Notes = append(rp.Notes, fmt.Sprintf("  x restored work record: %v", err))
 			}
 		}
 	}
-	imported.finish()
+	imported.finish(s.Err)
 
-	profile := restoreProfile(root, dest, *dryRun, *updateProfile, !*noPlugins)
+	profile := restoreProfile(root, dest, o.DryRun, o.UpdateProfile, !o.NoPlugins)
+	result := importResult{Rows: rows, Profile: profile}
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if rows == nil {
-			rows = []importRow{}
-		}
-		return enc.Encode(rows)
+	fmt.Fprintf(s.Out, "\n%d transcript(s) filed", filed)
+	if o.Update {
+		fmt.Fprintf(s.Out, ", %d updated", updated)
 	}
-
-	fmt.Printf("\n%d transcript(s) filed", filed)
-	if *update {
-		fmt.Printf(", %d updated", updated)
-	}
-	fmt.Printf(". %d same layout, %d not found, %d ambiguous.\n", sameLayout, notFound, ambiguous)
+	fmt.Fprintf(s.Out, ". %d same layout, %d not found, %d ambiguous.\n", sameLayout, notFound, ambiguous)
 	for _, n := range append(workRes.Notes, remapNotes...) {
-		fmt.Println(printable(n)) // they name files and folders the archive chose
+		fmt.Fprintln(s.Out, printable(n)) // they name files and folders the archive chose
 	}
-	if *noWork {
-		fmt.Println(noWorkNote)
+	if o.NoWork {
+		fmt.Fprintln(s.Out, noWorkNote)
 	}
 	if len(workRes.Placed) > 0 {
-		fmt.Println("  to place them elsewhere: claude-sessions config map-folder '<path from above>' '<local folder>', or claude-sessions config work-placement home|machine")
+		fmt.Fprintln(s.Out, "  to place them elsewhere: claude-sessions config map-folder '<path from above>' '<local folder>', or claude-sessions config work-placement home|machine")
 	}
-	if *repoint {
+	if o.Repoint {
 		verb := "repointed"
-		if *dryRun {
+		if o.DryRun {
 			verb = "would repoint"
 		}
-		fmt.Printf("%s %d conversation(s) to this machine's work folders", verb, rp.Rewritten)
+		fmt.Fprintf(s.Out, "%s %d conversation(s) to this machine's work folders", verb, rp.Rewritten)
 		if rp.Backup != "" {
-			fmt.Printf("; the originals are in %s", rp.Backup)
+			fmt.Fprintf(s.Out, "; the originals are in %s", rp.Backup)
 		}
-		fmt.Println()
+		fmt.Fprintln(s.Out)
 		if rp.Recent > 0 {
-			fmt.Printf("%d conversation(s) used in the last hour left alone: run import --repoint again later\n", rp.Recent)
+			fmt.Fprintf(s.Out, "%d conversation(s) used in the last hour left alone: run import --repoint again later\n", rp.Recent)
 		}
 		if rp.Skipped > 0 {
-			fmt.Printf("%d conversation(s) left as they were after an error:\n", rp.Skipped)
+			fmt.Fprintf(s.Out, "%d conversation(s) left as they were after an error:\n", rp.Skipped)
 		}
 		for _, n := range rp.Notes {
-			fmt.Println(n)
+			fmt.Fprintln(s.Out, n)
 		}
-	} else if len(workMoves) > 0 {
+	} else if len(workMoves) > 0 && s.Out != io.Discard { // it reads every conversation here, for a line of text alone
 		if n := countPointing(root, workMoves); n > 0 {
-			fmt.Printf("%d conversation(s) here still point at other machines' work folders: run claude-sessions import --repoint\n", n)
+			fmt.Fprintf(s.Out, "%d conversation(s) here still point at other machines' work folders: run claude-sessions import --repoint\n", n)
 		}
 	}
-	printProfile(profile, *dryRun)
-	if !*update && sameLayout+filed > 0 {
-		fmt.Println("Sessions already here are never replaced; --update refreshes ones that continued elsewhere.")
+	printProfile(s.Out, profile, o.DryRun)
+	if !o.Update && sameLayout+filed > 0 {
+		fmt.Fprintln(s.Out, "Sessions already here are never replaced; --update refreshes ones that continued elsewhere.")
 	}
 	if notFound+ambiguous > 0 {
-		fmt.Println("\nFor anything not placed, say where it lives here once, then run import again:")
-		fmt.Println("  claude-sessions config map <bucket> '<local folder>'")
+		fmt.Fprintln(s.Out, "\nFor anything not placed, say where it lives here once, then run import again:")
+		fmt.Fprintln(s.Out, "  claude-sessions config map <bucket> '<local folder>'")
 	}
-	return nil
+	return result, nil
+}
+
+// resultNote sums up, for a row, what restoreInto could not file in whole.
+func resultNote(res restoreResult) string {
+	note := ""
+	if len(res.Failed) > 0 {
+		note = fmt.Sprintf("%d transcript(s) not filed: %s", len(res.Failed), strings.Join(res.Failed, "; "))
+	}
+	if len(res.Diverged) > 0 {
+		note = strings.TrimSpace(note + fmt.Sprintf(" %d session(s) continued here and elsewhere, local kept and the other filed beside it: %s",
+			len(res.Diverged), strings.Join(res.Diverged, "; ")))
+	}
+	if len(res.Notes) > 0 {
+		note = strings.TrimSpace(note + " " + strings.Join(res.Notes, "; "))
+	}
+	return note
+}
+
+// workRows are other machines' work folders placed here, one row each, by recorded path.
+func workRows(byMachine map[string]string) []importRow {
+	var rows []importRow
+	for k, target := range byMachine {
+		m, path, _ := strings.Cut(k, "|")
+		rows = append(rows, importRow{Kind: "work", Machine: m, Recorded: path, Local: target})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Recorded != rows[j].Recorded {
+			return rows[i].Recorded < rows[j].Recorded
+		}
+		return rows[i].Machine < rows[j].Machine
+	})
+	return rows
 }
 
 // newestCwd is the working directory recorded by the newest transcript in an archived
@@ -617,51 +652,78 @@ func cmdPull(args []string) error {
 	updateProfile := fs.Bool("update-profile", false, updateProfileHelp)
 	noPlugins := fs.Bool("no-plugins", false, noPluginsHelp)
 	noWork := fs.Bool("no-work", false, noWorkHelp)
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
-
-	root, _, err := resolveRoot(*claudeDir)
-	if err != nil {
+	o := pullOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, DryRun: *dryRun, Update: *update,
+		UpdateProfile: *updateProfile, NoPlugins: *noPlugins, NoWork: *noWork}
+	s := stdStreams()
+	if *asJSON {
+		s = jsonStreams()
+	}
+	rows, err := runPull(s, o)
+	if err != nil || !*asJSON {
 		return err
 	}
-	dest, _, err := archive.ResolveDestination(root, *archiveDir)
+	if rows == nil {
+		rows = []importRow{}
+	}
+	return encodeJSON(os.Stdout, rows)
+}
+
+type pullOpts struct {
+	ClaudeDir, ArchiveDir                            string
+	DryRun, Update, UpdateProfile, NoPlugins, NoWork bool
+}
+
+// runPull files the archive's projects into buckets of the same name, reports on s and
+// returns a row for each project and work folder.
+func runPull(s streams, o pullOpts) ([]importRow, error) {
+	root, _, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	dest, _, err := archive.ResolveDestination(root, o.ArchiveDir)
+	if err != nil {
+		return nil, err
 	}
 	if dest == "" {
-		return fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
+		return nil, fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
 	}
 
 	archivedBuckets, err := archive.BucketNames(dest)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(archivedBuckets) == 0 {
-		fmt.Println("Nothing to pull: the archive holds no projects.")
-		return nil
+		fmt.Fprintln(s.Out, "Nothing to pull: the archive holds no projects.")
+		return nil, nil
 	}
 
 	// Pulling writes into ~/.claude/projects, which a scheduled push reads.
 	lock, err := archive.AcquireLock(root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer lock.Release()
 
 	projectsDir := claude.ProjectsDir(root)
 	manifest, _, _ := archive.Merged(dest)
 	writers := sessionWriters(dest)
-	imported := loadImported(root, !*dryRun)
+	imported := loadImported(root, !o.DryRun)
 	var pulled, updated, already, memory int
 	var forked, failed, notes []string
+	var rows []importRow
 
 	for _, name := range archivedBuckets {
 		if !safeBucketName(name) { // as in import
-			fmt.Printf("! %s: %s\n", printable(name), notBucket)
+			fmt.Fprintf(s.Out, "! %s: %s\n", printable(name), notBucket)
+			rows = append(rows, importRow{Bucket: printable(name), Note: notBucket, Machine: manifest[name].Owner()})
 			continue
 		}
 		srcDir := filepath.Join(archive.ProjectsDir(dest), name)
+		row := importRow{Bucket: name, Recorded: manifest[name].Path, How: string(byBucketName), Machine: manifest[name].Owner()}
 
 		// Match an existing local bucket case-insensitively before creating one.
 		targetName := name
@@ -671,22 +733,29 @@ func cmdPull(args []string) error {
 
 		if !hasTranscripts(srcDir) {
 			// Memory travels with the sessions, here as in restore.
-			memory += restoreProjectMemory(root, dest, name, filepath.Join(srcDir, "memory"),
-				filepath.Join(projectsDir, targetName, "memory"), manifest[name].Owner(), *dryRun, *update)
+			n := restoreProjectMemory(root, dest, name, filepath.Join(srcDir, "memory"),
+				filepath.Join(projectsDir, targetName, "memory"), manifest[name].Owner(), o.DryRun, o.Update)
+			memory += n
+			if n > 0 {
+				row.Note = fmt.Sprintf("memory only: %d memory file(s) filed", n)
+				rows = append(rows, row)
+			}
 			continue
 		}
 		// The same filing as import, by bucket name and with no path rewriting: a
 		// session continued on two machines comes across as a second session here too.
 		res, err := restoreInto(root, srcDir, "", "", nil, restoreOpts{
-			DryRun: *dryRun, Update: *update, Bucket: targetName,
+			DryRun: o.DryRun, Update: o.Update, Bucket: targetName,
 			Owner: manifest[name].Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", name), Archive: dest,
 			FormerNames: formerNames(dest), Imported: imported,
 		})
 		if errors.Is(err, errRecord) {
-			return err // never file what cannot be recorded
+			return nil, err // never file what cannot be recorded
 		}
 		if err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %v", name, err))
+			row.Note = err.Error()
+			rows = append(rows, row)
 			continue
 		}
 		pulled += res.Copied
@@ -696,39 +765,42 @@ func cmdPull(args []string) error {
 		forked = append(forked, res.Diverged...)
 		failed = append(failed, res.Failed...)
 		notes = append(notes, res.Notes...)
+		row.Filed, row.Skipped, row.Updated, row.Note = res.Copied, res.Skipped, res.Updated, resultNote(res)
+		rows = append(rows, row)
 	}
-	imported.finish()
+	imported.finish(s.Err)
 
-	profile := restoreProfile(root, dest, *dryRun, *updateProfile, !*noPlugins)
+	profile := restoreProfile(root, dest, o.DryRun, o.UpdateProfile, !o.NoPlugins)
 	// Work folders at their recorded paths, under the same safety rules as import.
 	var workRes workRestoreResult
-	if cfg, err := archive.LoadConfig(root); err == nil && !*noWork {
+	if cfg, err := archive.LoadConfig(root); err == nil && !o.NoWork {
 		shards, _, _ := archive.ReadShards(dest)
-		_, workRes = restoreWork(root, dest, shards, cfg, *dryRun, *update, true)
+		_, workRes = restoreWork(root, dest, shards, cfg, o.DryRun, o.Update, true)
 	}
+	rows = append(rows, workRows(workRes.ByMachine)...)
 
-	fmt.Printf("\n%s %d transcript(s) and %d memory file(s), %d already present.\n",
-		verbFor(*dryRun), pulled, memory, already)
-	if *noWork {
-		fmt.Println(noWorkNote)
+	fmt.Fprintf(s.Out, "\n%s %d transcript(s) and %d memory file(s), %d already present.\n",
+		verbFor(o.DryRun), pulled, memory, already)
+	if o.NoWork {
+		fmt.Fprintln(s.Out, noWorkNote)
 	}
 	for _, n := range workRes.Notes {
-		fmt.Println(printable(n)) // they name files and folders the archive chose
+		fmt.Fprintln(s.Out, printable(n)) // they name files and folders the archive chose
 	}
 	if updated > 0 {
-		fmt.Printf("updated %d session(s) that continued on another machine\n", updated)
+		fmt.Fprintf(s.Out, "updated %d session(s) that continued on another machine\n", updated)
 	}
 	for _, f := range failed {
-		fmt.Printf("  x %s\n", f)
+		fmt.Fprintf(s.Out, "  x %s\n", f)
 	}
 	for _, n := range notes {
-		fmt.Printf("  ! %s\n", n)
+		fmt.Fprintf(s.Out, "  ! %s\n", n)
 	}
-	printDiverged(forked)
-	printProfile(profile, *dryRun)
-	fmt.Println("pull files by bucket name only. If a project lives at a different path here,")
-	fmt.Println("use `claude-sessions import`, which matches by identity and rewrites paths.")
-	return nil
+	printDiverged(s.Out, forked)
+	printProfile(s.Out, profile, o.DryRun)
+	fmt.Fprintln(s.Out, "pull files by bucket name only. If a project lives at a different path here,")
+	fmt.Fprintln(s.Out, "use `claude-sessions import`, which matches by identity and rewrites paths.")
+	return rows, nil
 }
 
 // formerNames maps each machine, lower-cased, to the names it went by before, as its
@@ -792,6 +864,9 @@ const notBucket = "a dot or a path separator in the name, as in this tool's own 
 
 // mappedMissing is a project the user mapped to a folder that is no longer there.
 const mappedMissing identity.How = "mapped folder missing"
+
+// byBucketName is pull's match: the archive's folder name, with no identity check.
+const byBucketName identity.How = "bucket name"
 
 // mapHint is the command that places a project import could not.
 func mapHint(bucket string) string {

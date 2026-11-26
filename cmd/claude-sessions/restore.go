@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,21 +22,21 @@ import (
 )
 
 type restoreResult struct {
-	Bucket        string
-	Copied        int
-	Updated       int // already here, and the archived copy continued it
-	Skipped       int
-	Memory        int
-	Hits          map[string]int
-	BareLeftovers int
+	Bucket        string         `json:"bucket"`
+	Copied        int            `json:"copied"`
+	Updated       int            `json:"updated"` // already here, and the archived copy continued it
+	Skipped       int            `json:"skipped"`
+	Memory        int            `json:"memory"`
+	Hits          map[string]int `json:"hits"`
+	BareLeftovers int            `json:"bareLeftovers"`
 	// Failed names transcripts that could not be filed. One bad transcript no longer
 	// abandons the rest of the project.
-	Failed []string
+	Failed []string `json:"failed,omitempty"`
 	// Diverged describes sessions continued both here and elsewhere: the local copy is
 	// left alone and the other is filed as a session of its own.
-	Diverged []string
+	Diverged []string `json:"diverged,omitempty"`
 	// Notes are said about conversations that were filed, but not in whole.
-	Notes []string
+	Notes []string `json:"notes,omitempty"`
 }
 
 type restoreOpts struct {
@@ -78,69 +79,91 @@ func cmdRestore(args []string) error {
 	bareName := fs.Bool("include-bare-name", false, "also replace the bare folder name (hits package names and prose too)")
 	dryRun := fs.Bool("dry-run", false, "report what would happen without writing")
 	update := fs.Bool("update", false, updateHelp)
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
-	if *source == "" || *projectPath == "" {
-		return fmt.Errorf("usage: claude-sessions restore --source <folder> --project-path <path> [--rewrite-from <old path>]")
+	o := restoreCmdOpts{ClaudeDir: *claudeDir, Source: *source, ProjectPath: *projectPath, RewriteFrom: *rewriteFrom,
+		BareName: *bareName, DryRun: *dryRun, Update: *update}
+	s := stdStreams()
+	if *asJSON {
+		s = jsonStreams()
 	}
-	if *rewriteFrom != "" && !rewrite.AbsoluteAnywhere(*rewriteFrom) {
-		return fmt.Errorf("--rewrite-from must be the absolute project path recorded in the transcripts, got %q", *rewriteFrom)
+	res, err := runRestore(s, o)
+	if err != nil || !*asJSON {
+		return err
+	}
+	return encodeJSON(os.Stdout, res)
+}
+
+type restoreCmdOpts struct {
+	ClaudeDir, Source, ProjectPath, RewriteFrom string
+	BareName, DryRun, Update                    bool
+}
+
+// runRestore files a folder of transcripts as one project's, reports on s and returns
+// what it did.
+func runRestore(s streams, o restoreCmdOpts) (restoreResult, error) {
+	if o.Source == "" || o.ProjectPath == "" {
+		return restoreResult{}, fmt.Errorf("usage: claude-sessions restore --source <folder> --project-path <path> [--rewrite-from <old path>]")
+	}
+	if o.RewriteFrom != "" && !rewrite.AbsoluteAnywhere(o.RewriteFrom) {
+		return restoreResult{}, fmt.Errorf("--rewrite-from must be the absolute project path recorded in the transcripts, got %q", o.RewriteFrom)
 	}
 
-	root, _, err := resolveRoot(*claudeDir)
+	root, _, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return restoreResult{}, err
 	}
 
 	lock, err := archive.AcquireLock(root)
 	if err != nil {
-		return err
+		return restoreResult{}, err
 	}
 	defer lock.Release()
 
 	// Recorded as import records, archive or not: push reads folders only from lines
 	// added here.
-	imported := loadImported(root, !*dryRun)
-	res, err := restoreInto(root, *source, *projectPath, *rewriteFrom, nil,
-		restoreOpts{BareName: *bareName, DryRun: *dryRun, Update: *update, Imported: imported})
-	imported.finish()
+	imported := loadImported(root, !o.DryRun)
+	res, err := restoreInto(root, o.Source, o.ProjectPath, o.RewriteFrom, nil,
+		restoreOpts{BareName: o.BareName, DryRun: o.DryRun, Update: o.Update, Imported: imported})
+	imported.finish(s.Err)
 	if err != nil {
-		return err
+		return restoreResult{}, err
 	}
 
-	fmt.Printf("\n%s %d transcript(s) and %d memory file(s), skipped %d already present -> %s\n",
-		verbFor(*dryRun), res.Copied, res.Memory, res.Skipped, res.Bucket)
+	fmt.Fprintf(s.Out, "\n%s %d transcript(s) and %d memory file(s), skipped %d already present -> %s\n",
+		verbFor(o.DryRun), res.Copied, res.Memory, res.Skipped, res.Bucket)
 	if res.Updated > 0 {
-		fmt.Printf("updated %d session(s) that continued on another machine\n", res.Updated)
+		fmt.Fprintf(s.Out, "updated %d session(s) that continued on another machine\n", res.Updated)
 	}
 	for _, f := range res.Failed {
-		fmt.Printf("  x %s\n", f)
+		fmt.Fprintf(s.Out, "  x %s\n", f)
 	}
 	for _, n := range res.Notes {
-		fmt.Printf("  ! %s\n", n)
+		fmt.Fprintf(s.Out, "  ! %s\n", n)
 	}
-	printDiverged(res.Diverged)
+	printDiverged(s.Out, res.Diverged)
 
 	if len(res.Hits) > 0 {
-		fmt.Println("\nLines rewritten, by form:")
+		fmt.Fprintln(s.Out, "\nLines rewritten, by form:")
 		forms := make([]string, 0, len(res.Hits))
 		for k := range res.Hits {
 			forms = append(forms, k)
 		}
 		sort.Strings(forms)
 		for _, f := range forms {
-			fmt.Printf("  %-14s %d\n", f, res.Hits[f])
+			fmt.Fprintf(s.Out, "  %-14s %d\n", f, res.Hits[f])
 		}
 	}
 	if res.BareLeftovers > 0 {
-		fmt.Printf("\n%d line(s) still mention the old folder name without a path prefix\n", res.BareLeftovers)
-		fmt.Println("(package names, git remotes, prose). Re-run with --include-bare-name to replace those too.")
+		fmt.Fprintf(s.Out, "\n%d line(s) still mention the old folder name without a path prefix\n", res.BareLeftovers)
+		fmt.Fprintln(s.Out, "(package names, git remotes, prose). Re-run with --include-bare-name to replace those too.")
 	}
-	if !*dryRun && res.Copied > 0 {
-		fmt.Printf("\nNow: cd %s  then  claude --resume\n", shellPath(strings.TrimRight(*projectPath, `\/`)))
+	if !o.DryRun && res.Copied > 0 {
+		fmt.Fprintf(s.Out, "\nNow: cd %s  then  claude --resume\n", shellPath(strings.TrimRight(o.ProjectPath, `\/`)))
 	}
-	return nil
+	return res, nil
 }
 
 // restoreInto files transcripts from source into the bucket for projectPath.
@@ -1210,15 +1233,15 @@ func olderThanArchive(src, dst string) {
 	}
 }
 
-// printDiverged names sessions --update left alone, and why.
-func printDiverged(names []string) {
+// printDiverged names on w the sessions --update left alone, and why.
+func printDiverged(w io.Writer, names []string) {
 	if len(names) == 0 {
 		return
 	}
-	fmt.Printf("\n%d session(s) continued both here and on another machine. The local copy\n", len(names))
-	fmt.Println("is kept as it is, and the other is filed as a session of its own - resume either:")
+	fmt.Fprintf(w, "\n%d session(s) continued both here and on another machine. The local copy\n", len(names))
+	fmt.Fprintln(w, "is kept as it is, and the other is filed as a session of its own - resume either:")
 	for _, n := range names {
-		fmt.Printf("  %s\n", n)
+		fmt.Fprintf(w, "  %s\n", n)
 	}
 }
 

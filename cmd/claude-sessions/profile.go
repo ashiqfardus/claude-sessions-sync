@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -169,17 +170,17 @@ func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (cop
 }
 
 type profileResult struct {
-	Files    []string    // profile files filed here
-	Replaced []string    // of those, local files that differed and were replaced
-	From     string      // whose copies replaced them, for the report
-	KeptIn   string      // where the replaced local files are kept
-	Plugins  []pluginRun // plugins enabled on another machine and missing here
+	Files    []string    `json:"files"`    // profile files filed here
+	Replaced []string    `json:"replaced"` // of those, local files that differed and were replaced
+	From     string      `json:"from"`     // whose copies replaced them, for the report
+	KeptIn   string      `json:"keptIn"`   // where the replaced local files are kept
+	Plugins  []pluginRun `json:"plugins"`  // plugins enabled on another machine and missing here
 }
 
 type pluginRun struct {
-	ID     string
-	Args   []string // for `claude`
-	Status string   // "installed", "would install", or why it needs running by hand
+	ID     string   `json:"id"`
+	Args   []string `json:"args"`   // for `claude`
+	Status string   `json:"status"` // "installed", "would install", or why it needs running by hand
 }
 
 func (p pluginRun) Command() string { return "claude " + strings.Join(p.Args, " ") }
@@ -493,27 +494,27 @@ func pluginEnv(root string, isDefault bool, environ []string) []string {
 	return env
 }
 
-// printProfile reports what restoreProfile did.
-func printProfile(res profileResult, dryRun bool) {
+// printProfile reports on w what restoreProfile did.
+func printProfile(w io.Writer, res profileResult, dryRun bool) {
 	if len(res.Files) == 0 && len(res.Plugins) == 0 {
 		return
 	}
-	fmt.Printf("\nprofile: %s %d rule/skill file(s)", verbFor(dryRun), len(res.Files))
+	fmt.Fprintf(w, "\nprofile: %s %d rule/skill file(s)", verbFor(dryRun), len(res.Files))
 	if len(res.Files) > 0 {
-		fmt.Printf(" (%s)", profileSummary(res.Files))
+		fmt.Fprintf(w, " (%s)", profileSummary(res.Files))
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 	for _, rel := range res.Replaced {
-		fmt.Printf("  ! %s replaced: it differed from %s (this machine's is kept in %s)\n", rel, res.From, res.KeptIn)
+		fmt.Fprintf(w, "  ! %s replaced: it differed from %s (this machine's is kept in %s)\n", rel, res.From, res.KeptIn)
 	}
 	for _, p := range res.Plugins {
 		marker := "+"
 		if p.Status != "installed" && p.Status != "would install" {
 			marker = "x"
 		}
-		fmt.Printf("  %s plugin %s: %s\n", marker, p.ID, p.Status)
+		fmt.Fprintf(w, "  %s plugin %s: %s\n", marker, p.ID, p.Status)
 		if marker == "x" || dryRun {
-			fmt.Printf("      %s\n", p.Command())
+			fmt.Fprintf(w, "      %s\n", p.Command())
 		}
 	}
 }

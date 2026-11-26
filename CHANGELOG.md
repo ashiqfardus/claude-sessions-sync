@@ -55,6 +55,8 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   records the hour of the last full push, in UTC, and changes only when that hour does,
   so a sync app keeps no extra version of it per reply. A computer on an older version
   shows "-".
+- `pull --json` and `restore --json`; `import --json` also lists other computers' work
+  folders (`kind: "work"`) and each project's computer (`machine`).
 
 ### Fixed
 - **`doctor` sat silent on a sync folder that streams files.** Where Google Drive

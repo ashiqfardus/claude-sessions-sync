@@ -1682,15 +1682,15 @@ func (r *importRecord) compact() {
 	}
 }
 
-// finish folds this run's journal into imported.json and says, on stderr, if it could
+// finish folds this run's journal into imported.json and says, on errw, if it could
 // not: the journal then stays, and the next run reads it first.
-func (r *importRecord) finish() {
+func (r *importRecord) finish(errw io.Writer) {
 	if r == nil {
 		return
 	}
 	r.compact()
 	if r.err != nil {
-		fmt.Fprintf(os.Stderr, "  x could not save the record of imported conversations: %v (kept in %s; the next run tries again)\n", r.err, importedLog(r.root))
+		fmt.Fprintf(errw, "  x could not save the record of imported conversations: %v (kept in %s; the next run tries again)\n", r.err, importedLog(r.root))
 	}
 }
 

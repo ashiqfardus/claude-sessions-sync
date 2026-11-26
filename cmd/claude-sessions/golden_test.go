@@ -382,10 +382,12 @@ func TestGoldenChanging(t *testing.T) {
 
 		{"pull-dry-run", pulls("--dry-run"), nil},
 		{"pull", pulls(), nil},
+		{"pull-json", pulls("--json"), nil},
 
 		// restore: web-app's archived folder, filed at <HOME>/dev/web-app.
 		{"restore-dry-run", func(t *testing.T) string { return goldenRestore(t, "--dry-run") }, nil},
 		{"restore", func(t *testing.T) string { return goldenRestore(t) }, nil},
+		{"restore-json", func(t *testing.T) string { return goldenRestore(t, "--json") }, nil},
 
 		// clean: LAP-2 imported web-app and went on with its first conversation, so
 		// LAP-2's copy holds LAP-1's in whole.

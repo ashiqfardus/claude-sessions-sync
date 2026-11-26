@@ -8,7 +8,8 @@ exit 0
     "localPath": "<LAP2-HOME>",
     "matchedBy": "home folder",
     "filed": 1,
-    "skipped": 0
+    "skipped": 0,
+    "machine": "LAP-1"
   },
   {
     "bucket": "<HOME-SLUG>-Documents-GitHub-example-org-web-app",
@@ -16,7 +17,8 @@ exit 0
     "localPath": "<LAP2-HOME>/dev/web-app",
     "matchedBy": "git remote",
     "filed": 2,
-    "skipped": 0
+    "skipped": 0,
+    "machine": "LAP-1"
   },
   {
     "bucket": "<HOME-SLUG>-Documents-planning-notes-example-org-notes",
@@ -24,7 +26,18 @@ exit 0
     "matchedBy": "not found",
     "filed": 0,
     "skipped": 0,
-    "note": "no folder named /"notes/" under the search roots"
+    "note": "no folder named /"notes/" under the search roots",
+    "machine": "LAP-1"
+  },
+  {
+    "bucket": "",
+    "recordedPath": "<HOME>/reports/q3",
+    "localPath": "<LAP2-HOME>/reports/q3",
+    "matchedBy": "",
+    "filed": 0,
+    "skipped": 0,
+    "machine": "LAP-1",
+    "kind": "work"
   }
 ]
 --- stderr

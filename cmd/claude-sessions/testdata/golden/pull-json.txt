@@ -1,0 +1,22 @@
+$ claude-sessions pull --claude-dir <CLAUDE> --json
+exit 0
+--- stdout
+[
+  {
+    "bucket": "<HOME-SLUG>-Documents-GitHub-example-org-web-app",
+    "recordedPath": "<HOME>/Documents/GitHub/example-org/web-app",
+    "matchedBy": "bucket name",
+    "filed": 0,
+    "skipped": 2,
+    "machine": "LAP-1"
+  },
+  {
+    "bucket": "<HOME-SLUG>-Documents-planning-notes-example-org-notes",
+    "recordedPath": "<HOME>/Documents/planning-notes/example-org/notes",
+    "matchedBy": "bucket name",
+    "filed": 1,
+    "skipped": 0,
+    "machine": "LAP-1"
+  }
+]
+--- stderr
