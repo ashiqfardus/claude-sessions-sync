@@ -528,3 +528,33 @@ func TestArchiveFolderIsChosenInOnePlace(t *testing.T) {
 		t.Error("settings.js Change folder does not choose through chooseArchive")
 	}
 }
+
+// On a wide monitor every screen takes the full width (no cap on .main), and Settings
+// sets its sections in two columns whose DOM order is the order they read in: down the
+// first column, then the second, so keyboard order follows what is seen.
+func TestScreensUseTheFullWidth(t *testing.T) {
+	files := staticFiles(t)
+	css := files["static/panel.css"]
+	if m := regexp.MustCompile(`\.main\{[^}]*\}`).FindString(css); m == "" || strings.Contains(m, "max-width") || !strings.Contains(m, "container:main/inline-size") {
+		t.Errorf("panel.css .main is %q: want no max-width, and the main container the screens query", m)
+	}
+	if !strings.Contains(css, "@container main (min-width:1200px){.board{display:grid") {
+		t.Error("panel.css does not set Settings' board in two columns on a wide screen")
+	}
+	shell := files["static/index.html"]
+	i := strings.Index(shell, `<template id="t-settings">`)
+	settings := shell[i : i+strings.Index(shell[i:], "</template>")]
+	if n := strings.Count(settings, `<div class="board-col">`); n != 2 {
+		t.Errorf("Settings has %d board columns, want 2", n)
+	}
+	var order []string
+	for _, m := range regexp.MustCompile(`<section aria-labelledby="([a-z-]+)-h"|<div class="board-col">`).FindAllStringSubmatch(settings, -1) {
+		if m[1] == "" {
+			m[1] = "|"
+		}
+		order = append(order, m[1])
+	}
+	if got, want := strings.Join(order, " "), "| arch comp work map | auto-backup prof pages full log"; got != want {
+		t.Errorf("Settings reads %q, want %q", got, want)
+	}
+}

@@ -32,7 +32,7 @@ code,.mono{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px}
 .grip span{width:2px;background:var(--line);transition:background .15s}
 .grip:hover span,.grip:focus-visible span,.grip.on span{background:var(--accent)}
 
-.main{flex:1 1 0;min-width:0;padding:28px 36px 56px;display:flex;flex-direction:column;gap:28px;max-width:1520px}
+.main{flex:1 1 0;min-width:0;padding:28px 36px 56px;display:flex;flex-direction:column;gap:28px;container:main/inline-size} /* no cap: every screen takes the full width */
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:24px 28px;align-items:start}
 .cols>*{min-width:0}
 .pager{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
@@ -45,6 +45,7 @@ h1{margin:0;font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.01e
 h2{margin:0;font-size:15px;line-height:1.35;font-weight:600}
 h3{margin:0;font-size:13.5px;font-weight:600}
 p{margin:0}
+:where(p:not(.note,.panel,.grow,.full-line)){max-width:72ch} /* a readable measure on any width; notes and panels keep their box, .grow and .full-line their row */
 .lead{color:var(--muted);max-width:68ch}
 .section{display:flex;flex-direction:column;gap:12px}
 .row{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
@@ -92,7 +93,7 @@ tbody tr.sel{background:#EAF4EF}
 tbody tr:last-child td{border-bottom:0}
 th:first-child,td:first-child{padding-left:18px}th:last-child,td:last-child{padding-right:18px}
 .r{text-align:right}
-.title-cell{display:flex;flex-direction:column;max-width:340px}
+.title-cell{display:flex;flex-direction:column;max-width:72ch}
 .title-cell strong{font-weight:500}
 
 .field{display:flex;flex-direction:column;gap:4px;min-width:0}
@@ -228,9 +229,9 @@ p.status{white-space:normal}
 .search-field{flex:0 1 380px;min-width:220px}
 .filters,.search-fields{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px}
 .search-fields{padding-top:12px}
-.filter{flex:1 1 170px;min-width:0}
-.look-in{flex:1 1 220px;min-width:0}
-.messages-from,.stop-after{flex:1 1 150px;min-width:0}
+.filter{flex:1 1 170px;min-width:0;max-width:300px}
+.look-in{flex:1 1 220px;min-width:0;max-width:300px}
+.messages-from,.stop-after{flex:1 1 150px;min-width:0;max-width:240px}
 .date-field{flex:0 1 160px}
 .search-checks{gap:8px 22px;padding-top:12px}
 .selection{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:8px 10px 8px 16px;background:var(--ink);color:#EEF2F0;border-radius:10px}
@@ -244,6 +245,7 @@ p.status{white-space:normal}
 .dialog-items>li{padding:8px 12px}
 .selection a{color:#9FD3C0} /* 9.98:1 on --ink, as in the toast */
 .title-cell strong{overflow-wrap:anywhere}
+.conv-table th:nth-child(2){width:50%} /* on a wide screen the title takes the room, and the details stay together */
 .conv-table td:not(:nth-child(2)){white-space:nowrap} /* only the title wraps: "web-app" and "Yesterday, 16:47" stay whole */
 
 /* Storage */
@@ -267,7 +269,7 @@ p.status{white-space:normal}
 .preview-actions{padding:12px 14px;border-top:1px solid #E9C6C1}
 .ruled{border-top:1px solid var(--line-soft)}
 .ruled>li{padding:10px 0}
-.keep-add{flex:1 1 280px}
+.keep-add{flex:1 1 280px;max-width:420px}
 .ruled .grow,.preview-items .grow{overflow-wrap:anywhere} /* a title or path may be one long word */
 .auto-note{gap:8px 12px}
 .way-text .status>svg,.auto-note .status>svg,.preview-actions .status>svg{flex:none} /* a note that wraps keeps its icon whole */
@@ -290,9 +292,17 @@ p.status{white-space:normal}
 .bring-options .input[aria-invalid=true],.restore-field .input[aria-invalid=true]{border-color:var(--red)}
 #bring-result [role=alert],#restore-result [role=alert]{color:var(--red)}
 
-/* Settings */
-.name-field{flex:1 1 240px}
+/* Settings: one column, as on a phone, until there is room for two (from about a 1500px window).
+   Column one holds the archive, its computers and their folders; column two the backups, shared files and the log.
+   The first column never goes under 700px, so the Computers table fits; DOM order reads down one column, then the next. */
+.board,.board-col{display:flex;flex-direction:column;gap:inherit}
+.board-col{min-width:0;container-type:inline-size}
+@container main (min-width:1200px){.board{display:grid;grid-template-columns:minmax(700px,1fr) minmax(0,1fr);align-items:start}}
+@container (min-width:840px){.pair{display:grid;grid-template-columns:1fr 1fr;align-items:start}} /* Rules and skills beside Readable pages */
+.pair:not(:has(>:not([hidden]))){display:none} /* both hidden without an archive: no empty gap */
+.name-field{flex:1 1 240px;max-width:420px}
 .computers-table{min-width:700px}
+.computers-table td:nth-child(3){white-space:nowrap} /* "Yesterday, 16:47" stays whole */
 .work-table{min-width:420px}
 .excluded>li{padding:8px 0}
 .placement{margin:0}
@@ -313,11 +323,12 @@ p.status{white-space:normal}
 .compare-copies>li{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:2px 0}
 
 /* Commands */
+.command-groups{columns:2 760px;column-gap:28px} /* two columns of groups once each can hold a table */
+.command-groups>*{break-inside:avoid;margin-bottom:24px}
 .commands-table{min-width:760px}
 .col-terminal{width:42%}
-.commands-table th[scope=rowgroup]{padding:16px 18px 6px;border-bottom:0;font-size:15px;font-weight:600;color:var(--ink);background:var(--surface-2)}
+.commands-table caption{padding:16px 18px 8px;text-align:left;font-size:15px;font-weight:600;background:var(--surface-2)}
 .commands-table td{padding-top:9px;padding-bottom:9px}
-.commands-table tbody:not(:last-child) tr:last-child td{border-bottom:1px solid var(--line-soft)} /* one tbody per group */
 
 /* Searchable dropdown (Combo.dc.html) */
 .combo{position:relative;min-width:150px}

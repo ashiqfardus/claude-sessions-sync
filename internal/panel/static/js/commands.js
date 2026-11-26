@@ -1,6 +1,7 @@
 // The command map page (Commands.dc.html): every CLI command and option, and where it is
 // in the panel, from GET /api/commands (Go's commandMap, which a test checks against the
-// CLI). Each group is a tbody of its own, so its scope=rowgroup heading names only its rows.
+// CLI). Each group is a table of its own, named by its caption, so wide screens can set the
+// groups side by side.
 import { h, api, register } from './app.js'
 
 // Screens a row names after "also" or "on", linked as the mockup links them.
@@ -34,13 +35,14 @@ register('commands', {
     for (const r of Array.isArray(rows) ? rows : []) {
       let g = groups[groups.length - 1]
       if (!g || g.name !== r.group) {
-        g = { name: r.group, body: h('tbody', null, h('tr', null, h('th', { scope: 'rowgroup', colspan: 2 }, r.group))) }
+        g = { name: r.group, body: h('tbody') }
         groups.push(g)
       }
       g.body.append(h('tr', null, h('td', null, (r.terminal || []).flatMap((t, i) => [i ? ', ' : '', h('code', null, t)])), place(r)))
     }
-    const body = groups.length ? groups.map((g) => g.body)
-      : [h('tbody', null, h('tr', null, h('td', { colspan: 2, class: 'muted' }, "The command list can't be shown right now. Reload the page to try again.")))]
-    el.querySelector('[data-slot="rows"]').replaceWith(...body)
+    el.querySelector('[data-slot="groups"]').replaceChildren(...(groups.length
+      ? groups.map((g) => h('div', { class: 'panel table-box' }, h('table', { class: 'commands-table' }, h('caption', null, g.name),
+        h('thead', null, h('tr', null, h('th', { scope: 'col', class: 'col-terminal' }, 'In the terminal'), h('th', { scope: 'col' }, 'In the panel'))), g.body)))
+      : [h('p', { class: 'panel pad muted' }, "The command list can't be shown right now. Reload the page to try again.")]))
   },
 })
