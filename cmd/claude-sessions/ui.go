@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"encoding/hex"
@@ -417,8 +418,16 @@ func (u *uiServer) readPage(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 	w.Header().Set("Content-Security-Policy", panel.PageCSP)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// The page's link to its project's list leads to a 403 here: the sandboxed page has
+	// no cookie. It comes right after the page's head, well inside the first 64 KiB.
+	head := make([]byte, 64<<10)
+	n, _ := io.ReadFull(f, head)
+	w.Write(bytes.Replace(head[:n], backLink, nil, 1))
 	io.Copy(w, f)
 }
+
+// backLink is what render writes at the top of a conversation's page.
+var backLink = []byte(`<p class="back"><a href="../index.html">&larr; all sessions</a></p>`)
 
 // openPage opens a page in the archive, or gives nil. The archive is shared, so a name
 // or a link planted there must not reach a file outside it.

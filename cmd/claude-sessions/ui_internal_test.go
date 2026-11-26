@@ -696,3 +696,25 @@ func TestPlainErrorNeverLeaksRawText(t *testing.T) {
 		}
 	}
 }
+
+// E2E L-1: a page served by the panel has no "all sessions" link: it leads to
+// /read/index.html, which the sandboxed page has no cookie for. The archive's page keeps it.
+func TestReadPageHasNoLinkOut(t *testing.T) {
+	root, dest := queryFixture(t)
+	if _, err := runRender(quietStreams(), renderOpts{ClaudeDir: root, ArchiveDir: dest, Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(pagePath(dest, qbWeb, qZipped))
+	if err != nil || !strings.Contains(string(stored), `href="../index.html"`) {
+		t.Fatalf("the rendered page has no link to remove: %v", err)
+	}
+	u := newTestUI(t, uiOpts{ClaudeDir: root, NoOpen: true})
+	runUI(t, u)
+	resp, body := send(t, u, http.MethodGet, u.url("/read/"+qbWeb+"/"+qZipped), login(t, u))
+	if resp.StatusCode != http.StatusOK || strings.Contains(body, "index.html") || !strings.Contains(body, "Map the stock tables") {
+		t.Errorf("the page gave %d:\n%.600s", resp.StatusCode, body)
+	}
+	if again, _ := os.ReadFile(pagePath(dest, qbWeb, qZipped)); string(again) != string(stored) {
+		t.Error("the archive's page was changed")
+	}
+}
