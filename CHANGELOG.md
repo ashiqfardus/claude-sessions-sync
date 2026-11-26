@@ -37,6 +37,8 @@ All notable changes to this project are documented here. This project follows
 - **With no home folder to be found, `doctor` printed only its header** and the panel's
   Health showed nothing wrong. It now fails a `claude root` check that names the
   problem, and `doctor --json` prints that report.
+- **`config unkeep <remote>` for a remote not on the keep list answered "no archived
+  project has the path ..."** It now says the remote is not on the keep list.
 
 ## [0.7.0] - 2026-11-26
 

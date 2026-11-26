@@ -69,3 +69,14 @@ func TestPositionalAfterActionKeepsDashJSON(t *testing.T) {
 		}
 	}
 }
+
+// A remote that is not kept is answered as one, not as a folder that does not exist.
+func TestUnkeepARemoteNotKeptSaysSo(t *testing.T) {
+	claudeDir, _ := keepFixture(t)
+	for _, rm := range []string{"git@github.com:example/none.git", "https://github.com/example/none", "ssh://git@host:22/o/r.git"} {
+		_, err := captured(t, func() error { return cmdConfig([]string{"--claude-dir", claudeDir, "unkeep", rm}) })
+		if err == nil || err.Error() != rm+" is not on the keep list" {
+			t.Errorf("unkeep %s: %v; want it is not on the keep list", rm, err)
+		}
+	}
+}

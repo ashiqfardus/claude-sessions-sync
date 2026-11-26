@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -688,7 +689,8 @@ func unkeepOne(w io.Writer, dest, arg string) error {
 		return del
 	})
 	if len(gone) == 0 {
-		if matchErr != nil {
+		// A remote was never a path to look up: the path error would talk of a folder.
+		if matchErr != nil && !strings.Contains(arg, "://") && !scpRemote.MatchString(arg) {
 			return matchErr
 		}
 		return notKept(r, arg, buckets, projects)
@@ -701,6 +703,10 @@ func unkeepOne(w io.Writer, dest, arg string) error {
 	}
 	return nil
 }
+
+// scpRemote is a remote in git's scp form, [user@]host:path, with no / or \ before its
+// colon: git@github.com:o/r.git.
+var scpRemote = regexp.MustCompile(`^[^/\\]*@[^/\\:]+:`)
 
 // notKept is unkeep's error for arg, which names no entry: with the entries that keep
 // its buckets all the same - a folder name kept for a remote they no longer read - and
