@@ -462,12 +462,13 @@ func TestHRefusesRemoteAttributes(t *testing.T) {
 	if m == nil {
 		t.Fatal("app.js has no REFUSED list")
 	}
-	for _, name := range []string{"style", "srcdoc", "ping", "data", "poster", "background", "manifest", "codebase", "archive", "formaction", "action", "srcset", "xlink:href"} {
+	for _, name := range []string{"style", "srcdoc", "ping", "data", "poster", "background", "manifest", "codebase", "archive", "formaction", "action", "srcset", "imagesrcset", "xlink:href"} {
 		if !strings.Contains(m[1], "'"+name+"'") {
 			t.Errorf("h() does not refuse %s", name)
 		}
 	}
-	for _, want := range []string{"new URL(", "location.origin", "location.protocol", "endsWith('src')", "toLowerCase()"} {
+	// data-* never loads, so data-src is the one name ending in src it lets through.
+	for _, want := range []string{"new URL(", "location.origin", "location.protocol", "endsWith('src')", "startsWith('data-')", "toLowerCase()"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js's URL gate lacks %s", want)
 		}

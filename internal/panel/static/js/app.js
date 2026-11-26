@@ -26,8 +26,8 @@ export const README = 'https://github.com/ashiqfardus/claude-sessions-sync#readm
 let readmeLinked = false
 
 // Attributes that load or link elsewhere, refused outright (any name ending in src but
-// src itself is refused too). href and src must resolve to this panel.
-const REFUSED = ['style', 'srcdoc', 'ping', 'data', 'poster', 'background', 'manifest', 'codebase', 'archive', 'formaction', 'action', 'srcset', 'xlink:href']
+// src itself and data-* is refused too). href and src must resolve to this panel.
+const REFUSED = ['style', 'srcdoc', 'ping', 'data', 'poster', 'background', 'manifest', 'codebase', 'archive', 'formaction', 'action', 'srcset', 'imagesrcset', 'xlink:href']
 const CONTROL = /[\u0000-\u001F\u007F]/ // the URL parser drops tabs and newlines: "/\t/host" would become "//host"
 
 // local says whether a URL resolves to this panel's own origin and scheme.
@@ -57,16 +57,18 @@ export function allowExternal(url) {
 // outside the panel, so archive text can never become a link or load elsewhere.
 export function h(tag, attrs, ...kids) {
   const el = document.createElement(tag)
-  for (const [k, v] of Object.entries(attrs || {})) {
+  for (const [k, raw] of Object.entries(attrs || {})) {
     const n = k.toLowerCase()
-    if (v == null || v === false) continue
-    if (REFUSED.includes(n) || (n.endsWith('src') && n !== 'src')) throw new Error('h: refused ' + n)
+    if (raw == null || raw === false) continue
+    if (REFUSED.includes(n) || (n.endsWith('src') && n !== 'src' && !n.startsWith('data-'))) throw new Error('h: refused ' + n)
     if (n.startsWith('on')) {
-      if (typeof v !== 'function') throw new Error('h: refused ' + n)
-      el.addEventListener(n.slice(2), v)
-    } else if ((n === 'href' || n === 'src') && !local(v) && !(n === 'href' && readmeLinked && v === README)) {
-      throw new Error('h: refused ' + n)
-    } else el.setAttribute(n, v === true ? '' : v)
+      if (typeof raw !== 'function') throw new Error('h: refused ' + n)
+      el.addEventListener(n.slice(2), raw)
+      continue
+    }
+    const v = raw === true ? '' : String(raw) // once: the text checked is the text set
+    if ((n === 'href' || n === 'src') && !local(v) && !(n === 'href' && readmeLinked && v === README)) throw new Error('h: refused ' + n)
+    el.setAttribute(n, v)
   }
   for (const kid of kids.flat()) {
     if (kid instanceof Node) el.append(kid)
