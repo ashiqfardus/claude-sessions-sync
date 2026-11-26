@@ -9,6 +9,8 @@ Upgrading: update every computer and let each push once. Zipping, `prune --yes` 
 age rule wait until all of them have, and `doctor` names any they wait for.
 
 ### Added
+- `doctor` checks that the archive folder keeps file times and can replace a file by renaming, and recognises GNOME's Google Drive view, which is not a normal folder.
+- The README explains which sync apps work on Linux.
 - `import --profile-only` brings in only the newer rules and skills.
 - **`render --include <project>`** publishes a project's pages again, on every computer.
 - **`claude-sessions prune` deletes chosen conversations from the archive.** Choose them

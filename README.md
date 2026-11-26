@@ -191,6 +191,30 @@ The archive folder does not have to exist yet, but **its parent must**: the tool
 refuses to create a folder where an unmounted cloud drive should be, because that
 would be a "backup" that never leaves the computer.
 
+### Linux and other sync apps
+
+The archive folder must be a real folder on disk that your sync app keeps in sync in
+both directions, and it must let the tool replace a file by renaming and keep file
+times. `claude-sessions doctor` checks both.
+
+Google Drive has no desktop app on Linux. Use **Insync** (paid, the closest to Drive
+for desktop) or **rclone**: either `rclone bisync` on a systemd timer (the first run
+needs `--resync`) or `rclone mount --vfs-cache-mode full`. Do not use the Google Drive
+that GNOME Online Accounts shows in the file manager: it is not a normal folder, and
+`doctor` refuses it. Insync and rclone have not yet been tested with this tool against
+a real account.
+
+| Service | Linux app |
+|---|---|
+| Dropbox | The official app |
+| OneDrive | The community `onedrive` client |
+| Nextcloud, ownCloud | The official apps |
+| Syncthing | No cloud: your computers sync directly |
+| iCloud, Box | No Linux app |
+
+Every computer must use the same folder. To move the archive, copy it to the new
+place, then run `claude-sessions config set-destination <folder>` on each computer.
+
 ## Step 1: Install the tool
 
 It runs on Windows 10 or later, macOS and Linux.

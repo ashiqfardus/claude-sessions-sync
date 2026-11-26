@@ -473,3 +473,21 @@ func TestImportAndPushHintOnASlowFirstRead(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorProbeFailureAdvice(t *testing.T) {
+	claudeDir := t.TempDir()
+	os.MkdirAll(filepath.Join(claudeDir, "projects"), 0o755)
+	dest := filepath.Join(t.TempDir(), "google-drive:x", "claude-sessions")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Skip(err)
+	}
+	out, _ := captured(t, func() error { return cmdDoctor([]string{"--claude-dir", claudeDir, "--archive", dest}) })
+	for _, want := range []string{"archive writable", "GNOME's Google Drive view", "Linux and other sync apps in the README"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output lacks %q:\n%s", want, out)
+		}
+	}
+	if m, _ := filepath.Glob(filepath.Join(dest, ".cs-probe-*")); len(m) != 0 {
+		t.Errorf("probe left behind: %v", m)
+	}
+}

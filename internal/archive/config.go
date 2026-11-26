@@ -401,9 +401,21 @@ func detectLists() (candidates, driveParents, cloudDrives []string) {
 			{"Dropbox"},
 			{"Library", "Mobile Documents", "com~apple~CloudDocs"}, // iCloud Drive on macOS
 			{"Sync"}, // Syncthing's common default
+			{"Nextcloud"},
+			{"ownCloud"},
 		} {
 			parts := append([]string{home}, rel...)
 			candidates = append(candidates, filepath.Join(append(parts, archiveFolderName)...))
+		}
+
+		// Insync (Linux) keeps one folder per account.
+		for _, name := range []string{"Google Drive", "My Drive"} {
+			m, _ := filepath.Glob(filepath.Join(home, "Insync", "*", name))
+			for _, d := range m {
+				if isDir(d) {
+					candidates = append(candidates, filepath.Join(d, archiveFolderName))
+				}
+			}
 		}
 
 		// On macOS, Drive for desktop and OneDrive mount one folder per account under

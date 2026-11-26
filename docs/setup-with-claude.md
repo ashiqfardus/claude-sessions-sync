@@ -57,7 +57,7 @@ Typical places:
   `~/Library/Mobile Documents/com~apple~CloudDocs` (iCloud Drive)
 - Windows: `G:\My Drive` (Google Drive), `%USERPROFILE%\OneDrive`,
   `%USERPROFILE%\Dropbox`
-- Linux: `~/Dropbox`, a Syncthing folder, a mounted NAS
+- Linux: `~/Dropbox`, `~/Insync/<account>/Google Drive`, `~/Nextcloud`, a Syncthing folder, a mounted NAS. Google Drive on Linux needs Insync or rclone, never GNOME's Drive view: see "Linux and other sync apps" in the README.
 
 Propose `<that folder>/claude-sessions`. If another computer already uses this tool, use
 **the same** folder. Then run:

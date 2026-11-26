@@ -210,7 +210,7 @@ func runDoctor(s streams, o doctorOpts) (doctorReport, error) {
 		slow("archive writable", func(add func(check)) {
 			if err := archive.Writable(dest); err != nil {
 				add(check{"archive writable", levelFail, err.Error(),
-					"The archive cannot be written to, so no session can be saved there."})
+					"Use a sync app that keeps a real folder on disk: see Linux and other sync apps in the README."})
 			}
 		})
 	}
