@@ -29,7 +29,19 @@ type Rule struct {
 	Find    string
 	Replace string
 	re      *regexp.Regexp
-	tail    bool // also convert the rest of the path's \\ pairs to /
+	low     string // Find in ASCII lower case, for Apply's prefilter; "" when Find is not ASCII
+	tail    bool   // also convert the rest of the path's \\ pairs to /
+}
+
+// compiled is r with its regex and prefilter text set.
+func compiled(r Rule) Rule {
+	// Case-insensitive literal matching: a drive letter's case is decided by what
+	// Claude recorded, not by what is on disk.
+	r.re = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(r.Find))
+	if isASCII(r.Find) {
+		r.low = asciiLower(r.Find)
+	}
+	return r
 }
 
 // Rules builds the substitution table for oldPath -> newPath.
@@ -67,10 +79,7 @@ func Rules(oldPath, newPath string, includeBareName bool) []Rule {
 		if r.Find == "" || r.Find == r.Replace {
 			continue
 		}
-		// Case-insensitive literal matching: a drive letter's case is decided by what
-		// Claude recorded, not by what is on disk.
-		r.re = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(r.Find))
-		out = append(out, r)
+		out = append(out, compiled(r))
 	}
 	return out
 }
@@ -78,7 +87,7 @@ func Rules(oldPath, newPath string, includeBareName bool) []Rule {
 // Literal is one plain substitution - a session id, say - matched case-insensitively
 // at name boundaries like every other rule.
 func Literal(label, find, replace string) Rule {
-	return Rule{Label: label, Find: find, Replace: replace, re: regexp.MustCompile(`(?i)` + regexp.QuoteMeta(find))}
+	return compiled(Rule{Label: label, Find: find, Replace: replace})
 }
 
 // Move is one project path that changed between machines.
@@ -182,8 +191,25 @@ func LastSegment(p string) string {
 // /home/a/proj2 or /home/a/proj-old, nor /mnt/home/a/proj. Before the match there
 // must be no path-name character, and after it either none or a sentence-ending
 // full stop.
+// prefilter lets Apply skip a rule whose Find the line cannot hold; tests turn it off.
+var prefilter = true
+
 func Apply(line string, rules []Rule, hits map[string]int) string {
+	// A rule's regex runs only when the line, in ASCII lower case, holds its Find so:
+	// most lines name none of the moved folders, and 120 regexes a line is what made an
+	// import slow. (?i) also folds ſ to s and the Kelvin sign to k; a line with either
+	// runs every regex. lower is made again after each rule that changes the line.
+	lower, folds, fresh := "", false, false
 	for _, r := range rules {
+		if prefilter && r.low != "" {
+			if !fresh {
+				lower, fresh = asciiLower(line), true
+				folds = strings.Contains(line, "\u017f") || strings.Contains(line, "\u212a")
+			}
+			if !folds && !strings.Contains(lower, r.low) {
+				continue
+			}
+		}
 		matches := r.re.FindAllStringIndex(line, -1)
 		if len(matches) == 0 {
 			continue
@@ -208,12 +234,37 @@ func Apply(line string, rules []Rule, hits map[string]int) string {
 			continue
 		}
 		b.WriteString(line[last:])
-		line = b.String()
+		line, fresh = b.String(), false
 		if hits != nil {
 			hits[r.Label]++
 		}
 	}
 	return line
+}
+
+// asciiLower is s with A-Z lower-cased and every other byte as it was.
+func asciiLower(s string) string {
+	for i := 0; i < len(s); i++ {
+		if 'A' <= s[i] && s[i] <= 'Z' {
+			b := []byte(s)
+			for j := i; j < len(b); j++ {
+				if 'A' <= b[j] && b[j] <= 'Z' {
+					b[j] += 'a' - 'A'
+				}
+			}
+			return string(b)
+		}
+	}
+	return s
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // convertTail writes the rest of a JSON-escaped path from line[pos:] with each \\
