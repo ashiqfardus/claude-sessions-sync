@@ -103,3 +103,44 @@ func TestPruneUndoWithoutIDsIsAUsageError(t *testing.T) {
 		t.Errorf("err = %v, want errNoSelector", err)
 	}
 }
+
+// Freed is what the deleted copies took: their transcripts, their own folders and their
+// pages, which the goldens' size masks cannot show.
+func TestCleanFreedIsTheBytesRemoved(t *testing.T) {
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "LAP-1")
+	root := t.TempDir()
+	claudeDir, dest := filepath.Join(root, ".claude"), filepath.Join(root, "archive")
+	turns := `{"type":"user","uuid":"u1","timestamp":"2026-08-30T09:00:00.000Z"}` + "\n" +
+		`{"type":"assistant","uuid":"m1","timestamp":"2026-08-30T09:00:01.000Z"}` + "\n"
+	writeFile(t, filepath.Join(archive.ProjectsDir(dest), "A", cleanID+".jsonl"),
+		turns+`{"type":"assistant","uuid":"m2","timestamp":"2026-08-30T09:00:02.000Z"}`+"\n")
+	for _, b := range []string{"B", "C"} { // each held in whole by A's copy
+		writeFile(t, filepath.Join(archive.ProjectsDir(dest), b, cleanID+".jsonl"), turns)
+	}
+	for _, b := range []string{"A", "B"} { // a folder file A holds too
+		writeFile(t, filepath.Join(archive.ProjectsDir(dest), b, cleanID, "tool-results", "r1.txt"), strings.Repeat("x", 1000))
+	}
+	writeFile(t, pagePath(dest, "B", cleanID), strings.Repeat("p", 333))
+	writeFile(t, filepath.Join(archive.ManifestDir(dest), "LAP-1.json"),
+		`{"machine":"LAP-1","skipsHeld":true,"honorsDeleted":true,"projects":{"A":{"path":"/x/a"},"B":{"path":"/x/b"},"C":{"path":"/x/c"}}}`)
+	bytesIn := func() (n int64) {
+		filepath.WalkDir(dest, func(p string, d os.DirEntry, err error) error {
+			if info, ierr := d.Info(); err == nil && ierr == nil && d.Type().IsRegular() {
+				n += info.Size()
+			}
+			return nil
+		})
+		return n
+	}
+	before := bytesIn()
+	res, err := runClean(quietStreams(), cleanOpts{ClaudeDir: claudeDir, ArchiveDir: dest, Yes: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Deleted != 2 {
+		t.Fatalf("clean = %+v, want B's and C's copies deleted", res)
+	}
+	if removed := before - bytesIn(); res.Freed != removed || removed <= 1333 {
+		t.Errorf("Freed %d, but %d bytes were removed", res.Freed, removed)
+	}
+}
