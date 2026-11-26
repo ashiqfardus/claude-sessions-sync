@@ -116,7 +116,8 @@ register('import', {
       sync()
       gate()
       if (busy || !previewed) return // a running preview compares when it ends
-      show(result, fresh() ? previewText : STALE)
+      const text = fresh() ? previewText : STALE
+      if (result.textContent !== text) show(result, text) // said once, not on every keystroke
     }
     const depth = combo(slot('depth'), { options: ['1', '2', '3', '4', '5', '6'].map((v) => ({ value: v, label: v })), value: '3', onChange: changed })
     for (const c of [update, work, plugins, profile, repoint, bare, pull]) c.addEventListener('change', changed)
@@ -250,7 +251,10 @@ register('import', {
       }
       table(rows)
       if (kind === 'preview') {
-        previewText = rows.length ? `Would bring in ${what(n, w)}.` + unchanged(sum(rows, (r) => r.skipped || 0)) : ''
+        // A project not found here may be inside a work folder this brings in: import
+        // matches it only once the folder is in place, so the run can bring in more.
+        const later = w && rows.some((r) => r.kind !== 'work' && MISSING.includes(r.matchedBy))
+        previewText = rows.length ? `Would bring in ${later ? 'at least ' : ''}${what(n, w)}.` + unchanged(sum(rows, (r) => r.skipped || 0)) : ''
         if (body) previewed = { name: action, body, total: n }
         gate()
         return show(result, !body || fresh() ? previewText : STALE)

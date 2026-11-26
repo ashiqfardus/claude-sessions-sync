@@ -362,7 +362,8 @@ async function show(force, first) {
   mounted = null
   if (current && current.unmount) try { current.unmount() } catch (e) { console.error(e) }
   current = null
-  if (!screens[name]) await import(`./${name}.js`).catch((e) => console.error(e))
+  // A module that fails to load (often the panel stopping) shows the error, not a bare template.
+  if (!screens[name]) await import(`./${name}.js`).catch((e) => { console.error(e); beat() })
   if (n !== navN) return
 
   main.replaceChildren(document.getElementById('t-' + name).content.cloneNode(true))
@@ -374,8 +375,7 @@ async function show(force, first) {
   document.title = h1.textContent + ' - claude-sessions'
   if (!first) { scrollTo(0, 0); h1.focus() }
 
-  const s = current = screens[name] || null
-  if (!s) return
+  const s = current = screens[name] || { mount() { throw fail(GENERIC) } }
   const unhide = isolate(h1)
   const line = h('p', { class: 'muted', role: 'status' })
   let top = h1

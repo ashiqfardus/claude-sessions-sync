@@ -311,17 +311,11 @@ func TestScreensRegister(t *testing.T) {
 			}
 		}
 	}
-	// The screens Tasks 20-23 have yet to add. Each task takes its own off the list, so
-	// every screen that exists is required from then on.
-	later := map[string]bool{} // every screen is built
 	for name := range routed {
 		s, ok := files["static/js/"+name+".js"]
 		switch {
-		case !ok && later[name]:
 		case !ok:
 			t.Errorf("js/%s.js is missing", name)
-		case later[name]:
-			t.Errorf("js/%s.js exists: take %q off the later list", name, name)
 		case !strings.Contains(s, "register('"+name+"'"):
 			t.Errorf("js/%s.js does not register('%s', ...)", name, name)
 		}
@@ -494,8 +488,7 @@ func TestScreensRegisterTheirName(t *testing.T) {
 		name := q[1]
 		js, ok := files["static/js/"+name+".js"]
 		if !ok {
-			// shortcut: screens still being built (T19-T23) may be missing; make this an error once all have merged.
-			t.Logf("js/%s.js is not built yet", name)
+			t.Errorf("js/%s.js is missing", name)
 			continue
 		}
 		if !strings.Contains(js, "register('"+name+"',") {

@@ -147,7 +147,7 @@
   </div>
 
   <nav aria-label="Pages of results" class="row spread" data-slot="pages">
-    <span class="muted num" role="status" data-slot="range"></span>
+    <span class="muted num" data-slot="range"></span>
     <span class="pager num" data-slot="pager"></span>
   </nav>
 </template>
@@ -171,7 +171,7 @@
             <p class="medium" data-slot="zip-line"></p>
             <p class="status warn small slide" data-slot="zip-wait" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span><span data-slot="zip-wait-text"></span> <a href="#/settings">See computers</a></span></p>
           </div>
-          <label class="row switch-label medium"><input type="checkbox" role="switch" class="switch" aria-labelledby="zip-h zip-state" data-slot="zip"><span id="zip-state" data-slot="zip-state"></span></label>
+          <label class="row switch-label medium"><input type="checkbox" role="switch" class="switch" aria-labelledby="zip-h" data-slot="zip"><span id="zip-state" data-slot="zip-state"></span></label>
         </li>
         <li class="way">
           <div class="grow stack gap-3 way-text">

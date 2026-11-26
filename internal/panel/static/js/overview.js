@@ -164,9 +164,12 @@ register('overview', {
       else if (fresh) list.firstChild.classList.add('slide')
     }
 
+    // After a job: the server dropped its kept health answer then (Ruling P56), so the
+    // backup that fixes a Problem row also clears it.
     function refresh() {
       api.get('/api/summary').then((v) => { if (!signal.aborted) showSummary(v) }, () => { /* the page keeps what it shows */ })
       loadStorage(false)
+      loadHealth()
       loadActivity(true)
     }
 

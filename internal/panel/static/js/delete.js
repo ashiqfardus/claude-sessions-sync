@@ -10,6 +10,10 @@ const and = (names) => new Intl.ListFormat('en-GB', { type: 'conjunction' }).for
 const plain = (e) => (e && e.plain ? e.message : GENERIC)
 const mb = (n) => (n / 2 ** 20).toFixed(1) + ' MB' // the CLI's own form
 const titleOf = (it) => it.prompt || 'Conversation ' + it.id.slice(0, 8)
+// nameOf is a deleted conversation's title, or its project when only that is known: the
+// server reads the title from this computer's own copy, never the archive's.
+const nameOf = (it) => (it.title && it.title !== 'Conversation ' + it.id.slice(0, 8) ? it.title
+  : it.project ? 'Conversation in ' + it.project : it.here ? 'A conversation' : 'A conversation from another computer')
 // refocus puts focus back on btn when disabling a button dropped it to the page.
 const refocus = (btn) => { if (document.activeElement === document.body && btn.isConnected && !btn.hidden) btn.focus() }
 const PAUSED = "Deleting is paused: the other computers can't be checked right now."
@@ -147,7 +151,9 @@ register('delete', {
       refocus(show)
       if (!st.ok || !st.result) return toast(st.error || GENERIC)
       const plan = st.result.plan
-      shown = { sel, items: plan.remove || [], kept: plan.kept || 0, plan }
+      // Oldest first: prune gives them in no useful order.
+      const items = (plan.remove || []).slice().sort((a, b) => (Date.parse(a.lastAt) || 0) - (Date.parse(b.lastAt) || 0))
+      shown = { sel, items, kept: plan.kept || 0, plan }
       off.clear()
       list.replaceChildren(...shown.items.map((it) => {
         const title = titleOf(it), date = day(it.lastAt)
@@ -180,11 +186,12 @@ register('delete', {
       if (!st.ok) text = (n ? text + '. ' : '') + (st.error || GENERIC)
       // The run dates each again: one used since the preview is no longer old enough.
       else if (left > 0) text += `${n ? '. ' : ': '}${number(left)} ${left === 1 ? 'was' : 'were'} used since the preview, so ${left === 1 ? 'it stays' : 'they stay'}`
-      if (signal.aborted) return toast(text)
+      const withRestore = n ? { action: { label: 'Restore', run: () => restoreAll(ids) } } : undefined
+      if (signal.aborted) return toast(text, withRestore) // restoreAll repaints only a screen still shown
       box.hidden = true // the preview is out of date now
       shown = null
       reloadDeleted()
-      toast(text, n ? { action: { label: 'Restore', run: () => restoreAll(ids) } } : undefined)
+      toast(text, withRestore)
       // The toast is last in the page: put focus on Restore, so the keyboard can reach it.
       const undo = n && document.querySelector('#toasts .toast button')
       if (undo) undo.focus()
@@ -278,11 +285,11 @@ register('delete', {
     function paintDeleted(items) {
       if (!Array.isArray(items)) return goneList.replaceChildren(h('li', { class: 'muted' }, items && items.error ? plain(items.error) : GENERIC))
       goneList.replaceChildren(...(items.length ? items.map((it) => {
-        const d = day(it.deletedAt)
+        const d = day(it.deletedAt), name = nameOf(it)
         return h('li', null,
-          h('span', { class: 'grow' }, h('strong', { class: 'medium' }, it.title), ' ',
+          h('span', { class: 'grow' }, h('strong', { class: 'medium' }, name), ' ',
             h('span', { class: 'muted' }, 'deleted' + (d ? ' ' + d : '') + '.' + (it.here ? ' This computer still has it.' : ''))),
-          h('button', { type: 'button', class: 'btn sm', 'aria-label': 'Restore: ' + it.title, onclick: (e) => restore(it, e.currentTarget) }, 'Restore'))
+          h('button', { type: 'button', class: 'btn sm', 'aria-label': 'Restore: ' + name, onclick: (e) => restore(it, e.currentTarget) }, 'Restore'))
       }) : [h('li', { class: 'muted' }, 'Nothing deleted recently.')]))
     }
 
@@ -302,7 +309,7 @@ register('delete', {
         refocus(btn)
         return toast(st.error || GENERIC)
       }
-      toast(it.here ? `${it.title} comes back at this computer's next backup` : `${it.title} comes back at the next backup of a computer that still has it`)
+      toast(`${nameOf(it)} comes back at ${it.here ? "this computer's next backup" : 'the next backup of a computer that still has it'}`)
       await reloadDeleted()
       const left = goneList.querySelectorAll('button')
       if (!signal.aborted) (left[i] || left[i - 1] || el.querySelector('h1')).focus()

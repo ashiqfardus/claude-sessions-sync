@@ -130,7 +130,7 @@ details[open]>summary svg{transform:rotate(90deg)}
 .rise{animation:rise .5s var(--ease) both}
 .pop{animation:pop .15s var(--ease) both}
 .slide{animation:slide .22s var(--ease) both}
-.toast{position:fixed;left:50%;bottom:24px;z-index:60;display:flex;align-items:center;gap:14px;padding:10px 12px 10px 16px;border-radius:10px;background:var(--ink);color:#EEF2F0;box-shadow:0 12px 32px rgba(22,32,28,.28);animation:toast .28s var(--ease) both;transform:translateX(-50%)}
+.toast{position:fixed;left:50%;bottom:24px;z-index:60;display:flex;align-items:center;gap:14px;padding:10px 12px 10px 16px;border-radius:10px;background:var(--ink);color:#EEF2F0;box-shadow:0 12px 32px rgba(22,32,28,.28);animation:toast .28s var(--ease) both;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 32px)}
 .toast a,.toast button{color:#9FD3C0}
 .scrim{position:fixed;inset:0;z-index:50;background:rgba(22,32,28,.42);display:grid;place-items:center;padding:16px;animation:fade .18s ease both}
 .dialog{width:min(440px,100%);background:var(--surface);border-radius:14px;padding:22px;display:flex;flex-direction:column;gap:14px;box-shadow:0 24px 60px rgba(22,32,28,.3);animation:pop .2s var(--ease) both}
@@ -293,7 +293,7 @@ p.status{white-space:normal}
 /* Settings */
 .name-field{flex:1 1 240px}
 .computers-table{min-width:700px}
-.work-table{min-width:600px}
+.work-table{min-width:420px}
 .excluded>li{padding:8px 0}
 .placement{margin:0}
 .every{flex:0 1 230px;min-width:180px}

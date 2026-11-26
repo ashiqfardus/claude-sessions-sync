@@ -277,7 +277,8 @@ register('conversations', {
       const body = `They are removed from the archive in ${provider || 'your sync folder'}. Your computers keep their own copies` +
         (provider === 'Google Drive' ? ', and Google Drive keeps the files in its trash for 30 days.' : '.') +
         (kept ? ` ${number(kept)} of these ${kept === 1 ? 'is' : 'are'} on Never delete and will be skipped.` : '')
-      if (!await confirmDialog({ title, body, items: rows.map(titleOf), confirm: title, danger: true })) return
+      const items = rows.map((r) => titleOf(r) + (r.kept ? ' (Never delete, skipped)' : ''))
+      if (!await confirmDialog({ title, body, items, confirm: title, danger: true })) return
       busy = true
       mark()
       let st
