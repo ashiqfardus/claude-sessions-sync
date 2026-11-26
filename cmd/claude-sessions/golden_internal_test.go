@@ -259,3 +259,33 @@ func TestInstallBinaryFromTheWindowlessCopy(t *testing.T) {
 	writeFile(t, self, "windowless")
 	check("from the install folder", "console", false)
 }
+
+// A config that cannot be saved costs only the recorded interval: install and uninstall
+// still do the rest, uninstall still removes the shortcut, and each says so at the end.
+func TestSweepIntervalSaveFailureFinishesTheRest(t *testing.T) {
+	root, _, _ := installEnv(t)
+	corrupt := func() { writeFile(t, archive.ConfigPath(root), "{") }
+	hook(t, &installSweep, func(hostagent.Job, int) (hostagent.Status, error) {
+		corrupt() // after the destination was read, before the interval is saved
+		return hostagent.Status{Installed: true, Mechanism: "<MECH>", Detail: "every 30 minutes"}, nil
+	})
+	var out, errs bytes.Buffer
+	if _, err := runInstall(streams{&out, &errs}, installOpts{ClaudeDir: root}); err != nil {
+		t.Fatalf("install failed for the interval alone: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Done.") || !strings.Contains(errs.String(), "could not save the sweep's interval") {
+		t.Errorf("install:\n%s\n--- stderr\n%s", out.String(), errs.String())
+	}
+
+	removed := false
+	hook(t, &uninstallShortcut, func(hostagent.Job) (bool, error) { removed = true; return true, nil })
+	out.Reset()
+	errs.Reset()
+	res, err := runUninstall(streams{&out, &errs}, uninstallOpts{ClaudeDir: root, KeepLegacy: true})
+	if err != nil || !removed || res.Shortcut != "removed" {
+		t.Fatalf("uninstall: %+v %v, shortcut removed %v\n%s", res, err, removed, out.String())
+	}
+	if !strings.Contains(errs.String(), "could not save that no sweep runs") {
+		t.Errorf("uninstall said nothing of the interval:\n%s\n--- stderr\n%s", out.String(), errs.String())
+	}
+}

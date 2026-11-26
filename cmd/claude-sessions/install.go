@@ -64,7 +64,7 @@ type installResult struct {
 	Binary         string `json:"binary"`
 	Hook           string `json:"hook"`                     // "new", or how many existing entries it replaced
 	Sweep          string `json:"sweep"`                    // the job registered; with --no-sweep "skipped (--no-sweep)", or "removed (only after replies)" for one installed earlier
-	SweepFailed    string `json:"sweepFailed"`              // why the sweep could not be registered, or with --no-sweep removed
+	SweepFailed    string `json:"sweepFailed,omitempty"`    // why the sweep could not be registered, or with --no-sweep removed
 	Shortcut       string `json:"shortcut"`                 // where the panel shortcut is, or "" if it could not be made
 	ShortcutFailed string `json:"shortcutFailed,omitempty"` // why it could not be made; never fails the install
 }
@@ -209,15 +209,17 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 
 	// The interval, for the panel to show. A sweep that could not be installed or
 	// removed keeps the one saved before: that job may still be registered.
+	var saveErr error
 	if res.SweepFailed == "" {
-		if err := saveSweepEvery(root, every); err != nil {
-			return res, err
-		}
+		saveErr = saveSweepEvery(root, every)
 	}
 
 	fmt.Fprintln(s.Out, "\nDone. Sessions on this machine now archive automatically.")
 	fmt.Fprintln(s.Out, "Run `claude-sessions doctor` to confirm, and restart Claude Code (or run /hooks)")
 	fmt.Fprintln(s.Out, "so a running session picks up the new hook.")
+	if saveErr != nil { // only what config show and the panel say: the backup itself is set up
+		fmt.Fprintf(s.Err, "\nNote: could not save the sweep's interval, so `config show` and the panel may show the old one: %v\n", saveErr)
+	}
 	return res, nil
 }
 
@@ -279,10 +281,9 @@ func runUninstall(s streams, o uninstallOpts) (uninstallResult, error) {
 		res.Sweep = "none registered for " + root
 	}
 	fmt.Fprintf(s.Out, "  sweep     %s\n", res.Sweep)
+	var saveErr error
 	if err == nil && swept { // none runs now: config show and the panel say so
-		if err := saveSweepEvery(root, -1); err != nil {
-			return res, err
-		}
+		saveErr = saveSweepEvery(root, -1)
 	}
 
 	removedLnk, lerr := uninstallShortcut(sweepJob(root, ""))
@@ -301,6 +302,9 @@ func runUninstall(s streams, o uninstallOpts) (uninstallResult, error) {
 	fmt.Fprintln(s.Out, "\nYour archive and its transcripts are untouched.")
 	fmt.Fprintf(s.Out, "The binary is still at %s if you want to remove it.\n",
 		filepath.Join(root, "bin"))
+	if saveErr != nil {
+		fmt.Fprintf(s.Err, "\nNote: could not save that no sweep runs, so `config show` and the panel may still show one: %v\n", saveErr)
+	}
 	return res, nil
 }
 

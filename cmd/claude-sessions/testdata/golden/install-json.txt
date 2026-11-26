@@ -6,6 +6,5 @@ err <nil>
   "binary": "<CLAUDE>/bin/claude-sessions",
   "hook": "new",
   "sweep": "/u003cMECH/u003e: every 30 minutes",
-  "sweepFailed": "",
   "shortcut": "/x/claude-sessions panel.app"
 }

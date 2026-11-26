@@ -753,7 +753,7 @@ func saveWork(w io.Writer, root string, change func(*archive.Config), msg string
 // positionalAfterAction keeps the arguments of map, unmap and set-machine from being
 // read as flags: a bucket name on macOS or Linux starts with "-", and the command
 // import prints for it failed exactly as printed. After the action only --claude-dir
-// and --json are flags.
+// and --json (with two dashes) are flags.
 var positionalActions = []string{"map", "unmap", "set-machine", "work", "work-placement", "map-folder", "unmap-folder", "exclude-folder", "unexclude-folder", "keep", "unkeep", "keep-days"}
 
 func positionalAfterAction(args []string) []string {
@@ -772,8 +772,9 @@ func positionalAfterAction(args []string) []string {
 					j++
 					flags = append(flags, args[j])
 				}
+			// Only the double-dash --json: -json is the bucket of a folder at /json.
 			case strings.HasPrefix(r, "--claude-dir=") || strings.HasPrefix(r, "-claude-dir="),
-				r == "--json" || r == "-json":
+				r == "--json" || strings.HasPrefix(r, "--json="):
 				flags = append(flags, r)
 			default:
 				pos = append(pos, r)

@@ -52,3 +52,20 @@ func TestRunConfigRecordsItsLines(t *testing.T) {
 		t.Errorf("show = %+v, view %+v", res, res.View)
 	}
 }
+
+// After the action, a bucket of a folder at the top of the disk, /json, is -json: only
+// the double-dash --json is the flag there, as the docs and hints write it.
+func TestPositionalAfterActionKeepsDashJSON(t *testing.T) {
+	for _, c := range []struct{ in, want []string }{
+		{[]string{"map", "-json", "/x"}, []string{"--", "map", "-json", "/x"}},
+		{[]string{"keep", "-json"}, []string{"--", "keep", "-json"}},
+		{[]string{"unkeep", "-json", "--json"}, []string{"--json", "--", "unkeep", "-json"}},
+		{[]string{"keep", "web-app", "--json"}, []string{"--json", "--", "keep", "web-app"}},
+		{[]string{"keep", "web-app", "--json=true"}, []string{"--json=true", "--", "keep", "web-app"}},
+		{[]string{"--json", "keep", "web-app"}, []string{"--json", "--", "keep", "web-app"}},
+	} {
+		if got := positionalAfterAction(c.in); !slices.Equal(got, c.want) {
+			t.Errorf("%q: %q, want %q", c.in, got, c.want)
+		}
+	}
+}
