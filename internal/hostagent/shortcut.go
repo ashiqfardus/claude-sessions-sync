@@ -2,6 +2,7 @@ package hostagent
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -52,13 +53,48 @@ func DesktopEntry(j Job) string {
 // doubled so it is never a field code. An argument holding a reserved character goes
 // in double quotes, where '"', '`', '$' and '\' take a backslash. Readers apply the
 // string escape rule before the quoting rule, so every backslash is then doubled
-// again (a literal '$' is \\$ in the file) and a newline becomes \n.
+// again (a literal '$' is \\$ in the file), and a newline, tab or carriage return,
+// which a value may not hold, becomes \n, \t or \r.
 func desktopQuote(s string) string {
 	s = strings.ReplaceAll(s, "%", "%%")
-	if strings.ContainsAny(s, " \t\n\"'\\><~|&;$*?#()`") {
+	if strings.ContainsAny(s, " \t\n\r\"'\\><~|&;$*?#()`") {
 		s = `"` + strings.NewReplacer(`"`, `\"`, "`", "\\`", "$", `\$`, `\`, `\\`).Replace(s) + `"`
 	}
-	return strings.NewReplacer(`\`, `\\`, "\n", `\n`).Replace(s)
+	return strings.NewReplacer(`\`, `\\`, "\n", `\n`, "\t", `\t`, "\r", `\r`).Replace(s)
+}
+
+// desktopOwned reports whether a desktop entry is one DesktopEntry wrote: it holds the
+// marker line, not just a mention of the key.
+func desktopOwned(data []byte) bool {
+	for _, l := range strings.Split(string(data), "\n") {
+		if strings.TrimSuffix(l, "\r") == "X-Claude-Sessions-Sync="+ShortcutMarker {
+			return true
+		}
+	}
+	return false
+}
+
+// desktopDirs is where the Linux app menu entry goes, $XDG_DATA_HOME/applications or,
+// when that is unset or not absolute (which the spec says to ignore),
+// ~/.local/share/applications; then the default, where 0.7.0 wrote it whatever
+// XDG_DATA_HOME said, for uninstall to find.
+func desktopDirs(home, xdg string) []string {
+	def := filepath.Join(home, ".local", "share", "applications")
+	if d := filepath.Join(xdg, "applications"); filepath.IsAbs(xdg) && d != def {
+		return []string{d, def}
+	}
+	return []string{def}
+}
+
+// oneLine is a tool's output as one line: install prints a shortcut's failure on its own.
+func oneLine(out []byte) string {
+	var lines []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return strings.Join(lines, "; ")
 }
 
 // AppleScript is the script of the macOS applet. Every argument goes through `quoted

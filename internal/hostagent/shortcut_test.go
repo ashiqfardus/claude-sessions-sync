@@ -19,6 +19,7 @@ func tempHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("XDG_DATA_HOME", "") // or the Linux entry goes where it says
 	return home
 }
 

@@ -44,6 +44,14 @@ All notable changes to this project are documented here. This project follows
   `~/.claude.json`. Paths now compare with either slash.
 - **`ls --archived --limit N` could list fewer than N conversations** when one of the
   newest was a zip that cannot be read. The limit now counts the conversations listed.
+- **On Linux the panel's app menu entry ignored `XDG_DATA_HOME`.** `install` wrote it
+  to `~/.local/share/applications` even when the desktop looks elsewhere, so the menu
+  did not list it. It now goes to `$XDG_DATA_HOME/applications` when that is set, and
+  `uninstall` also removes one an earlier install left in the old place. An entry is
+  taken for this tool's only when it holds the tool's marker line, not a mention of it.
+- **A shortcut that could not be made printed the tool's error over several lines.**
+  `install` now prints it on its one `shortcut  FAILED:` line, and `install --json`
+  gives the same text.
 
 ## [0.7.0] - 2026-11-26
 

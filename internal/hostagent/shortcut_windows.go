@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"unicode/utf16"
 )
 
@@ -66,7 +65,7 @@ func InstallShortcut(j Job) (string, error) {
 		"CS_ARGS="+windowsArgs(j.ShortcutArgs()),
 		"CS_DESC="+ShortcutMarker)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("powershell could not create %s: %v: %s", path, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("powershell could not create %s: %v: %s", path, err, oneLine(out))
 	}
 	// Uninstall finds the shortcut by the marker; one without it could never be removed.
 	if !ownsShortcut(path) {
