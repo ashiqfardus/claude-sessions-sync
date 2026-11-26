@@ -311,14 +311,18 @@ func TestScreensRegister(t *testing.T) {
 			}
 		}
 	}
+	// The screens Tasks 20-23 have yet to add. Each task takes its own off the list, so
+	// every screen that exists is required from then on.
+	later := map[string]bool{"conversations": true, "storage": true, "delete": true, "import": true, "settings": true, "commands": true}
 	for name := range routed {
 		s, ok := files["static/js/"+name+".js"]
-		if !ok {
-			// shortcut: screens from Tasks 20-23 may not exist yet; make this an error once settings.js lands
-			t.Logf("js/%s.js is not written yet", name)
-			continue
-		}
-		if !strings.Contains(s, "register('"+name+"'") {
+		switch {
+		case !ok && later[name]:
+		case !ok:
+			t.Errorf("js/%s.js is missing", name)
+		case later[name]:
+			t.Errorf("js/%s.js exists: take %q off the later list", name, name)
+		case !strings.Contains(s, "register('"+name+"'"):
 			t.Errorf("js/%s.js does not register('%s', ...)", name, name)
 		}
 	}

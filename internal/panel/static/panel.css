@@ -150,7 +150,7 @@ details[open]>summary svg{transform:rotate(90deg)}
   .rail{width:auto!important;flex-direction:row;align-items:center;gap:12px;padding:8px 10px;overflow-x:auto}
   .rail .label{display:inline!important}
   .rail .brand-text,.rail-foot,.grip{display:none!important}
-  .nav{flex-direction:row}
+  .nav{flex-direction:row;flex-wrap:wrap;min-width:0} /* wraps beside the mark, so every link stays in view */
   .main{padding:20px 16px 40px;gap:22px}
 }
 @media (pointer:coarse){.btn,.input{min-height:44px}.nav a{min-height:44px}}
