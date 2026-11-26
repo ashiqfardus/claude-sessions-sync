@@ -1038,12 +1038,33 @@ func zipHoldouts(dest string) ([]string, error) {
 	return slices.DeleteFunc(out, func(n string) bool { return strings.EqualFold(n, machineName()) }), err
 }
 
-// zipSkippedPath remembers, by "bucket/id", the size of each archived copy push could
-// not zip as it was: over the cap, a leftover beside its zip that diverged from it, or a
-// zip or unzip that failed. Each is said once, and tried again only once that size
-// changes.
+// zipSkippedPath remembers, by "bucket/id", each archived copy push could not zip as it
+// was: over the cap, a leftover beside its zip that diverged from it, or a zip or unzip
+// that failed. Each is said once, and tried again once its size changes, or for a
+// failure, which may pass later, once its retry time comes.
 func zipSkippedPath(root string) string {
 	return filepath.Join(root, "session-sync-base", "zip-skipped.json")
+}
+
+// zipRetry is how long a failure in zip-skipped.json waits before it is tried again.
+const zipRetry = 7 * 24 * time.Hour
+
+// zipSkip is a copy in zip-skipped.json: its bytes then, and for a failure when to try
+// it again (zero: only once the copy changes).
+type zipSkip struct {
+	Size  int64     `json:"size"`
+	Retry time.Time `json:"retry,omitempty"`
+}
+
+// UnmarshalJSON also reads 0.7.0's bare size. What it skipped is not known, so it is
+// due again now.
+func (z *zipSkip) UnmarshalJSON(b []byte) error {
+	if json.Unmarshal(b, &z.Size) == nil {
+		z.Retry = time.Unix(0, 0)
+		return nil
+	}
+	type plain zipSkip
+	return json.Unmarshal(b, (*plain)(z))
 }
 
 // bothSeenPath remembers, by "bucket/id", each zip a sweep found with loose files beside
@@ -1122,9 +1143,9 @@ func bothState(dir, id string) string {
 // holding something it lacks are unzipped into it, then zipped again. A dry run lists
 // them.
 func zipIdleCopies(root, dest string, buckets []string, now time.Time, budget time.Duration, dryRun bool, logf func(string, ...any)) (zipped int, raw, packed int64) {
-	skipped := map[string]int64{}
-	if data, err := os.ReadFile(zipSkippedPath(root)); err == nil {
-		_ = json.Unmarshal(data, &skipped) // unreadable is empty: each is tried, and said, again
+	skipped := map[string]zipSkip{}
+	if data, err := os.ReadFile(zipSkippedPath(root)); err == nil && json.Unmarshal(data, &skipped) != nil {
+		skipped = map[string]zipSkip{} // unreadable is empty: each is tried, and said, again
 	}
 	// Unreadable is empty too: each pair waits again, which is the safe way.
 	seen := map[string]bothSeen{}
@@ -1167,12 +1188,19 @@ each:
 				continue
 			}
 			key, size := bucket+"/"+id, copyBytes(dir, id)
-			if s, ok := skipped[key]; ok && s == size {
+			if s, ok := skipped[key]; ok && s.Size == size && (s.Retry.IsZero() || now.Before(s.Retry)) {
 				continue
 			}
-			// Said once, then left until the copy changes: a failure that recurs would
-			// otherwise be logged, and up to 250 MB read again, on every sweep.
-			remember := func() { skipped[key], dirty = copyBytes(dir, id), true }
+			// Said once, then left until the copy changes, or a failure's retry time: one
+			// that recurs would otherwise be logged, and up to 250 MB read again, on every
+			// sweep.
+			remember := func(failed bool) {
+				z := zipSkip{Size: copyBytes(dir, id)}
+				if failed {
+					z.Retry = now.Add(zipRetry)
+				}
+				skipped[key], dirty = z, true
+			}
 			if dryRun {
 				if zp != "" || size <= work.MaxFolderBytes {
 					logf("would zip %s", key)
@@ -1203,19 +1231,19 @@ each:
 				switch {
 				case errors.Is(err, convzip.ErrDiverged):
 					logf("WARN: %s: %v; the zip and the loose copy beside it are both kept", id, err)
-					remember()
+					remember(false)
 					continue
 				case errors.Is(err, convzip.ErrNotRemoved):
 					logf("WARN: %s: %v; the zip is kept, and the loose files left stay beside it", id, err)
-					remember()
+					remember(true)
 					continue
 				case errors.Is(err, os.ErrNotExist) && zippedCopy(dest, bucket, id) == "":
 					logf("WARN: %s: the zip went while it was read; the loose files beside it are kept", id)
-					remember()
+					remember(true)
 					continue
 				case err != nil:
 					logf("WARN: %s: not unzipped to zip again; the zip and the loose files beside it are kept: %v", id, err)
-					remember()
+					remember(true)
 					continue
 				}
 			}
@@ -1223,14 +1251,14 @@ each:
 			switch {
 			case errors.Is(err, convzip.ErrTooLarge):
 				logf("ZIP: %s is over %d MB; it stays loose", key, work.MaxFolderBytes>>20)
-				remember()
+				remember(false)
 			case errors.Is(err, convzip.ErrZipExists): // zipped elsewhere since the listing: next run
 			case err != nil && res.Files > 0: // written and checked; removing the loose files failed
 				logf("WARN: %s: zipped, but loose files stay beside the zip: %v", id, err)
-				remember()
+				remember(true)
 			case err != nil:
 				logf("WARN: %s: not zipped; it stays loose: %v", id, err)
-				remember()
+				remember(true)
 			default:
 				zipped, raw, packed = zipped+1, raw+res.Raw, packed+res.Packed
 				if _, ok := skipped[key]; ok {

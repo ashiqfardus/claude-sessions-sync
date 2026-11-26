@@ -27,6 +27,10 @@ All notable changes to this project are documented here. This project follows
 - **With two Insync accounts that each hold a `claude-sessions` folder, the tool picked
   one by itself** when no folder was saved. It now picks neither, as it already did for
   two accounts under `~/Library/CloudStorage`; `config set-destination` chooses.
+- **A conversation that once failed to zip was never tried again while it stayed the
+  same,** so a moment when a sync client held a file cost its space for good. A failed
+  zip or unzip is now tried again after a week. A conversation over the size limit, or
+  one whose two copies differ, still waits until it changes.
 
 ## [0.7.0] - 2026-11-26
 
