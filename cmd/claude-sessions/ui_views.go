@@ -641,8 +641,13 @@ func queryActivity(root string) []activityItem {
 		pruned string // a conversation deleted, titled once it is among the five
 	}
 	var items []found
-	raw, _ := os.ReadFile(filepath.Join(root, "session-sync.log"))
+	log := filepath.Join(root, "session-sync.log")
+	raw, _ := os.ReadFile(log)
 	lines := strings.Split(string(raw), "\n")
+	if len(lines) < 300 { // rotated a moment ago: the previous log holds the rest
+		old, _ := os.ReadFile(log + ".1")
+		lines = append(strings.Split(string(old), "\n"), lines...)
+	}
 	if len(lines) > 300 {
 		lines = lines[len(lines)-300:]
 	}
@@ -656,8 +661,10 @@ func queryActivity(root string) []activityItem {
 			items = append(items, found{activityItem{at, text}, pruned})
 		}
 	}
-	if dest, problem := panelDest(root); problem == "" {
-		shards, _, _ := archive.ReadShards(dest)
+	dest, problem := panelDest(root)
+	var shards map[string]archive.Shard
+	if problem == "" {
+		shards, _, _ = archive.ReadShards(dest)
 		var names []string
 		for name, s := range shards {
 			if !strings.EqualFold(name, machineName()) && !s.LastPush.IsZero() { // zero is unknown (Ruling P33)
@@ -671,13 +678,26 @@ func queryActivity(root string) []activityItem {
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].At.After(items[j].At) })
 	out := []activityItem{}
-	var local map[string]string
+	var local, titles map[string]string
 	for _, it := range items[:min(5, len(items))] {
 		if it.pruned != "" {
 			if local == nil {
-				local = localTranscripts(root)
+				local, titles = localTranscripts(root), map[string]string{}
+				if problem == "" { // the index keeps a deleted conversation's row a while, as queryDeleted reads it
+					for _, s := range archive.SessionsOf(dest, shards) {
+						if id := strings.ToLower(s.ID); titles[id] == "" {
+							titles[id] = s.Prompt
+						}
+					}
+				}
 			}
-			it.Text = "Deleted " + convTitle(local[it.pruned], it.pruned) + " from the archive"
+			// This computer's own copy, then the index's title, else the log's own words.
+			switch {
+			case local[it.pruned] != "":
+				it.Text = "Deleted " + convTitle(local[it.pruned], it.pruned) + " from the archive"
+			case titles[it.pruned] != "":
+				it.Text = "Deleted " + titles[it.pruned] + " from the archive"
+			}
 		}
 		out = append(out, it.activityItem)
 	}
@@ -685,7 +705,8 @@ func queryActivity(root string) []activityItem {
 }
 
 // logActivity is a log line's text after its time, in plain words, or "" to leave it
-// out; or the id of a conversation the age rule deleted.
+// out; and the id of a conversation the age rule deleted, which the text names by its
+// project's folder until queryActivity finds its title.
 func logActivity(rest string) (text, pruned string) {
 	var n int
 	switch {
@@ -698,9 +719,17 @@ func logActivity(rest string) (text, pruned string) {
 			return "Compressed " + plural(n, "conversation"), ""
 		}
 	case strings.HasPrefix(rest, "PRUNE: "):
-		if id, _, _ := strings.Cut(strings.TrimPrefix(rest, "PRUNE: "), " "); claude.IsSessionID(id) {
-			return "", strings.ToLower(id)
+		id, more, _ := strings.Cut(strings.TrimPrefix(rest, "PRUNE: "), " ")
+		if !claude.IsSessionID(id) {
+			break
 		}
+		text = "Deleted " + convTitle("", id) + " from the archive"
+		if p, _, ok := strings.Cut(strings.TrimPrefix(more, "("), ", last message "); ok { // (<path>, last message ...)
+			if p = strings.TrimRight(p, `/\`); p != "" {
+				text = "Deleted a conversation in " + p[strings.LastIndexAny(p, `/\`)+1:] + " from the archive"
+			}
+		}
+		return text, strings.ToLower(id)
 	case strings.HasPrefix(rest, "FORK: "):
 		return "A conversation continued on two computers was kept as two", ""
 	case strings.HasPrefix(rest, "ERROR:"), strings.HasPrefix(rest, "SKIP:"), strings.HasPrefix(rest, "TIMEOUT:"),

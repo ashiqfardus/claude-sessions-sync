@@ -429,7 +429,8 @@ func TestActivityPlainWords(t *testing.T) {
 		{"PUSH: 0 copied, 3 unchanged, 4 session(s), 2 project(s) -> /data/arch", ""},
 		{"ZIP: 2 conversation(s), 1.0M -> 200.0K", "Compressed 2 conversations"},
 		{"ZIP: " + qbWeb + "/" + qWeb + " is over 250 MB; it stays loose", ""},
-		{"PRUNE: " + qGone + " (/Users/you/dev/app, last message 2026-01-01, 1.0 MB)", "Deleted Conversation a1000000 from the archive"},
+		{"PRUNE: " + qGone + " (/Users/you/dev/app, last message 2026-01-01, 1.0 MB)", "Deleted a conversation in app from the archive"},
+		{"PRUNE: " + qGone + " (, last message 2026-01-01, 1.0 MB)", "Deleted Conversation a1000000 from the archive"},
 		{"FORK: " + qWeb + " was continued here and on another machine; the archived copy is kept", "A conversation continued on two computers was kept as two"},
 		{"ERROR: manifest: open /Users/you/x: permission denied", "A backup did not finish. The details are in the log."},
 		{"SKIP: another run holds the lock", "A backup did not finish. The details are in the log."},
@@ -470,6 +471,26 @@ func TestActivityPlainWords(t *testing.T) {
 	}
 	if want := []string{"Backed up 2 changed files", "Brought in 141 conversations", "LAP-2 backed up",
 		"Deleted Removed one from the archive", "Compressed 1 conversation"}; !reflect.DeepEqual(texts, want) {
+		t.Errorf("activity %q\nwant %q", texts, want)
+	}
+}
+
+// FWG item 10: a conversation deleted with no copy here is titled from the archive's
+// index, as Deleted recently does. Minor m9: a log just rotated still shows what the
+// previous one says.
+func TestActivityTitlesAndRotatedLog(t *testing.T) {
+	root, _ := queryFixture(t)
+	now := time.Now().Truncate(time.Second)
+	appendLog(t, root, now.Add(-3*time.Minute), "PRUNE: "+qGone+" (/Users/you/dev/app, last message 2026-01-01, 1.0 MB)")
+	if err := os.Rename(filepath.Join(root, "session-sync.log"), filepath.Join(root, "session-sync.log.1")); err != nil {
+		t.Fatal(err)
+	}
+	appendLog(t, root, now.Add(-time.Minute), "PUSH: 2 copied, 0 unchanged, 1 session(s), 1 project(s)")
+	var texts []string
+	for _, it := range queryActivity(root) {
+		texts = append(texts, it.Text)
+	}
+	if want := []string{"Backed up 2 changed files", "Deleted Removed one from the archive"}; !reflect.DeepEqual(texts, want) {
 		t.Errorf("activity %q\nwant %q", texts, want)
 	}
 }
