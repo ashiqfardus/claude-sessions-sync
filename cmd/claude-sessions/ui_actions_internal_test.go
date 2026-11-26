@@ -85,6 +85,9 @@ var (
 	rfc3339Time = regexp.MustCompile(`\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)`)
 	minuteTime  = regexp.MustCompile(`\d{4}-\d\d-\d\d \d\d:\d\d(:\d\d)?`)
 	fileStamp   = regexp.MustCompile(`\b\d{8}-\d{6}\b`) // a backup's name, a folder of replaced files
+	// A profile's sweep job is named with a hash of its path, so each twin's differs:
+	// the Task Scheduler name, the launchd label and the systemd unit.
+	jobSuffix = regexp.MustCompile(`(claude-sessions-sync(?:[.-]sweep)?)-[0-9a-f]{8}\b`)
 )
 
 // normal is a JSON result made comparable between twins: indented with sorted keys,
@@ -133,7 +136,8 @@ func (e parityEnv) layout(t *testing.T, start time.Time) string {
 }
 
 // normalText takes out what differs between twins: times at or after the start of the
-// test's hour become <NOW> (Ruling P14), file stamps <STAMP>, and e's paths placeholders.
+// test's hour become <NOW> (Ruling P14), file stamps <STAMP>, a sweep job's suffix
+// <JOB>, and e's paths placeholders.
 func (e parityEnv) normalText(s string, start time.Time) string {
 	hour := start.Truncate(time.Hour)
 	s = rfc3339Time.ReplaceAllStringFunc(s, func(m string) string {
@@ -151,6 +155,7 @@ func (e parityEnv) normalText(s string, start time.Time) string {
 		return m
 	})
 	s = fileStamp.ReplaceAllString(s, "<STAMP>")
+	s = jobSuffix.ReplaceAllString(s, "${1}-<JOB>")
 	roots := map[string]string{"<BASE>": e.base, "<BASE-SLUG>": claude.Slug(e.base)}
 	if real, err := filepath.EvalSymlinks(e.base); err == nil && real != e.base {
 		roots["<BASE-SLUG-REAL>"] = claude.Slug(real)
