@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-26
+
 ### Added
 - **`import --no-profile` brings your conversations without your rules and skills.** It
   leaves CLAUDE.md, skills, agents, commands and the other profile files here as they
@@ -42,8 +44,8 @@ All notable changes to this project are documented here. This project follows
   real run does.
 - **`import --dry-run` counted far fewer work-folder files than the real import
   unpacks.** It counted only the files stored loose in the archive and skipped the
-  files inside each packed folder. It now counts every file that would land. Both runs
-  also give the unpacked size, as in `; 464.5 MB filed`.
+  files inside each packed folder. It now counts every file that would land. Both runs,
+  and `pull`, also give the unpacked size, as in `; 464.5 MB filed`.
 - **`import --dry-run` read as if it had already filed conversations.** It said "N
   conversation(s) here still point at other machines' work folders". A dry run now says
   "after this import, N conversation(s) would still point at other machines' work
@@ -57,6 +59,13 @@ All notable changes to this project are documented here. This project follows
   not be read.** It said compressing old conversations waits until every computer's
   record in the archive can be read. It now says this computer's settings file can't be
   read and to choose the archive folder again.
+
+### Documentation
+- **The setup guide covers what a first-time setup on a new Windows laptop ran into.**
+  The Google Drive letter can differ from `G:`. It now shows what the archive folder
+  holds, how to install Scoop (it needs git), and where `session-sync.json` lives. It
+  says to make the archive folder available offline before the first import, and what
+  `import` brings besides conversations, with a flag to skip each part.
 
 ## [0.7.1] - 2026-11-26
 
