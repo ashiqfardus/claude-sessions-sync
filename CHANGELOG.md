@@ -24,6 +24,11 @@ All notable changes to this project are documented here. This project follows
   4.7 GB archive. It now reads only what its report needs, and prints the same report.
   A real import also writes rewritten conversations in larger pieces, which is faster
   on a synced drive.
+- **`import` is several times faster when many folders moved.** Each line of a
+  conversation was checked against every moved folder's patterns in turn: 120 of them
+  for 24 folders. A pattern now runs only on a line that could hold its folder's path.
+  The result is the same, and in a benchmark of 120 patterns the check went from about
+  1.4 MB/s to 94 MB/s.
 - **`import` reports the other computers' work folders when it places them, before the
   conversations.** A real import unpacks them first, and it can take minutes, but it
   only reported them after every conversation line. A dry run lists them in the same
