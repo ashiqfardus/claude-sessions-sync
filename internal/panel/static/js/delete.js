@@ -23,7 +23,7 @@ const ageLabel = (d) => (AGES.find(([n]) => n === d) || [d, number(d) + ' days']
 const ages = (days) => {
   const list = AGES.map(([d, label]) => ({ value: String(d), label }))
   // A setting made in the terminal that no choice has stays shown.
-  return inRange(days) && !AGES.some(([d]) => d === days) ? [...list, { value: String(days), label: ageLabel(days) }] : list
+  return inRange(days) && !AGES.some(([d]) => d === days) ? [...list, { value: String(days), label: ageLabel(days) }].sort((a, b) => a.value - b.value) : list
 }
 
 // day is "14 Apr", or "14 Apr 2025" in an earlier year; '' for no date (Rulings P33, P43).
@@ -87,13 +87,15 @@ register('delete', {
       // A new setting waits a day on every computer: the grace day is shared.
       note.hidden = !days
       slot('auto-note-text').textContent = ''
-      if (days) setTimeout(() => { slot('auto-note-text').textContent = `Deleting conversations not used for ${ageLabel(days)} starts tomorrow on every computer.` })
+      if (days) setTimeout(() => { slot('auto-note-text').textContent = `Deleting conversations not used for ${ageLabel(days)} starts a day after each computer's next automatic backup.` })
     })
 
     // --- Choose now ------------------------------------------------------------
 
-    const nowAge = combo(slot('now-age'), { options: ages(0), value: '180' })
-    const nowProject = combo(slot('now-project'), { options: [{ value: '', label: 'Any project' }, ...choices.map((p) => ({ value: p.key, label: p.name }))], value: '' })
+    // A preview is of the age and project it was asked with: changing either hides it.
+    const stale = () => { if (shown) { shown = null; box.hidden = true } }
+    const nowAge = combo(slot('now-age'), { options: ages(0), value: '180', onChange: stale })
+    const nowProject = combo(slot('now-project'), { options: [{ value: '', label: 'Any project' }, ...choices.map((p) => ({ value: p.key, label: p.name }))], value: '', onChange: stale })
     // The note's preview is what the saved rule deletes: prune --older-than <days>d.
     slot('auto-preview').addEventListener('click', () => {
       if (!saved) return
@@ -165,6 +167,7 @@ register('delete', {
 
     del.addEventListener('click', async () => {
       const on = shown.items.filter((it) => !off.has(it.id)), ids = on.map((it) => it.id), label = 'Delete ' + plural(on.length)
+      if (!ids.length) return
       const body = `They are removed from the archive in ${provider || 'your sync folder'}, from every computer's folder. Your computers keep their own copies.`
       if (!await confirmDialog({ title: label + '?', body, items: on.map(titleOf), confirm: label, danger: true })) return
       deleting = true
@@ -172,18 +175,20 @@ register('delete', {
       const st = await run('prune', { ...shown.sel, ids, yes: true })
       deleting = false
       // A run that fails partway still says what it deleted (Ruling P44).
-      const n = (st.result && st.result.deleted) || 0
-      let text = `Deleted ${plural(n)} from the archive`
+      const n = (st.result && st.result.deleted) || 0, left = ids.length - n
+      let text = n ? `Deleted ${plural(n)} from the archive` : 'Nothing was deleted'
       if (!st.ok) text = (n ? text + '. ' : '') + (st.error || GENERIC)
-      else if (!n) text = 'Nothing was deleted: they were used or protected since the preview.'
+      // The run dates each again: one used since the preview is no longer old enough.
+      else if (left > 0) text += `${n ? '. ' : ': '}${number(left)} ${left === 1 ? 'was' : 'were'} used since the preview, so ${left === 1 ? 'it stays' : 'they stay'}`
       if (signal.aborted) return toast(text)
-      if (n) { box.hidden = true; shown = null } else sum.textContent = count()
+      box.hidden = true // the preview is out of date now
+      shown = null
       reloadDeleted()
       toast(text, n ? { action: { label: 'Restore', run: () => restoreAll(ids) } } : undefined)
       // The toast is last in the page: put focus on Restore, so the keyboard can reach it.
       const undo = n && document.querySelector('#toasts .toast button')
       if (undo) undo.focus()
-      else refocus(del.disabled ? show : del)
+      else refocus(show)
     })
 
     async function restoreAll(ids) {
@@ -215,11 +220,19 @@ register('delete', {
 
     function paintKept() {
       const rows = Array.isArray(retention.keep) ? retention.keep : []
+      // A list read in part must never read as "nothing is protected", nor be written to.
+      const partial = retention.unreadable > 0
+      slot('keep-unread').hidden = !partial
+      for (const b of [save, protectBtn]) {
+        b.disabled = partial
+        if (partial) b.setAttribute('aria-describedby', 'keep-unread')
+        else b.removeAttribute('aria-describedby')
+      }
       keptList.replaceChildren(...(rows.length ? rows.map((r) => h('li', null,
         h('span', { class: 'grow' }, h('strong', { class: 'medium' }, r.name), ' ',
           h('span', { class: 'muted' }, r.kind === 'project' ? 'project' : 'conversation', r.kind === 'project' && r.paths && r.paths.length ? [': ', ...where(r.paths)] : null)),
         h('button', { type: 'button', class: 'btn sm', 'aria-label': 'Stop protecting: ' + r.name, disabled: !r.arg, onclick: (e) => unkeep(r, e.currentTarget) }, 'Stop protecting')))
-        : [h('li', { class: 'muted' }, 'Nothing is protected yet.')]))
+        : partial ? [] : [h('li', { class: 'muted' }, 'Nothing is protected yet.')]))
       const taken = new Set(rows.filter((r) => r.kind === 'project').map((r) => r.arg))
       protect.options = [{ value: '', label: 'Choose a project' }, ...choices.filter((p) => !taken.has(p.arg)).map((p) => ({ value: p.key, label: p.name }))]
       protect.value = ''
@@ -250,7 +263,7 @@ register('delete', {
       if (!p) return protect.input.focus() // opens the list to choose from
       protectBtn.disabled = true
       const st = await run('config', { action: 'keep', args: [p.arg] })
-      protectBtn.disabled = false
+      protectBtn.disabled = retention.unreadable > 0
       refocus(protectBtn)
       if (!st.ok) return toast(st.error || GENERIC)
       toast('Protected ' + p.name)

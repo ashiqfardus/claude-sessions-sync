@@ -271,6 +271,7 @@ p.status{white-space:normal}
 .ruled .grow,.preview-items .grow{overflow-wrap:anywhere} /* a title or path may be one long word */
 .auto-note{gap:8px 12px}
 .way-text .status>svg,.auto-note .status>svg,.preview-actions .status>svg{flex:none} /* a note that wraps keeps its icon whole */
+@media (max-width:480px){.preview-items .grow{flex-basis:0}.preview-items .grow+.muted{flex-basis:100%;padding-left:31px}} /* the title beside its checkbox, its project and date below */
 
 /* Bring in */
 .where-table{min-width:760px}
