@@ -100,6 +100,12 @@ func TestImportPullRestoreWriteOnlyToTheirStreams(t *testing.T) {
 	if restored.Copied != 1 {
 		t.Errorf("restore = %+v, want one filed", restored)
 	}
+	// The panel encodes these results itself: an empty list is [], never null.
+	for name, v := range map[string]any{"import": imp, "pull": pulled} {
+		if b, _ := json.Marshal(v); bytes.Contains(b, []byte("null")) {
+			t.Errorf("%s's result encodes a null: %s", name, b)
+		}
+	}
 }
 
 // captureBoth runs fn with os.Stdout and os.Stderr each swapped for a pipe.

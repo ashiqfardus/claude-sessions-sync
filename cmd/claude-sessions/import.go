@@ -62,9 +62,6 @@ func cmdImport(args []string) error {
 	if err != nil || !*asJSON {
 		return err
 	}
-	if res.Rows == nil {
-		res.Rows = []importRow{}
-	}
 	return encodeJSON(os.Stdout, res.Rows)
 }
 
@@ -459,7 +456,9 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	imported.finish(s.Err)
 
 	profile := restoreProfile(root, dest, o.DryRun, o.UpdateProfile, !o.NoPlugins)
-	result := importResult{Rows: rows, Profile: profile}
+	// A caller that encodes the result gets [] for an empty list, never null.
+	profile.Files, profile.Replaced, profile.Plugins = nonNil(profile.Files), nonNil(profile.Replaced), nonNil(profile.Plugins)
+	result := importResult{Rows: nonNil(rows), Profile: profile}
 
 	fmt.Fprintf(s.Out, "\n%d transcript(s) filed", filed)
 	if o.Update {
@@ -510,6 +509,14 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	return result, nil
 }
 
+// nonNil is l, or an empty list for nil: JSON encodes it as [], not null.
+func nonNil[T any](l []T) []T {
+	if l == nil {
+		return []T{}
+	}
+	return l
+}
+
 // resultNote sums up, for a row, what restoreInto could not file in whole.
 func resultNote(res restoreResult) string {
 	note := ""
@@ -526,7 +533,8 @@ func resultNote(res restoreResult) string {
 	return note
 }
 
-// workRows are other machines' work folders placed here, one row each, by recorded path.
+// workRows are the work folders placed here, one row per computer and folder, by
+// recorded path.
 func workRows(byMachine map[string]string) []importRow {
 	var rows []importRow
 	for k, target := range byMachine {
@@ -666,9 +674,6 @@ func cmdPull(args []string) error {
 	if err != nil || !*asJSON {
 		return err
 	}
-	if rows == nil {
-		rows = []importRow{}
-	}
 	return encodeJSON(os.Stdout, rows)
 }
 
@@ -698,7 +703,7 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 	}
 	if len(archivedBuckets) == 0 {
 		fmt.Fprintln(s.Out, "Nothing to pull: the archive holds no projects.")
-		return nil, nil
+		return []importRow{}, nil
 	}
 
 	// Pulling writes into ~/.claude/projects, which a scheduled push reads.
@@ -800,7 +805,7 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 	printProfile(s.Out, profile, o.DryRun)
 	fmt.Fprintln(s.Out, "pull files by bucket name only. If a project lives at a different path here,")
 	fmt.Fprintln(s.Out, "use `claude-sessions import`, which matches by identity and rewrites paths.")
-	return rows, nil
+	return nonNil(rows), nil
 }
 
 // formerNames maps each machine, lower-cased, to the names it went by before, as its
