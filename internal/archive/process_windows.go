@@ -21,3 +21,6 @@ func processAlive(pid int) bool {
 	}
 	return code == stillActive
 }
+
+// ProcessAlive reports whether pid is a running process.
+func ProcessAlive(pid int) bool { return processAlive(pid) }

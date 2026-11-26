@@ -26,6 +26,7 @@ commands:
   stats       session counts and sizes per project
   doctor      check the archive, hook, retention and manifest drift
   config      archive destination, project mappings, this machine's name
+  ui          open the panel in your browser: everything here, without commands
   completion  print a shell completion script (bash|zsh|fish|powershell)
   version     print the version
 

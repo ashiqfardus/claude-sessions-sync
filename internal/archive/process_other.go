@@ -18,3 +18,6 @@ func processAlive(pid int) bool {
 	err = p.Signal(syscall.Signal(0))
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
+
+// ProcessAlive reports whether pid is a running process.
+func ProcessAlive(pid int) bool { return processAlive(pid) }

@@ -5,7 +5,10 @@ import (
 	"html"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
+	"time"
 )
 
 // launch hands a second `claude-sessions ui` a fresh key for the running panel. It is
@@ -28,14 +31,7 @@ var redirectOS, redirectHome = runtime.GOOS, os.UserHomeDir
 // file path and the key never appears in any process's arguments. The caller deletes it,
 // on use, after 60 s and at exit: on Linux it sits in plain sight in the home folder.
 func WriteRedirect(url string) (string, error) {
-	dir := "" // the temp folder
-	if redirectOS == "linux" {
-		// Snap Firefox and Chromium (Ubuntu's defaults) have a private /tmp and cannot read hidden folders.
-		if h, err := redirectHome(); err == nil {
-			dir = h
-		}
-	}
-	f, err := os.CreateTemp(dir, "claude-sessions-panel-*.html") // O_EXCL, mode 0600, a random name
+	f, err := os.CreateTemp(redirectDir(), redirectPrefix+"*"+redirectExt) // O_EXCL, mode 0600, a random name
 	if err != nil {
 		return "", err
 	}
@@ -63,4 +59,37 @@ func Open(path string) error {
 	}
 	go cmd.Wait() // xdg-open can wait for the browser to exit; only reap it
 	return nil
+}
+
+const redirectPrefix, redirectExt = "claude-sessions-panel-", ".html"
+
+// redirectDir is where WriteRedirect puts its files: the temp folder, or on Linux the
+// home folder, as Snap Firefox and Chromium (Ubuntu's defaults) have a private /tmp and
+// cannot read hidden folders.
+func redirectDir() string {
+	if redirectOS == "linux" {
+		if h, err := redirectHome(); err == nil {
+			return h
+		}
+	}
+	return os.TempDir()
+}
+
+// CleanRedirects removes redirect files older than age: a crash leaves one behind, and
+// so does a second `ui`, which hands its file to the browser and exits.
+func CleanRedirects(age time.Duration) {
+	dir := redirectDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !e.Type().IsRegular() || !strings.HasPrefix(name, redirectPrefix) || !strings.HasSuffix(name, redirectExt) {
+			continue
+		}
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > age {
+			os.Remove(filepath.Join(dir, name))
+		}
+	}
 }

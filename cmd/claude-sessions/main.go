@@ -66,6 +66,8 @@ func main() {
 		err = cmdDoctor(os.Args[2:])
 	case "config":
 		err = cmdConfig(os.Args[2:])
+	case "ui":
+		err = cmdUI(os.Args[2:])
 	case "completion":
 		err = cmdCompletion(os.Args[2:])
 	case "version", "--version", "-v", "-V":
@@ -122,6 +124,7 @@ commands:
   stats       session counts and sizes per project
   doctor      check the archive, hook, retention and manifest drift
   config      archive destination, project mappings, this machine's name
+  ui          open the panel in your browser: everything here, without commands
   completion  print a shell completion script (bash|zsh|fish|powershell)
   version     print the version
 
