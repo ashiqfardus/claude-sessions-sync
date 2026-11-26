@@ -397,6 +397,29 @@ func TestHealthOrderAndOneDoctorAtATime(t *testing.T) {
 	}
 }
 
+// Minor PA M1: a caller that comes after a drop, while a run from before it is still
+// going, gets a fresh run's answer, not the one from before the drop.
+func TestFlightAfterADropRunsAgain(t *testing.T) {
+	var f flight[string]
+	release, started := make(chan struct{}), make(chan struct{})
+	first := make(chan string)
+	go func() {
+		first <- f.do("", "", func() (string, time.Duration) { close(started); <-release; return "before", time.Hour })
+	}()
+	<-started
+	f.drop() // a job ended while the walk ran
+	after := make(chan string)
+	go func() { after <- f.do("", "", func() (string, time.Duration) { return "after", time.Hour }) }()
+	time.Sleep(50 * time.Millisecond) // waiting on the first run by now
+	close(release)
+	if got := <-first; got != "before" {
+		t.Errorf("the run's own caller got %q", got)
+	}
+	if got := <-after; got != "after" {
+		t.Errorf("a caller after the drop got %q, want a fresh run's answer", got)
+	}
+}
+
 func TestActivityPlainWords(t *testing.T) {
 	t.Setenv("CLAUDE_SESSIONS_MACHINE", "LAP-1")
 	isolateUI(t)
@@ -906,6 +929,38 @@ func TestProfileDiffsReadOnlyWhatTheyMust(t *testing.T) {
 	os.Chtimes(copyOf("LAP-2", "RTK.md"), st.ModTime(), st.ModTime())
 	if got := c.diffs(dest); !slices.Contains(got, "RTK.md") {
 		t.Errorf("a changed copy was not compared again: %v", got)
+	}
+}
+
+// Minor PA M5: Settings asks for settings, profile and health at once; on a cold cache
+// they compare the copies once between them, not each.
+func TestProfileComparedOnceForCallersAtOnce(t *testing.T) {
+	_, dest := queryFixture(t)
+	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-1", "CLAUDE.md"), "one")
+	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-2", "CLAUDE.md"), "three")
+	var runs atomic.Int32
+	release := make(chan struct{})
+	hook(t, &compareCopies, func(c map[string][]profileCopy) []string {
+		runs.Add(1)
+		<-release
+		return diffsOf(c)
+	})
+	var c profileCache
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got := c.diffs(dest); !reflect.DeepEqual(got, []string{"CLAUDE.md"}) {
+				t.Errorf("diffs %v", got)
+			}
+		}()
+	}
+	time.Sleep(50 * time.Millisecond) // all three have asked by now
+	close(release)
+	wg.Wait()
+	if n := runs.Load(); n != 1 {
+		t.Errorf("compared %d times for three callers at once", n)
 	}
 }
 

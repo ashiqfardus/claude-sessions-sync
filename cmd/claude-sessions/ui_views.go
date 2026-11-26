@@ -760,8 +760,12 @@ func (f *flight[T]) do(key string, fallback T, run func() (T, time.Duration)) T 
 		if r == nil {
 			break // still holding mu
 		}
+		gen := f.gen
 		f.mu.Unlock()
 		<-r.done
+		if r.gen != gen {
+			continue // dropped before this caller came: its answer is from before a job
+		}
 		if r.key == key && r.ok {
 			return r.v
 		} else if r.key == key {
@@ -835,18 +839,16 @@ func (c *profileCache) get(dest string) (map[string][]profileCopy, []string) {
 		}
 	}
 	key := string(h.Sum(nil))
-	c.mu.Lock()
-	if c.list != nil && c.key == key {
-		defer c.mu.Unlock()
-		return copies, c.list
+	c.mu.Lock() // held across the comparison: callers meanwhile get its answer, not one each
+	defer c.mu.Unlock()
+	if c.list == nil || c.key != key {
+		c.key, c.list = key, compareCopies(copies)
 	}
-	c.mu.Unlock()
-	list := diffsOf(copies)
-	c.mu.Lock()
-	c.key, c.list = key, list
-	c.mu.Unlock()
-	return copies, list
+	return copies, c.list
 }
+
+// compareCopies is diffsOf; a test counts its runs.
+var compareCopies = diffsOf
 
 func (c *profileCache) diffs(dest string) []string {
 	_, list := c.get(dest)
