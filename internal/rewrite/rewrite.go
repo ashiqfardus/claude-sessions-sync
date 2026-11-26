@@ -306,7 +306,7 @@ func File(src, dst string, rules []Rule, bareLeaf string) (Result, error) {
 	}
 
 	r := bufio.NewReaderSize(in, 256*1024)
-	w := bufio.NewWriter(tmp)
+	w := bufio.NewWriterSize(tmp, 256*1024) // as the reader: 4 KB writes were ~440 per 5 s on a synced drive
 
 	var bareRe *regexp.Regexp
 	if bareLeaf != "" {
