@@ -228,6 +228,10 @@ A browser tab of Drive or Dropbox is not enough; the tool needs a real folder.
 | iCloud Drive (macOS) | `~/Library/Mobile Documents/com~apple~CloudDocs/claude-sessions` |
 | External disk | `D:\backups\claude-sessions` |
 
+The Windows examples on this page use `G:` for Google Drive. Your letter can differ,
+for example `H:`. To find yours, open File Explorer and look under This PC for
+"Google Drive (H:)" or similar, and use that letter.
+
 The archive folder does not have to exist yet, but **its parent must**: the tool
 refuses to create a folder where an unmounted cloud drive should be, because that
 would be a "backup" that never leaves the computer.
@@ -277,12 +281,23 @@ scoop bucket add ashiqfardus https://github.com/ashiqfardus/scoop-bucket
 scoop install ashiqfardus/claude-sessions
 ```
 
+No Scoop yet? Install it from [scoop.sh](https://scoop.sh), in a PowerShell window that
+is not run as administrator:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+```
+
+`scoop bucket add` needs git. If it says git is missing, run `scoop install git`, then
+add the bucket again.
+
 **Or download** the file for your system from the
 [Releases page](https://github.com/ashiqfardus/claude-sessions-sync/releases): a `.zip`
 for Windows, a `.tar.gz` for macOS and Linux, for amd64 (Intel and AMD) or arm64
 (Apple silicon, ARM). Unpack it and put `claude-sessions` (`claude-sessions.exe` on
 Windows) in a folder on your `PATH`. No other software is needed. This guide describes
-**v0.3.0** and later; older releases lack most of it.
+the latest release; [CHANGELOG.md](CHANGELOG.md) lists what each release added.
 
 **Or build it** with Go 1.21 or newer ([download Go](https://go.dev/dl/)):
 
@@ -309,9 +324,34 @@ If that says "command not found" after `go install`, add Go's `bin` folder to yo
 claude-sessions config set-destination "G:\My Drive\claude-sessions"
 ```
 
-Use your own path. A leading `~` works even inside quotes, and the path is saved as an
-absolute one. If it says the parent does not exist, your cloud drive is not mounted.
-`claude-sessions config` shows what is saved.
+Use your own path. On Windows, check the Google Drive letter first: it is not always
+`G:` (see [Before you start](#before-you-start-a-synced-folder)). A leading `~` works
+even inside quotes, and the path is saved as an absolute one. If it says the parent does
+not exist, your cloud drive is not mounted.
+
+The path is saved on this computer, in `~/.claude/session-sync.json`, the tool's local
+settings file. It is not in the archive. `claude-sessions config` shows what is saved.
+
+**If another computer already pushed**, the folder is there already. Check that you
+picked the right one: it holds folders like these, and no `sessions` folder.
+
+```
+claude-sessions/
+  projects/       the conversations, one folder per project
+  manifest/       each computer's projects and their paths
+  index/          each computer's list of conversations
+  html/           the pages you read in a browser (Step 6)
+  profile/        rules, skills and each computer's plugin list
+  memory/         each computer's copy of its project memory
+  forks/          conversations continued on two computers
+  work/           each computer's work folders
+  projects.json   a merged list, for the older PowerShell scripts
+  INDEX.md        the readable index
+```
+
+Some of these appear only once there is something to put in them. A `README.md` or a
+`tools/` folder may be left over from an older setup; this tool does not use them. The
+full layout is in [What is in the archive](#what-is-in-the-archive).
 
 If you skip this step, the tool looks for an existing `claude-sessions` folder by
 itself: in `<drive>:\My Drive` on Windows, in `~/Google Drive`, `~/OneDrive`,
@@ -336,6 +376,10 @@ It reports each check with `+` (fine), `!` (warning), `x` (failure) or a blank
   x archived         12 session(s) that ended over 40 minutes ago are not in the archive, e.g. ...
   ! last push        no successful push recorded in session-sync.log
 ```
+
+`(session-sync.json)` on the `archive` line says where the path came from: the local
+settings file `~/.claude/session-sync.json`, which `config set-destination` wrote in
+Step 2. If it says `auto-detected`, the tool found the folder itself.
 
 **Fix the retention warning now**, because it is the one deleting your history. Add
 this to `~/.claude/settings.json`:
@@ -466,6 +510,35 @@ Resume one with:  cd /home/you/dev/api  then  claude --resume 9ee16efa-4c1d-4a9e
 
 **8a.** Install the tool (Step 1) and point it at the **same** folder (Step 2).
 
+**Make the archive folder available offline before any import.** If Google Drive
+streams files, it fetches each one only when it is opened, so the import waits on every
+file: a 4.7 GB archive made the first `import --dry-run` take about 15 minutes.
+- Windows: in File Explorer, right-click the `claude-sessions` folder and choose
+  Offline access, then Available offline.
+- macOS: in Finder, open the Google Drive folder, right-click `claude-sessions` and
+  choose Available offline (in some versions, Offline access, then Available offline).
+- If Google Drive is set to mirror files rather than stream them, the files are already
+  on disk and the option does not show.
+- OneDrive, Dropbox and iCloud Drive have the same setting under other names; see
+  [If something goes wrong](#if-something-goes-wrong).
+
+Wait until the sync app has downloaded the folder. Even then, a first import on a large
+archive can take a while. On a terminal it prints a progress line now and then, so you
+can tell it is still working.
+
+**What import brings in.** Besides the conversations and their memory, `import` does
+three more things by default:
+- **Work folders.** It puts other computers' [work folders](#work-folders) under your
+  home folder. That can be hundreds of MB. `--no-work` skips them.
+- **Rules and skills**, including `~/.claude/CLAUDE.md`. It adds the ones missing here
+  and never replaces a file that exists without `--update-profile`. `--no-profile`
+  skips them.
+- **Plugins.** It installs the plugins enabled on the other computer with
+  `claude plugin install`, including ones from third-party marketplaces. `--no-plugins`
+  skips them.
+
+The dry run lists all three, so you can decide before the real run.
+
 **8b.** Look first, without changing anything:
 
 ```sh
@@ -543,6 +616,7 @@ archived.)
   newer copy, and the output says so: `--update` alone never replaces one, since one
   computer's shorter `CLAUDE.md`, saved later, would otherwise win. This computer's
   version is saved first in the archive under `profile/replaced/<computer>/<time>/`.
+  `--no-profile` skips rules and skills altogether.
 - **Plugins** enabled on the other computer and not listed here are installed with
   `claude plugin install`, which needs `claude` on your `PATH`. A plugin turned off
   here is left off. Plugins from a marketplace on a local path are skipped. Use
@@ -935,8 +1009,8 @@ Someone who can write to your archive can reach you in other ways too (see
 [SECURITY.md](SECURITY.md)). `import` and `pull` install the plugins another computer
 enabled, unless you pass `--no-plugins`. They also add rules, skills, agents and commands
 from the archive; those are only added, never replacing yours unless you pass
-`--update`, and no flag turns that off. Pass `--no-plugins` unless you trust every
-writer, and keep the archive in a folder only you can write to.
+`--update-profile`, and `import --no-profile` turns that off. Pass `--no-plugins` unless
+you trust every writer, and keep the archive in a folder only you can write to.
 
 **The first run.** The first run of this version marks every conversation already on
 this computer as read, and looks for no folders in them. That applies to an upgrade, and
@@ -1118,6 +1192,7 @@ is another name for `search`, and `-v` or `--version` for `version`.
 | `--update` | `import`, `pull`, `restore` | Also bring in sessions continued elsewhere and newer memory |
 | `--update-profile` | `import`, `pull` | Also replace rule and skill files here with newer archived copies; this computer's are kept in the archive's `profile/replaced/` first |
 | `--no-plugins` | `import`, `pull` | Do not install plugins enabled on another computer |
+| `--no-profile` | `import` | Do not bring in rules, skills or `CLAUDE.md` |
 | `--profile-only` | `import` | Bring in only the newer rules and skills: no conversations, memory or work folders, and no plugins. Cannot be combined with `--update`, `--repoint`, `--no-work`, `--search-root`, `--depth` or `--include-bare-name` |
 | `--no-work` | `import`, `pull` | Bring conversations only; skip other computers' work folders. Not with `--repoint` |
 | `--search-root <dirs>` | `import` | Where to look for projects (comma-separated; default: the parents of known projects, and your home) |

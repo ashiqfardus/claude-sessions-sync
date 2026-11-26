@@ -40,7 +40,9 @@ Pick the first that applies, and tell the user which one you'll use:
 
 - macOS or Linux with Homebrew: `brew install --cask ashiqfardus/tap/claude-sessions`
 - Windows with Scoop: `scoop bucket add ashiqfardus https://github.com/ashiqfardus/scoop-bucket`,
-  then `scoop install ashiqfardus/claude-sessions`
+  then `scoop install ashiqfardus/claude-sessions`. `scoop bucket add` needs git: if it
+  is missing, ask, then run `scoop install git`. Without Scoop, point the user to
+  https://scoop.sh rather than installing it yourself.
 - Any system with Go 1.21 or newer:
   `go install github.com/ashiqfardus/claude-sessions-sync/cmd/claude-sessions@latest`
 - Otherwise, a release archive from
@@ -57,7 +59,8 @@ Typical places:
 - macOS: `~/Library/CloudStorage/` (Google Drive, OneDrive, Dropbox), and
   `~/Library/Mobile Documents/com~apple~CloudDocs` (iCloud Drive)
 - Windows: `G:\My Drive` (Google Drive), `%USERPROFILE%\OneDrive`,
-  `%USERPROFILE%\Dropbox`
+  `%USERPROFILE%\Dropbox`. Google Drive's letter is not always `G:`: check every drive
+  letter for a `My Drive` folder.
 - Linux: `~/Dropbox`, `~/Insync/<account>/Google Drive`, `~/Nextcloud`, a Syncthing folder, a mounted NAS. Google Drive on Linux needs Insync or rclone, never GNOME's Drive view: see "Linux and other sync apps" in the README.
 
 Propose `<that folder>/claude-sessions`. If another computer already uses this tool, use
@@ -112,10 +115,15 @@ carefully, keep the other settings, and show the change before saving it.
 
 ## 6. On a second computer
 
-Do steps 1 to 3 with the **same** archive folder. Then:
+Do steps 1 to 3 with the **same** archive folder, and wait until the user says it is
+available offline: on a streamed folder the first import can take many minutes. Then:
 
 1. Run `claude-sessions import --dry-run`. Summarize where each project and work folder
-   would go.
+   would go. Besides conversations, `import` by default puts other computers' work
+   folders under the home folder, adds rules and skills (including
+   `~/.claude/CLAUDE.md`), and installs the other computer's plugins, third-party
+   marketplaces included. The dry run lists all three: ask which the user wants, and
+   add `--no-work`, `--no-profile` or `--no-plugins` for the ones they do not.
 2. If a project lives somewhere else on this computer, map it:
    - a project: `claude-sessions config map <bucket> "<local folder>"`
    - a work folder with a different path (for example `E:\SQL` on Windows and `~/SQL`
