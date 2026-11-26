@@ -112,3 +112,47 @@ func TestSharedExcludeEmptyInclusionIgnored(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestRenderExcludesInclusionLines(t *testing.T) {
+	root, dest := t.TempDir(), t.TempDir()
+	if err := SaveConfig(root, Config{Destination: dest, RenderExclude: []string{"notes", "keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	// CRLF endings, a mixed-case mark, and a blank mark.
+	if err := os.WriteFile(SharedExcludePath(dest), []byte("# c\r\n!NoTeS\r\n!\r\nother\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(ConfigPath(root))
+
+	got, dropped := RenderExcludesDropped(root, dest, nil, false)
+	if len(got) != 2 || got[0] != "other" || got[1] != "keep" || dropped != nil {
+		t.Errorf("persist=false: got %v, dropped %v", got, dropped)
+	}
+	if after, _ := os.ReadFile(ConfigPath(root)); string(after) != string(before) {
+		t.Error("persist=false changed the config")
+	}
+
+	got, dropped = RenderExcludesDropped(root, dest, nil, true)
+	if len(got) != 2 || len(dropped) != 1 || dropped[0] != "notes" {
+		t.Errorf("persist=true: got %v, dropped %v", got, dropped)
+	}
+	if cfg, _ := LoadConfig(root); len(cfg.RenderExclude) != 1 || cfg.RenderExclude[0] != "keep" {
+		t.Errorf("config = %v", cfg.RenderExclude)
+	}
+	if _, dropped = RenderExcludesDropped(root, dest, nil, true); dropped != nil {
+		t.Errorf("reported twice: %v", dropped)
+	}
+}
+
+func TestIncludeRenderDedupesInput(t *testing.T) {
+	root, dest := t.TempDir(), t.TempDir()
+	if err := SaveConfig(root, Config{Destination: dest, RenderExclude: []string{"notes"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := IncludeRender(root, dest, []string{"notes", "NOTES"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, incl := readShared(dest); len(incl) != 1 {
+		t.Errorf("marks = %v", incl)
+	}
+}

@@ -237,14 +237,15 @@ func hasFold(list []string, p string) bool {
 
 // writeShared saves the shared list: patterns, then inclusions.
 func writeShared(dest string, patterns, incl []string) error {
-	body := sharedExcludeHeader
+	var b strings.Builder
+	b.WriteString(sharedExcludeHeader)
 	for _, p := range patterns {
-		body += p + "\n"
+		b.WriteString(p + "\n")
 	}
 	for _, p := range incl {
-		body += "!" + p + "\n"
+		b.WriteString("!" + p + "\n")
 	}
-	return WriteFileAtomic(SharedExcludePath(dest), []byte(body), 0o644)
+	return WriteFileAtomic(SharedExcludePath(dest), []byte(b.String()), 0o644)
 }
 
 func without(list []string, drop []string) []string {
@@ -257,10 +258,11 @@ func without(list []string, drop []string) []string {
 	return out
 }
 
+// trimmed drops blanks and repeats (ignoring case).
 func trimmed(list []string) []string {
 	var out []string
 	for _, p := range list {
-		if p = strings.TrimSpace(p); p != "" {
+		if p = strings.TrimSpace(p); p != "" && !hasFold(out, p) {
 			out = append(out, p)
 		}
 	}
@@ -316,19 +318,29 @@ func IncludeRender(claudeRoot, dest string, patterns []string) error {
 // IncludeRender: its "!" line in the shared list beats a pattern still in another
 // machine's config, and with persist that machine drops the pattern.
 func RenderExcludes(claudeRoot, dest string, extra []string, persist bool) []string {
+	all, _ := RenderExcludesDropped(claudeRoot, dest, extra, persist)
+	return all
+}
+
+// RenderExcludesDropped is RenderExcludes that also names the patterns it removed from
+// this machine's config because another computer published them again. A newer local
+// exclusion can lose to an older "!" line that syncs in late (there are no timestamps
+// to order them by), so the caller should say so.
+func RenderExcludesDropped(claudeRoot, dest string, extra []string, persist bool) (all, dropped []string) {
 	cfg, _ := LoadConfig(claudeRoot)
 	shared, incl := readShared(dest)
 
 	seen := map[string]bool{}
-	var all, added []string
-	dropped := false
+	var added []string
 	add := func(p string, local bool) {
 		p = strings.TrimSpace(p)
 		if p == "" || seen[strings.ToLower(p)] {
 			return
 		}
 		if hasFold(incl, p) {
-			dropped = dropped || local
+			if local {
+				dropped = append(dropped, p)
+			}
 			return
 		}
 		seen[strings.ToLower(p)] = true
@@ -345,9 +357,11 @@ func RenderExcludes(claudeRoot, dest string, extra []string, persist bool) []str
 	}
 
 	if persist {
-		if dropped {
+		if len(dropped) > 0 {
 			cfg.RenderExclude = without(cfg.RenderExclude, incl)
-			_ = SaveConfig(claudeRoot, cfg)
+			if SaveConfig(claudeRoot, cfg) != nil {
+				dropped = nil // still listed next time, so say nothing yet
+			}
 		}
 		if len(added) > 0 {
 			if _, err := os.Stat(dest); err == nil {
@@ -359,7 +373,10 @@ func RenderExcludes(claudeRoot, dest string, extra []string, persist bool) []str
 	for _, p := range extra {
 		add(p, false)
 	}
-	return all
+	if !persist {
+		dropped = nil
+	}
+	return all, dropped
 }
 
 const archiveFolderName = "claude-sessions"

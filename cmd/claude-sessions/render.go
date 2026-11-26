@@ -83,7 +83,10 @@ func runRender(s streams, o renderOpts) (render.Result, error) {
 				strings.Join(o.Include, ", "), archive.ConfigPath(root), archive.SharedExcludePath(dest))
 		}
 	}
-	patterns := archive.RenderExcludes(root, dest, nil, true)
+	patterns, republished := archive.RenderExcludesDropped(root, dest, nil, true)
+	for _, p := range republished {
+		fmt.Fprintf(s.Err, "RENDER: %s is published again (another computer ran render --include %s); run render --exclude %s to withdraw it\n", p, p, p)
+	}
 
 	res, err := render.Archive(dest, render.Options{
 		Force:         o.Force,

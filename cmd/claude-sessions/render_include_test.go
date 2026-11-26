@@ -67,3 +67,28 @@ func TestExcludeAfterIncludeDropsTheMark(t *testing.T) {
 		t.Errorf("%d pages published", n)
 	}
 }
+
+func TestLateIncludeIsAnnouncedOnce(t *testing.T) {
+	lap1, lap2, _ := includeFixture(t)
+	cfgPath := archive.ConfigPath(lap2.claudeDir)
+	mustWrite(t, cfgPath, `{"destination": "`+filepath.ToSlash(lap2.archive)+`", "renderExclude": ["web-app"]}`+"\n")
+	// An older --include from another computer syncs in after LAP-2's own exclusion.
+	mustWrite(t, filepath.Join(lap1.archive, "render-exclude.txt"), "!web-app\n")
+	const line = "RENDER: web-app is published again"
+
+	if out := lap2.run(t, "push", "--dry-run"); strings.Contains(out, line) {
+		t.Errorf("dry-run announced it:\n%s", out)
+	}
+	if out := lap2.run(t, "doctor"); strings.Contains(out, line) {
+		t.Errorf("doctor announced it:\n%s", out)
+	}
+	if cfg := mustRead(t, cfgPath); !strings.Contains(cfg, "web-app") {
+		t.Fatalf("a read-only command changed the config: %s", cfg)
+	}
+	if out := lap2.run(t, "push"); strings.Count(out, line) != 1 {
+		t.Errorf("want the line once:\n%s", out)
+	}
+	if out := lap2.run(t, "push"); strings.Contains(out, line) {
+		t.Errorf("announced again:\n%s", out)
+	}
+}

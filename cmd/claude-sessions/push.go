@@ -288,7 +288,10 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 	// else writes to s.Err until it is stopped.
 	slowRead := hintIfSlowTo(hintTo)
 	defer slowRead()
-	excludes := archive.RenderExcludes(root, dest, nil, !dryRun)
+	excludes, republished := archive.RenderExcludesDropped(root, dest, nil, !dryRun)
+	for _, p := range republished {
+		logf("RENDER: %s is published again (another computer ran render --include %s); run render --exclude %s to withdraw it", p, p, p)
+	}
 
 	res := pushResult{Archive: dest, DryRun: dryRun}
 	shard := archive.Shard{

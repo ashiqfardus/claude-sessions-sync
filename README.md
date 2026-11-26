@@ -363,7 +363,10 @@ stay in the archive.
 To publish a project again, run `claude-sessions render --include client-acme`. It takes
 the project off the list here and in `render-exclude.txt`, and records that in the
 archive, so a computer that still lists it drops it at its next push instead of
-withholding the pages again. `--exclude` later undoes it.
+withholding the pages again. `--exclude` later undoes it. Exclusions and `--include`
+marks carry no timestamps: if an older `--include` reaches a computer after its newer
+`--exclude`, the next push publishes the project again and prints a `RENDER:` line saying
+so; run `render --exclude` again to withdraw it.
 
 ## Step 7: Find an old conversation
 
