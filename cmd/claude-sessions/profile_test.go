@@ -6,6 +6,7 @@ package main_test
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -209,6 +210,18 @@ func TestImportPluginsFallBackToPrintedCommandsAndHonourNoPlugins(t *testing.T) 
 	}
 }
 
+// runHome runs the binary with HOME at dev, and the system temp folder not counted as
+// one, which work-folder placement would otherwise refuse.
+func (f importFixture) runHome(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	full := append([]string{args[0], "--claude-dir", f.claudeDir, "--archive", f.archive}, args[1:]...)
+	cmd := exec.Command(binary, full...)
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR=", "HOME="+f.dev, "USERPROFILE="+f.dev,
+		"CLAUDE_SESSIONS_TEMP_DIRS="+filepath.Join(f.dev, "no-temp")+string(os.PathListSeparator))
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 // profileOnlyFixture is findable: a normal import with HOME at dev files the transcript.
 func profileOnlyFixture(t *testing.T) importFixture {
 	t.Helper()
@@ -219,7 +232,22 @@ func profileOnlyFixture(t *testing.T) importFixture {
 	if err := os.Chtimes(filepath.Join(f.claudeDir, "CLAUDE.md"), old, old); err != nil {
 		t.Fatal(err)
 	}
+	// A work folder archived by another computer, for a normal import to place.
+	m := newMachine(t, "WORK-BOX", f.archive)
+	home, _, _ := poSession(t, m)
+	m.workRun(t, home, "push", "--no-html")
 	return f
+}
+
+// placed lists where the archived work folder's r.md landed under the home folder.
+func placed(f importFixture) (found []string) {
+	filepath.WalkDir(f.dev, func(p string, d fs.DirEntry, _ error) error {
+		if d != nil && d.Name() == "r.md" {
+			found = append(found, p)
+		}
+		return nil
+	})
+	return found
 }
 
 func transcripts(f importFixture) []string {
@@ -230,13 +258,12 @@ func transcripts(f importFixture) []string {
 func TestProfileOnlyTakesNewerRulesOnly(t *testing.T) {
 	// control: the same fixture, imported normally, files the transcript.
 	c := profileOnlyFixture(t)
-	if out, err := c.runAsHome(t, c.dev, "import", "--no-plugins"); err != nil || len(transcripts(c)) == 0 {
-		t.Fatalf("control import filed nothing (err %v):\n%s", err, out)
+	if out, err := c.runHome(t, "import", "--no-plugins"); err != nil || len(transcripts(c)) == 0 || len(placed(c)) == 0 {
+		t.Fatalf("control import filed no transcript or placed no work folder (err %v):\n%s", err, out)
 	}
 
 	f := profileOnlyFixture(t)
-	homeBefore, _ := os.ReadDir(f.dev)
-	out, err := f.runAsHome(t, f.dev, "import", "--profile-only")
+	out, err := f.runHome(t, "import", "--profile-only")
 	if err != nil {
 		t.Fatalf("import --profile-only: %v\n%s", err, out)
 	}
@@ -249,8 +276,8 @@ func TestProfileOnlyTakesNewerRulesOnly(t *testing.T) {
 	if m := transcripts(f); len(m) != 0 {
 		t.Errorf("a transcript was filed: %v", m)
 	}
-	if after, _ := os.ReadDir(f.dev); len(after) != len(homeBefore) {
-		t.Errorf("a work folder was placed: %v", after)
+	if got := placed(f); len(got) != 0 {
+		t.Errorf("a work folder was placed: %v", got)
 	}
 }
 
@@ -258,7 +285,7 @@ func TestProfileOnlyInstallsNoPlugins(t *testing.T) {
 	f := profileOnlyFixture(t)
 	mustWrite(t, filepath.Join(f.archive, "profile", "plugins", "OLD-BOX.json"),
 		`{"enabledPlugins":{"ponytail@ponytail":true},"extraKnownMarketplaces":{"ponytail":{"source":{"source":"github","repo":"DietrichGebert/ponytail"}}}}`)
-	out, err := f.runAsHome(t, f.dev, "import", "--profile-only", "--json")
+	out, err := f.runHome(t, "import", "--profile-only", "--json")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -276,7 +303,7 @@ func TestProfileOnlyDryRunChangesNothing(t *testing.T) {
 		return b.String()
 	}
 	before := snap()
-	out, err := f.runAsHome(t, f.dev, "import", "--profile-only", "--dry-run")
+	out, err := f.runHome(t, "import", "--profile-only", "--dry-run")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -297,7 +324,7 @@ func TestProfileOnlyNothingNewer(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(f.claudeDir, "CLAUDE.md"), fresh, fresh); err != nil {
 		t.Fatal(err)
 	}
-	out, err := f.runAsHome(t, f.dev, "import", "--profile-only")
+	out, err := f.runHome(t, "import", "--profile-only")
 	if err != nil || !strings.Contains(out, "No rules or skills here are older than the archive's.") {
 		t.Errorf("want the nothing-newer line, got err=%v\n%s", err, out)
 	}
@@ -315,7 +342,7 @@ func TestProfileOnlyUnreachableArchiveAndHeldLock(t *testing.T) {
 	}
 
 	mustWrite(t, filepath.Join(f.claudeDir, "session-sync.lock"), fmt.Sprintf("%d token 2026-09-01T00:00:00Z\n", os.Getpid()))
-	o, err := f.runAsHome(t, f.dev, "import", "--profile-only")
+	o, err := f.runHome(t, "import", "--profile-only")
 	if err == nil || !strings.Contains(o, "lock") {
 		t.Errorf("held lock not refused: err=%v\n%s", err, o)
 	}
