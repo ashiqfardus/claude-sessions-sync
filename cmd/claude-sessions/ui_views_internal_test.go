@@ -476,12 +476,30 @@ func TestDeletedTitles(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("items %+v", items)
 	}
-	if it := items[0]; it.ID != qGone || it.Title != "Conversation a1000000" || it.Here || it.Project != "app" || it.DeletedAt.IsZero() {
+	// Another computer's conversation is named by the archive's index, which keeps its
+	// row after its files are gone, never by reading the archived copy.
+	if it := items[0]; it.ID != qGone || it.Title != "Removed one" || it.Here || it.Project != "app" || it.DeletedAt.IsZero() {
 		t.Errorf("without a copy here: %+v", it)
 	}
 	writeFile(t, filepath.Join(claude.ProjectsDir(root), qbApp, qGone+".jsonl"), queryTranscript("/Users/you/dev/app", "Removed one"))
 	if items = queryDeleted(root, dest); len(items) != 1 || items[0].Title != "Removed one" || !items[0].Here {
 		t.Errorf("with a copy here: %+v", items)
+	}
+	// No index row and a bucket no project groups: the id, and the folder of the path
+	// the computer's manifest records; with no bucket at all, no project.
+	writeJSON(t, filepath.Join(archive.DeletedDir(dest), "LAP-3.json"), map[string]any{"schemaVersion": 1, "machine": "LAP-3", "entries": []archive.DeletedEntry{
+		{ID: "d5000000-0000-4000-8000-000000000001", Buckets: []string{"-legacy-tools"}, DeletedAt: time.Now()},
+		{ID: "d5000000-0000-4000-8000-000000000002", DeletedAt: time.Now().Add(-time.Minute)}}})
+	shards, _, _ := archive.ReadShards(dest)
+	shard := shards["LAP-3"]
+	shard.Projects["-legacy-tools"] = archive.Project{Path: `D:\old\tools\`}
+	writeShard(t, dest, shard)
+	items = queryDeleted(root, dest)
+	if len(items) != 3 || items[0].Title != "Conversation d5000000" || items[0].Project != "tools" || items[1].Project != "" {
+		t.Errorf("without an index row: %+v", items)
+	}
+	if err := os.Remove(filepath.Join(archive.DeletedDir(dest), "LAP-3.json")); err != nil {
+		t.Fatal(err)
 	}
 	// The 20 newest, newest first, and none continued since (Ruling P50).
 	var more []archive.DeletedEntry

@@ -166,7 +166,11 @@ func computersOf(shards map[string]archive.Shard, rows []archive.Session, logged
 // as it stands: an entry undone, or a conversation continued since, is in the archive
 // again (Ruling P50). bad counts the deleted lists it could not read.
 func archivedNow(dest string, shards map[string]archive.Shard) (rows []archive.Session, deleted map[string]archive.DeletedEntry, bad int) {
-	rows = archive.SessionsOf(dest, shards)
+	return withoutDeleted(dest, archive.SessionsOf(dest, shards))
+}
+
+// withoutDeleted is archivedNow on index rows already read. It reuses rows' array.
+func withoutDeleted(dest string, rows []archive.Session) ([]archive.Session, map[string]archive.DeletedEntry, int) {
 	deleted, names, err := archive.LoadDeletedEach(dest)
 	if deleted == nil {
 		deleted = map[string]archive.DeletedEntry{}
@@ -569,7 +573,16 @@ type deletedItem struct {
 func queryDeleted(root, dest string) []deletedItem {
 	shards, _, _ := archive.ReadShards(dest)
 	projects, _ := archive.MergeShards(dest, shards)
-	_, deleted, _ := archivedNow(dest, shards)
+	all := archive.SessionsOf(dest, shards)
+	_, deleted, _ := withoutDeleted(dest, slices.Clone(all))
+	// The index keeps a deleted conversation's row until its computer pushes again: its
+	// title and project name another computer's conversation without reading it.
+	indexed := map[string]archive.Session{}
+	for _, s := range all {
+		if id := strings.ToLower(s.ID); indexed[id].Prompt == "" {
+			indexed[id] = s
+		}
+	}
 	opts, keys := groupProjects(projects, homesOf(shards))
 	names := map[string]string{}
 	for _, o := range opts {
@@ -579,10 +592,18 @@ func queryDeleted(root, dest string) []deletedItem {
 	items := []deletedItem{}
 	for id, d := range deleted {
 		it := deletedItem{ID: id, DeletedAt: d.DeletedAt, Here: local[id] != ""}
+		var paths []string
 		for _, b := range d.Buckets {
 			if k := keys[b]; k != "" {
 				it.Project = names[k]
 				break
+			}
+			paths = append(paths, projects[b].Path)
+		}
+		// No project groups it: the folder of the path a manifest, or the index, records.
+		for _, p := range append(paths, indexed[id].Project) {
+			if p = strings.TrimRight(p, `/\`); it.Project == "" && p != "" {
+				it.Project = p[strings.LastIndexAny(p, `/\`)+1:]
 			}
 		}
 		items = append(items, it)
@@ -595,7 +616,12 @@ func queryDeleted(root, dest string) []deletedItem {
 		items = items[:20]
 	}
 	for i := range items {
-		items[i].Title = convTitle(local[items[i].ID], items[i].ID) // this computer's own copy, never the archive's
+		// This computer's own copy, then the index's title; never the archived copy.
+		it := &items[i]
+		it.Title = convTitle(local[it.ID], it.ID)
+		if local[it.ID] == "" && indexed[it.ID].Prompt != "" {
+			it.Title = indexed[it.ID].Prompt
+		}
 	}
 	return items
 }
