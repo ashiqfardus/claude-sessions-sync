@@ -92,8 +92,9 @@ func runLs(s streams, o lsOpts) ([]sessionRow, error) {
 	}
 
 	// Collect and order first, using only directory metadata, so that --limit reads N
-	// transcripts rather than every one. On a machine with hundreds of sessions this
-	// is the difference between instant and several seconds.
+	// transcripts rather than every one: the loop below stops at N rows. On a machine
+	// with hundreds of sessions this is the difference between instant and several
+	// seconds.
 	var candidates []candidate
 	for _, b := range buckets {
 		for _, t := range b.Transcripts {
@@ -110,12 +111,8 @@ func runLs(s streams, o lsOpts) ([]sessionRow, error) {
 		return candidates[i].t.ModTime.After(candidates[j].t.ModTime)
 	})
 
-	// A project filter can only be applied after reading each transcript's cwd, so the
-	// limit cannot be applied up front in that case.
-	if o.Limit > 0 && o.Project == "" && len(candidates) > o.Limit {
-		candidates = candidates[:o.Limit]
-	}
-
+	// The limit counts rows, not candidates: a project filter, or a zip that cannot be
+	// read, drops a candidate only once it is read.
 	var rows []sessionRow
 	for _, c := range candidates {
 		if o.Limit > 0 && len(rows) >= o.Limit {

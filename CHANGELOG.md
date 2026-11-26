@@ -42,6 +42,8 @@ All notable changes to this project are documented here. This project follows
 - **A Windows folder written `C:/x` in one place and `C:\x` in another counted as two
   folders,** as for a project with only memory files, whose path comes from
   `~/.claude.json`. Paths now compare with either slash.
+- **`ls --archived --limit N` could list fewer than N conversations** when one of the
+  newest was a zip that cannot be read. The limit now counts the conversations listed.
 
 ## [0.7.0] - 2026-11-26
 

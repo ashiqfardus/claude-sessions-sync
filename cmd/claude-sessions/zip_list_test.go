@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
@@ -98,11 +99,31 @@ func TestSearchArchivedSkipsUnreadableZip(t *testing.T) {
 	}
 }
 
+// stats counts a zip from its file alone, so one that cannot be read is still a
+// session, of the zip's own size. Only its project's path comes from inside it: that
+// read fails once, said once, and the folder name stands in.
 func TestStatsArchivedSkipsUnreadableZip(t *testing.T) {
 	m, bucketDir := zippedArchive(t, "x1")
-	mustWrite(t, convzip.Path(bucketDir, forkSession), "not a zip")
+	zp := convzip.Path(bucketDir, forkSession)
+	mustWrite(t, zp, "not a zip")
 	out := m.run(t, "stats", "--archived")
-	if !strings.Contains(out, "1 session(s)") || strings.Count(out, "skipped") > 1 {
-		t.Fatalf("stats failed on a bad zip:\n%s", out)
+	if !strings.Contains(out, "1 session(s) across 1 project(s), 9B total") || !strings.Contains(out, "-work-web-app") ||
+		strings.Count(out, "skipped") != 1 || !strings.Contains(out, "skipped "+zp) {
+		t.Fatalf("stats did not count the bad zip by its file, with one note:\n%s", out)
+	}
+}
+
+// --limit counts rows listed: a zip that cannot be read, and so is dropped, leaves its
+// place to the next conversation.
+func TestLsArchivedLimitSkipsAnUnreadableZip(t *testing.T) {
+	m, bucketDir := zippedArchive(t, "x1")
+	mustWrite(t, convzip.Path(bucketDir, forkSession), "not a zip") // the newest
+	other := "77777777-7777-7777-7777-777777777777"
+	op := filepath.Join(bucketDir, other+".jsonl")
+	mustWrite(t, op, sessionLines("/work/web-app", "olderprompt"))
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(op, old, old)
+	if out := m.run(t, "ls", "--archived", "--limit", "1"); !strings.Contains(out, other) || !strings.Contains(out, "1 session(s).") {
+		t.Fatalf("ls --limit 1 did not list the conversation after the bad zip:\n%s", out)
 	}
 }
