@@ -21,9 +21,10 @@ type probeOps struct {
 	open    func(string, int, os.FileMode) (*os.File, error)
 	rename  func(string, string) error
 	chtimes func(string, time.Time, time.Time) error
+	read    func(string) ([]byte, error)
 }
 
-var realProbeOps = probeOps{os.OpenFile, os.Rename, os.Chtimes}
+var realProbeOps = probeOps{os.OpenFile, os.Rename, os.Chtimes, os.ReadFile}
 
 var gvfsRun = regexp.MustCompile(`^/run/user/[0-9]+/gvfs(/|$)`)
 
@@ -65,8 +66,10 @@ const gvfsMessage = "This is GNOME's Google Drive view, which is not a normal fo
 // Antivirus and indexers briefly lock a file just written; retry before failing.
 var probeRetryDelay = 150 * time.Millisecond
 
-func retry3(ok func() bool) bool {
-	for i := 0; i < 3; i++ {
+func retry3(ok func() bool) bool { return retry(3, ok) }
+
+func retry(n int, ok func() bool) bool {
+	for i := 0; i < n; i++ {
 		if i > 0 {
 			time.Sleep(probeRetryDelay)
 		}
@@ -121,11 +124,10 @@ func probeFolder(dir string, ops probeOps) error {
 	if err := os.WriteFile(b, []byte("second"), 0o600); err != nil {
 		return err
 	}
-	if !retry3(func() bool {
-		if ops.rename(b, a) != nil {
-			return false
-		}
-		got, err := os.ReadFile(a)
+	// Rename until it works (a sync client or antivirus may hold a), then read until the
+	// new bytes show (a FUSE or File Provider cache may serve the old ones): about 1 s.
+	if !retry(5, func() bool { return ops.rename(b, a) == nil }) || !retry3(func() bool {
+		got, err := ops.read(a)
 		return err == nil && bytes.Equal(got, []byte("second"))
 	}) {
 		return problem("this folder cannot replace a file by renaming")

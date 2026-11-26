@@ -96,6 +96,41 @@ func TestProbeRetriesTransientFailure(t *testing.T) {
 	}
 }
 
+// A sync client or antivirus can hold the file for longer than three tries.
+func TestProbeWaitsForAHeldRename(t *testing.T) {
+	ops := realProbeOps
+	n := 0
+	ops.rename = func(a, b string) error {
+		if n++; n < 5 {
+			return errors.New("locked")
+		}
+		return os.Rename(a, b)
+	}
+	if err := probeFolder(t.TempDir(), ops); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A FUSE or File Provider cache can serve the old bytes just after a rename that
+// worked: read again, never rename a file that is gone.
+func TestProbeRereadsAStaleReadAfterRename(t *testing.T) {
+	ops := realProbeOps
+	renames, reads := 0, 0
+	ops.rename = func(a, b string) error { renames++; return os.Rename(a, b) }
+	ops.read = func(p string) ([]byte, error) {
+		if reads++; reads < 3 {
+			return []byte("first"), nil
+		}
+		return os.ReadFile(p)
+	}
+	if err := probeFolder(t.TempDir(), ops); err != nil {
+		t.Fatal(err)
+	}
+	if renames != 1 {
+		t.Errorf("renamed %d times, want once", renames)
+	}
+}
+
 func TestProbeStaleCleanup(t *testing.T) {
 	d := t.TempDir()
 	old := filepath.Join(d, ".cs-probe-old")

@@ -20,6 +20,10 @@ All notable changes to this project are documented here. This project follows
   last `@` was taken for a password, so `https://host/o/100%/r@v2.git` and another
   remote ending `@v2.git` both became `v2`. Only an `@` before a host and a `/` now ends
   the credentials.
+- **`config set-destination` and `install --archive` could refuse a working sync folder**
+  as one that "cannot replace a file by renaming", when a sync client or antivirus held
+  the test file for more than about 0.3 s, or a cached read showed the old bytes just
+  after the rename. The check now waits about a second and reads again.
 
 ## [0.7.0] - 2026-11-26
 
