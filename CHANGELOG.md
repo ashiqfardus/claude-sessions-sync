@@ -54,6 +54,8 @@ All notable changes to this project are documented here. This project follows
   gives the same text.
 - **The archive's index dated a conversation whose zip could not be read by when its
   page was last written,** not by when it was last used. It is now dated by its zip.
+- **`push --dry-run` left out conversations a real push zips** when they were archived
+  from this computer and their project folder is gone from it. It now lists them too.
 
 ## [0.7.0] - 2026-11-26
 

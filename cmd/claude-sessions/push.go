@@ -490,6 +490,8 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 	res.Copied += pc
 	res.Unchanged += pu
 
+	// Read only: in a dry run too, so it zips in the buckets a real run does.
+	sessions = keepArchivedHistory(dest, &shard, sessions)
 	if !dryRun {
 		// Two computers under one name overwrite each other's shard. Said, never refused:
 		// a reinstall here has a new ID too, and must still back up.
@@ -497,7 +499,6 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 			logf("WARN: "+nameClashMessage, shard.Machine)
 		}
 		shard.LastPush = time.Now().UTC().Truncate(time.Hour)
-		sessions = keepArchivedHistory(dest, &shard, sessions)
 		if err := writeManifest(dest, shard); err != nil {
 			logf("ERROR: manifest: %v", err)
 			return pushResult{}, err

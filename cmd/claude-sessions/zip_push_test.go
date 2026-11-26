@@ -276,6 +276,21 @@ func TestDryRunZipsNothing(t *testing.T) {
 	}
 }
 
+// A project archived from here whose local folder is gone is still this computer's,
+// and zipped: the dry run lists it as the real run zips it.
+func TestDryRunListsWhatARealRunZips(t *testing.T) {
+	archive, mac, repo := pushedSession(t)
+	ageSession(t, mac, repo, 31*day)
+	if err := os.RemoveAll(filepath.Dir(mac.session(repo))); err != nil {
+		t.Fatal(err)
+	}
+	if out := mac.run(t, "push", "--no-html", "--dry-run"); !strings.Contains(out, "would zip "+claude.Slug(repo)+"/"+forkSession) {
+		t.Errorf("the dry run does not list the session archived from here:\n%s", out)
+	}
+	mac.run(t, "push", "--no-html")
+	onlyZip(t, archiveBucket(archive, repo))
+}
+
 // A run killed while Zip deleted the loose files left a folder file beside the zip: the
 // next push unzips and zips again, so the bucket holds the zip alone, with that file.
 func TestPushZipsALeftoverBesideItsZip(t *testing.T) {
