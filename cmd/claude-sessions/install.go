@@ -24,6 +24,7 @@ var (
 	uninstallSweep    = hostagent.Uninstall
 	legacySweep       = hostagent.LegacySweep
 	removeLegacySweep = hostagent.RemoveLegacySweep
+	executable        = os.Executable // which copy install runs as, faked by tests
 )
 
 func cmdInstall(args []string) error {
@@ -114,11 +115,14 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 	// from - a build directory, a download folder, or the archive itself. A copy under
 	// the Claude directory keeps the end of every session independent of the sync
 	// client being mounted.
-	binary, err := installBinary(root)
+	binary, note, err := installBinary(root)
 	if err != nil {
 		return res, err
 	}
-	fmt.Fprintf(s.Out, "  binary    %s\n", binary)
+	if note != "" {
+		note = " (" + note + ")"
+	}
+	fmt.Fprintf(s.Out, "  binary    %s%s\n", binary, note)
 	res.Binary = binary
 
 	replaced, err := claude.InstallHook(claude.SettingsPath(root), binary, !o.KeepLegacy)
@@ -310,15 +314,16 @@ func saveSweepEvery(root string, every int) error {
 	return archive.SaveConfig(root, cfg)
 }
 
-// installBinary copies the running executable into <claude-root>/bin.
-func installBinary(root string) (string, error) {
-	self, err := os.Executable()
+// installBinary copies the running executable into <claude-root>/bin, or the console
+// program beside it when this is the windowless copy. note says why it copied nothing.
+func installBinary(root string) (target, note string, err error) {
+	self, err := executable()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	self, err = filepath.EvalSymlinks(self)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	name := "claude-sessions"
@@ -327,25 +332,39 @@ func installBinary(root string) (string, error) {
 	}
 	binDir := filepath.Join(root, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return "", err
+		return "", "", err
 	}
-	target := filepath.Join(binDir, name)
+	target = filepath.Join(binDir, name)
+
+	// The windowless copy (Windows only: a panel opened from the shortcut runs it) must
+	// never land where the hooks run a console program: the console one beside it is
+	// copied instead, and installWindowless then makes the windowless copy from that.
+	if strings.EqualFold(filepath.Base(self), hostagent.WindowlessName) {
+		console := filepath.Join(filepath.Dir(self), name)
+		if st, err := os.Stat(console); err == nil && st.Mode().IsRegular() {
+			self = console
+		} else if _, err := os.Stat(target); err == nil {
+			return target, "not updated: this is the windowless copy, and " + name + " is not beside it", nil
+		} else {
+			return "", "", fmt.Errorf("%s is the windowless copy, and %s is not beside it: run claude-sessions install from a terminal", self, name)
+		}
+	}
 
 	// Already running from the install location: nothing to copy, and copying a file
 	// onto itself would truncate it. Compared as files, not strings: an 8.3 short path
 	// (ADMINI~1), a symlinked root or different separators name the same file.
 	if selfInfo, err := os.Stat(self); err == nil {
 		if targetInfo, err := os.Stat(target); err == nil && os.SameFile(selfInfo, targetInfo) {
-			return target, nil
+			return target, "", nil
 		}
 	}
 
 	in, err := os.Open(self)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer in.Close()
-	return target, replaceExecutable(target, in)
+	return target, "", replaceExecutable(target, in)
 }
 
 // installWindowless writes, next to binary, the GUI-subsystem copy the Windows sweep

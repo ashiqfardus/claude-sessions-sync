@@ -20,7 +20,9 @@ const (
 	subsystemConsole = 3
 )
 
-// Windowless returns a copy of a Windows executable with its PE subsystem set to GUI.
+// Windowless returns a copy of a Windows console executable with its PE subsystem set
+// to GUI. An input already GUI is refused: it is the windowless copy taken for the
+// console program, which the hooks must keep running.
 //
 // Only the two-byte Subsystem field of the optional header changes. It sits at the
 // same offset in PE32 and PE32+ headers. The header checksum is not updated because
@@ -36,9 +38,7 @@ func Windowless(exe []byte) ([]byte, error) {
 	if pe < 0 || field+2 > len(exe) || string(exe[pe:pe+4]) != "PE\x00\x00" {
 		return nil, bad
 	}
-	switch binary.LittleEndian.Uint16(exe[field:]) {
-	case subsystemConsole, subsystemGUI:
-	default:
+	if binary.LittleEndian.Uint16(exe[field:]) != subsystemConsole {
 		return nil, bad
 	}
 	out := append([]byte(nil), exe...)

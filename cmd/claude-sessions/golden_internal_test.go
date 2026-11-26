@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -216,4 +217,45 @@ func TestInstallShortcutFailureDoesNotFailInstall(t *testing.T) {
 	if err != nil || ures.Shortcut != "FAILED: busy" || !strings.Contains(buf.String(), "  shortcut  FAILED: busy\n") {
 		t.Errorf("uninstall %+v err %v\n%s", ures, err, buf.String())
 	}
+}
+
+// Run as the windowless copy, which the Windows shortcut opens the panel with, install
+// copies the console program beside it: the hooks must never run a GUI-subsystem build.
+// With none beside it, it copies nothing, and refuses when none is installed either.
+func TestInstallBinaryFromTheWindowlessCopy(t *testing.T) {
+	name := "claude-sessions"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dir, root := t.TempDir(), t.TempDir()
+	self := filepath.Join(dir, hostagent.WindowlessName)
+	writeFile(t, self, "windowless")
+	hook(t, &executable, func() (string, error) { return self, nil })
+	target := filepath.Join(root, "bin", name)
+	check := func(step, want string, wantNote bool) {
+		t.Helper()
+		got, note, err := installBinary(root)
+		if err != nil || got != target || (note != "") != wantNote {
+			t.Fatalf("%s: %q %q %v", step, got, note, err)
+		}
+		if body := mustReadFile(t, target); body != want {
+			t.Errorf("%s: %s holds %q, want %q", step, name, body, want)
+		}
+	}
+
+	if _, _, err := installBinary(root); err == nil {
+		t.Error("none beside it and none installed: no error")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("none beside it: %s was written (%v)", target, err)
+	}
+	writeFile(t, target, "console, installed earlier")
+	check("none beside it", "console, installed earlier", true)
+	writeFile(t, filepath.Join(dir, name), "console")
+	check("the console program beside it", "console", false)
+
+	// The shortcut's own copy, in the install folder: the console one is already there.
+	self = filepath.Join(root, "bin", hostagent.WindowlessName)
+	writeFile(t, self, "windowless")
+	check("from the install folder", "console", false)
 }

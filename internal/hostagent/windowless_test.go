@@ -35,15 +35,17 @@ func TestWindowlessSetsGUISubsystem(t *testing.T) {
 	}
 }
 
-// Anything that is not a console or GUI PE is refused rather than patched blindly:
-// writing two bytes into an arbitrary file makes a broken sweep that looks installed.
+// Anything that is not a console PE is refused rather than patched blindly: writing
+// two bytes into an arbitrary file makes a broken sweep that looks installed, and a copy
+// already windowless taken for the console program puts it where the hooks run it.
 func TestWindowlessRejectsOtherFiles(t *testing.T) {
 	elf := append([]byte("\x7fELF"), make([]byte, 200)...)
 	truncated := fakePE(subsystemConsole)[:0x90]
 	native := fakePE(1)
 	badOffset := fakePE(subsystemConsole)
 	binary.LittleEndian.PutUint32(badOffset[0x3C:], 0xFFFFFFF0)
-	for name, b := range map[string][]byte{"elf": elf, "truncated": truncated, "native": native, "offset": badOffset, "empty": nil} {
+	for name, b := range map[string][]byte{"elf": elf, "truncated": truncated, "native": native, "offset": badOffset, "empty": nil,
+		"already windowless": fakePE(subsystemGUI)} {
 		if _, err := Windowless(b); err == nil {
 			t.Errorf("%s: patched, want an error", name)
 		}
