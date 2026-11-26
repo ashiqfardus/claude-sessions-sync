@@ -288,35 +288,38 @@ func TestRouterMatchesTheShell(t *testing.T) {
 	}
 }
 
-// Each screen module registers the name the router imports it by (Ruling P31), and every
-// slot('<name>') it reads is a data-slot in its own template: a missing one stops the
-// screen with only the generic sentence, and index.html is merged by hand.
-func TestScreensRegisterTheirName(t *testing.T) {
+// The router imports js/<screen>.js on a screen's first visit and expects it to register
+// that same name (Ruling P31); a register call elsewhere would never be imported.
+func TestScreensRegister(t *testing.T) {
 	files := staticFiles(t)
 	m := regexp.MustCompile(`SCREENS\s*=\s*\[([^\]]*)\]`).FindStringSubmatch(files["static/js/app.js"])
 	if m == nil {
 		t.Fatal("app.js has no SCREENS list")
 	}
-	shell := files["static/index.html"]
+	routed := map[string]bool{}
 	for _, q := range regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(m[1], -1) {
-		name := q[1]
-		js, ok := files["static/js/"+name+".js"]
-		if !ok {
-			// shortcut: screens still being built (T19-T23) may be missing; make this an error once all have merged.
-			t.Logf("js/%s.js is not built yet", name)
+		routed[q[1]] = true
+	}
+	call := regexp.MustCompile(`\bregister\(\s*'([a-z]+)'`)
+	for p, s := range files {
+		if path.Ext(p) != ".js" || p == "static/js/app.js" {
 			continue
 		}
-		if !strings.Contains(js, "register('"+name+"',") {
-			t.Errorf("js/%s.js does not call register('%s', ...)", name, name)
-		}
-		tm := regexp.MustCompile(`(?s)<template id="t-` + name + `">(.*?)</template>`).FindStringSubmatch(shell)
-		if tm == nil {
-			continue // TestRouterMatchesTheShell reports it
-		}
-		for _, s := range regexp.MustCompile(`\bslot\('([a-z-]+)'\)`).FindAllStringSubmatch(js, -1) {
-			if !strings.Contains(tm[1], `data-slot="`+s[1]+`"`) {
-				t.Errorf("js/%s.js reads slot('%s'), which t-%s does not have", name, s[1], name)
+		for _, c := range call.FindAllStringSubmatch(s, -1) {
+			if !routed[c[1]] || p != "static/js/"+c[1]+".js" {
+				t.Errorf("%s registers %q, which the router never imports from there", p, c[1])
 			}
+		}
+	}
+	for name := range routed {
+		s, ok := files["static/js/"+name+".js"]
+		if !ok {
+			// shortcut: screens from Tasks 20-23 may not exist yet; make this an error once settings.js lands
+			t.Logf("js/%s.js is not written yet", name)
+			continue
+		}
+		if !strings.Contains(s, "register('"+name+"'") {
+			t.Errorf("js/%s.js does not register('%s', ...)", name, name)
 		}
 	}
 }
@@ -454,6 +457,39 @@ func TestHRefusesRemoteAttributes(t *testing.T) {
 	for _, want := range []string{"new URL(", "location.origin", "location.protocol", "endsWith('src')", "toLowerCase()"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js's URL gate lacks %s", want)
+		}
+	}
+}
+
+// Each screen module registers the name the router imports it by (Ruling P31), and every
+// slot('<name>') it reads is a data-slot in its own template: a missing one stops the
+// screen with only the generic sentence, and index.html is merged by hand.
+func TestScreensRegisterTheirName(t *testing.T) {
+	files := staticFiles(t)
+	m := regexp.MustCompile(`SCREENS\s*=\s*\[([^\]]*)\]`).FindStringSubmatch(files["static/js/app.js"])
+	if m == nil {
+		t.Fatal("app.js has no SCREENS list")
+	}
+	shell := files["static/index.html"]
+	for _, q := range regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(m[1], -1) {
+		name := q[1]
+		js, ok := files["static/js/"+name+".js"]
+		if !ok {
+			// shortcut: screens still being built (T19-T23) may be missing; make this an error once all have merged.
+			t.Logf("js/%s.js is not built yet", name)
+			continue
+		}
+		if !strings.Contains(js, "register('"+name+"',") {
+			t.Errorf("js/%s.js does not call register('%s', ...)", name, name)
+		}
+		tm := regexp.MustCompile(`(?s)<template id="t-` + name + `">(.*?)</template>`).FindStringSubmatch(shell)
+		if tm == nil {
+			continue // TestRouterMatchesTheShell reports it
+		}
+		for _, s := range regexp.MustCompile(`\bslot\('([a-z-]+)'\)`).FindAllStringSubmatch(js, -1) {
+			if !strings.Contains(tm[1], `data-slot="`+s[1]+`"`) {
+				t.Errorf("js/%s.js reads slot('%s'), which t-%s does not have", name, s[1], name)
+			}
 		}
 	}
 }

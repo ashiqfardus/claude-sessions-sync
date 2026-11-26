@@ -218,7 +218,11 @@ p.status{white-space:normal}
 .bar>.part-work{animation-delay:120ms}
 .bar>.part-other{animation-delay:200ms}
 .legend span span{display:inline}
-.activity-time{flex:0 0 68px}
+.activity-time{flex:0 0 112px} /* fits "Yesterday, 18:30" */
+.archive-size{min-height:38px} /* holds the card still until the size arrives */
+.archive-path,.computer-name,.would-copy>li{overflow-wrap:anywhere}
+.status.fail{color:var(--red)}
+.fail-row,.fail-row:hover{background:var(--red-soft)}
 
 /* Conversations */
 .search-field{flex:0 1 380px;min-width:220px}

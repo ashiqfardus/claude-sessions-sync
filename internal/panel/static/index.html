@@ -59,16 +59,16 @@
   <div class="cols">
     <section aria-labelledby="health-h" class="section rise stagger-2">
       <h2 id="health-h">Health</h2>
-      <ul class="panel rows" data-slot="health"></ul>
+      <ul class="panel rows" data-slot="health"><li class="muted">Checking…</li></ul>
     </section>
 
     <div class="stack gap-28 rise stagger-3">
       <section aria-labelledby="storage-h" class="section">
         <h2 id="storage-h">Storage</h2>
         <div class="panel pad stack">
-          <p data-slot="usage"></p>
-          <div class="bar" role="img" aria-label="Archive space by kind" data-slot="bar"><span class="part-conversations"></span><span class="part-work"></span><span class="part-other"></span></div>
-          <p class="legend num"><span><i class="part-conversations"></i><span>Conversations <span data-slot="conversations-size"></span></span></span><span><i class="part-work"></i><span>Work folders <span data-slot="work-size"></span></span></span><span><i class="part-other"></i><span>Other <span data-slot="other-size"></span></span></span></p>
+          <p data-slot="usage">Loading…</p>
+          <div class="bar" role="img" aria-label="Archive space by kind" data-slot="bar" hidden><span class="part-conversations"></span><span class="part-work"></span><span class="part-other"></span></div>
+          <p class="legend num" data-slot="legend" hidden><span><i class="part-conversations"></i><span>Conversations <span data-slot="conversations-size"></span></span></span><span><i class="part-work"></i><span>Work folders <span data-slot="work-size"></span></span></span><span><i class="part-other"></i><span>Other <span data-slot="other-size"></span></span></span></p>
           <p><span data-slot="saving"></span> <a href="#/storage" class="medium">Manage storage</a></p>
         </div>
       </section>
