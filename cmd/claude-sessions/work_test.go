@@ -1247,7 +1247,14 @@ func TestRepointExisting(t *testing.T) {
 	session := p.b.session(p.repo)
 	before := mustRead(t, session)
 
-	out := p.b.workRun(t, p.homeB, "import", "--no-plugins")
+	// A dry run writes nothing, so it speaks of the state the import would leave.
+	out := p.b.workRun(t, p.homeB, "import", "--no-plugins", "--dry-run")
+	if !strings.Contains(out, "after this import, 1 conversation(s) would still point at other machines' work folders; run claude-sessions import --repoint then") ||
+		strings.Contains(out, "here still point") {
+		t.Fatalf("dry run hint: %s", out)
+	}
+
+	out = p.b.workRun(t, p.homeB, "import", "--no-plugins")
 	if !strings.Contains(out, "1 conversation(s) here still point at other machines' work folders: run claude-sessions import --repoint") {
 		t.Fatalf("no hint: %s", out)
 	}

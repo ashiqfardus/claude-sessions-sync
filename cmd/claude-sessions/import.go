@@ -535,7 +535,11 @@ func runImport(s streams, o importOpts) (importResult, error) {
 			fmt.Fprintln(s.Out, n)
 		}
 	} else if len(workMoves) > 0 && s.Out != io.Discard { // it reads every conversation here, for a line of text alone
-		if n := countPointing(root, workMoves); n > 0 {
+		n := countPointing(root, workMoves)
+		switch {
+		case n > 0 && o.DryRun: // nothing is written yet: the state the import would leave
+			fmt.Fprintf(s.Out, "after this import, %d conversation(s) would still point at other machines' work folders; run claude-sessions import --repoint then\n", n)
+		case n > 0:
 			fmt.Fprintf(s.Out, "%d conversation(s) here still point at other machines' work folders: run claude-sessions import --repoint\n", n)
 		}
 	}
