@@ -724,7 +724,8 @@ func otherVersions(dest string) []string {
 	me := machineName()
 	var out []string
 	for name, s := range shards {
-		if strings.EqualFold(name, me) || s.ToolVersion == version {
+		// A release build says "0.7.0", a `go install` build "v0.7.0": the same release.
+		if strings.EqualFold(name, me) || strings.TrimPrefix(s.ToolVersion, "v") == strings.TrimPrefix(version, "v") {
 			continue
 		}
 		v := s.ToolVersion

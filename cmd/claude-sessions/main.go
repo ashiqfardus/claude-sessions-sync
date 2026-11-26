@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"strings"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
@@ -20,9 +21,10 @@ var version = "dev" // overwritten at release time by -X main.version
 func init() {
 	// `go install ...@v0.2.3` builds without the release ldflags, but does record the
 	// module version, so `version` and doctor --json can still say which build it is.
+	// Without its "v", as a release build prints it, so new shards agree across both.
 	if info, ok := debug.ReadBuildInfo(); ok && version == "dev" &&
 		info.Main.Version != "" && info.Main.Version != "(devel)" {
-		version = info.Main.Version
+		version = strings.TrimPrefix(info.Main.Version, "v")
 	}
 }
 

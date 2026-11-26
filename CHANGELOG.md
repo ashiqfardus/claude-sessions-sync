@@ -5,6 +5,12 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **`doctor` warned about mixed versions on computers running the same release.** A
+  release download says `0.7.0` and a `go install` build said `v0.7.0`, so `doctor` and
+  the panel's Health named the other computer. They now count as the same version, and
+  a `go install` build reports itself without the `v`.
+
 ## [0.7.0] - 2026-11-26
 
 There is no 0.6.0: its compression, deleting and several-computer work ship here with the
