@@ -1,0 +1,26 @@
+$ claude-sessions prune --claude-dir <CLAUDE> 33333333-3333-3333-3333-333333333333 --yes --json
+exit 0
+--- stdout
+{
+  "plan": {
+    "remove": [
+      {
+        "id": "33333333-3333-3333-3333-333333333333",
+        "project": "<HOME>/Documents/planning-notes/example-org/notes",
+        "buckets": [
+          "<HOME-SLUG>-Documents-planning-notes-example-org-notes"
+        ],
+        "lastAt": "2026-11-20T05:00:00Z",
+        "lastUuid": "u6",
+        "prompt": "turn u6",
+        "size": <SIZE>
+      }
+    ],
+    "kept": 0,
+    "holdouts": []
+  },
+  "deleted": 1,
+  "freed": <SIZE>,
+  "undone": []
+}
+--- stderr

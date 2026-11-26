@@ -1,0 +1,37 @@
+$ claude-sessions prune --claude-dir <CLAUDE> --older-than 30d --json
+exit 0
+--- stdout
+{
+  "plan": {
+    "remove": [
+      {
+        "id": "22222222-2222-2222-2222-222222222222",
+        "project": "<HOME>/Documents/GitHub/example-org/web-app",
+        "buckets": [
+          "<HOME-SLUG>-Documents-GitHub-example-org-web-app"
+        ],
+        "lastAt": "2026-08-30T09:00:00Z",
+        "lastUuid": "u5",
+        "prompt": "turn u4",
+        "size": <SIZE>
+      },
+      {
+        "id": "33333333-3333-3333-3333-333333333333",
+        "project": "<HOME>/Documents/planning-notes/example-org/notes",
+        "buckets": [
+          "<HOME-SLUG>-Documents-planning-notes-example-org-notes"
+        ],
+        "lastAt": "2026-08-30T09:00:00Z",
+        "lastUuid": "u6",
+        "prompt": "turn u6",
+        "size": <SIZE>
+      }
+    ],
+    "kept": 0,
+    "holdouts": []
+  },
+  "deleted": 0,
+  "freed": 0,
+  "undone": []
+}
+--- stderr

@@ -55,8 +55,9 @@ age rule wait until all of them have, and `doctor` names any they wait for.
   records the hour of the last full push, in UTC, and changes only when that hour does,
   so a sync app keeps no extra version of it per reply. A computer on an older version
   shows "-".
-- `pull --json` and `restore --json`; `import --json` also lists each computer's work
-  folders (`kind: "work"`) and each project's computer (`machine`).
+- `pull --json`, `restore --json`, `clean --json`, `prune --json` and `backup --json`;
+  `import --json` also lists each computer's work folders (`kind: "work"`) and each
+  project's computer (`machine`).
 - **`config`, `install` and `uninstall` take `--json`.** `config` prints the lines it
   would have printed, and for `show` the settings with their defaults filled in.
   `install` saves the sweep's interval in `session-sync.json` (`sweepEvery`, -1 with

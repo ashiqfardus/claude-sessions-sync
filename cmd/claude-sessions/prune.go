@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,22 +30,23 @@ type pruneSel struct {
 
 // pruneItem is one conversation prune deletes: every archived copy of it.
 type pruneItem struct {
-	ID, Project string
-	Buckets     []string
-	LastAt      time.Time // the newest copy's last turn
-	LastUUID    string    // that turn's uuid, "" for none; while listed, also "" when that copy is zipped: only the check before recording reads a zip for it
-	Prompt      string
-	Size        int64
-	dated       bool    // every copy had a time when listed
-	sizes       []int64 // every copy's size when dated, in the order read: a turn added grows one
+	ID       string    `json:"id"`
+	Project  string    `json:"project"`
+	Buckets  []string  `json:"buckets"`
+	LastAt   time.Time `json:"lastAt"`             // the newest copy's last turn
+	LastUUID string    `json:"lastUuid,omitempty"` // that turn's uuid, "" for none; while listed, also "" when that copy is zipped: only the check before recording reads a zip for it
+	Prompt   string    `json:"prompt"`
+	Size     int64     `json:"size"`
+	dated    bool      // every copy had a time when listed
+	sizes    []int64   // every copy's size when dated, in the order read: a turn added grows one
 }
 
 type prunePlan struct {
-	Remove   []pruneItem
-	Kept     int                        // matched, but on the keep list
-	Holdouts []string                   // machines whose build would upload them again
-	Unread   string                     // why a manifest could not be read, if one could not
-	Matched  map[string]archive.Project // the buckets --project named
+	Remove   []pruneItem                `json:"remove"`
+	Kept     int                        `json:"kept"`              // matched, but on the keep list
+	Holdouts []string                   `json:"holdouts"`          // machines whose build would upload them again
+	Unread   string                     `json:"unread,omitempty"`  // why a manifest could not be read, if one could not
+	Matched  map[string]archive.Project `json:"matched,omitempty"` // the buckets --project named
 
 	// What applyPrune dates each conversation by again, right before deleting it.
 	cutoff time.Time           // zero without --older-than
@@ -96,94 +98,139 @@ func cmdPrune(args []string) error {
 	fs.Var(&projects, "project", "only this project's conversations, by folder name or path (repeatable)")
 	yes := fs.Bool("yes", false, "delete them; without it, only list what would be deleted")
 	undo := fs.Bool("undo", false, "take the conversations given off the deleted list")
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := parseFlags(fs, args, true); err != nil {
 		return err
 	}
-	sel := pruneSel{Projects: projects}
-	for _, id := range fs.Args() {
+	o := pruneOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, OlderThan: *older, Projects: projects, IDs: fs.Args(), Yes: *yes}
+	if *undo {
+		o.Undo, o.IDs = append([]string{}, o.IDs...), nil // given, even empty
+	}
+	s := stdStreams()
+	if *asJSON {
+		s = jsonStreams()
+	}
+	res, err := runPrune(s, o)
+	if err != nil || !*asJSON {
+		return err
+	}
+	return encodeJSON(os.Stdout, res)
+}
+
+// pruneOpts are prune's flags. Undo, when not nil, holds the conversations to take off
+// the deleted list, and IDs the ones to delete otherwise; an empty Undo is a usage error.
+type pruneOpts struct {
+	ClaudeDir, ArchiveDir string
+	OlderThan             string // as <N>d; "" for none
+	Projects, IDs, Undo   []string
+	Yes                   bool
+}
+
+type pruneResult struct {
+	Plan    prunePlan `json:"plan"`
+	Deleted int       `json:"deleted"`
+	Freed   int64     `json:"freed"`
+	Undone  []string  `json:"undone"` // taken off the deleted list
+}
+
+// runPrune lists the conversations o chooses, on s, and with o.Yes deletes them; with
+// o.Undo it takes those off the deleted list instead.
+func runPrune(s streams, o pruneOpts) (pruneResult, error) {
+	undo, ids := o.Undo != nil, o.IDs
+	if undo {
+		ids = o.Undo
+	}
+	sel := pruneSel{Projects: slices.Clone(o.Projects)}
+	for _, id := range ids {
 		if !claude.IsSessionID(id) {
-			return fmt.Errorf("%q is not a conversation id (a project goes with --project)", id)
+			return pruneResult{}, fmt.Errorf("%q is not a conversation id (a project goes with --project)", id)
 		}
 		sel.IDs = append(sel.IDs, strings.ToLower(id))
 	}
-	if *older != "" {
-		n, err := strconv.Atoi(strings.TrimSuffix(*older, "d"))
-		if !strings.HasSuffix(*older, "d") || err != nil || n < 1 || n > archive.MaxKeepDays {
-			return fmt.Errorf("--older-than takes a number of days from 1 to %d, such as 365d", archive.MaxKeepDays)
+	if o.OlderThan != "" {
+		n, err := strconv.Atoi(strings.TrimSuffix(o.OlderThan, "d"))
+		if !strings.HasSuffix(o.OlderThan, "d") || err != nil || n < 1 || n > archive.MaxKeepDays {
+			return pruneResult{}, fmt.Errorf("--older-than takes a number of days from 1 to %d, such as 365d", archive.MaxKeepDays)
 		}
 		sel.OlderThan = n
 	}
 	switch {
-	case *undo && (sel.OlderThan > 0 || len(sel.Projects) > 0 || len(sel.IDs) == 0):
-		return fmt.Errorf("usage: claude-sessions prune --undo <conversation id>...")
-	case !*undo && sel.OlderThan == 0 && len(sel.Projects) == 0 && len(sel.IDs) == 0:
-		return errNoSelector
+	case undo && (sel.OlderThan > 0 || len(sel.Projects) > 0 || len(o.IDs) > 0 || len(sel.IDs) == 0):
+		return pruneResult{}, fmt.Errorf("usage: claude-sessions prune --undo <conversation id>...")
+	case !undo && sel.OlderThan == 0 && len(sel.Projects) == 0 && len(sel.IDs) == 0:
+		return pruneResult{}, errNoSelector
 	}
 	for i, p := range sel.Projects { // read as config keep reads it
 		p = expandHome(p)
 		if runtime.GOOS == "windows" && gitBashRewritten(p) {
-			return gitBashError(p)
+			return pruneResult{}, gitBashError(p)
 		}
 		if p == "." || p == ".." || !rewrite.AbsoluteAnywhere(p) && strings.ContainsAny(p, `/\`) {
 			abs, err := filepath.Abs(p)
 			if err != nil {
-				return err
+				return pruneResult{}, err
 			}
 			p = abs
 		}
 		sel.Projects[i] = p
 	}
 
-	root, _, err := resolveRoot(*claudeDir)
+	root, _, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return pruneResult{}, err
 	}
-	dest, _, err := archive.ResolveDestination(root, *archiveDir)
+	dest, _, err := archive.ResolveDestination(root, o.ArchiveDir)
 	if err != nil {
-		return err
+		return pruneResult{}, err
 	}
 	if dest == "" {
-		return fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
+		return pruneResult{}, fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
 	}
 	if err := archive.ValidateDestination(root, dest); err != nil {
-		return err
+		return pruneResult{}, err
 	}
 	if !archive.IsRealDir(archive.ProjectsDir(dest)) {
-		return fmt.Errorf("%s holds no archived sessions", dest)
+		return pruneResult{}, fmt.Errorf("%s holds no archived sessions", dest)
 	}
-	if *yes || *undo {
+	if o.Yes || undo {
 		// This machine's push must not archive a copy, or write the list, meanwhile.
 		lock, err := archive.AcquireLockWait(root, time.Minute)
 		if err != nil {
-			return err
+			return pruneResult{}, err
 		}
 		defer lock.Release()
 	}
-	if *undo {
-		return undoPrune(dest, sel.IDs, time.Now())
+	res := pruneResult{Plan: prunePlan{Remove: []pruneItem{}, Holdouts: []string{}}, Undone: []string{}}
+	if undo {
+		undone, err := undoPrune(s.Out, dest, sel.IDs, time.Now())
+		res.Undone = nonNil(undone)
+		return res, err
 	}
 
 	ret, err := archive.LoadRetention(dest)
 	if err != nil {
-		return err
+		return pruneResult{}, err
 	}
 	plan, err := planPrune(root, dest, sel, ret, time.Now())
 	if err != nil {
-		return err
+		return pruneResult{}, err
 	}
-	printPrunePlan(plan, *yes)
-	if !*yes || len(plan.Remove) == 0 {
-		return nil
+	plan.Remove, plan.Holdouts = nonNil(plan.Remove), nonNil(plan.Holdouts)
+	res.Plan = plan
+	printPrunePlan(s.Out, plan, o.Yes)
+	if !o.Yes || len(plan.Remove) == 0 {
+		return res, nil
 	}
-	n, freed, err := applyPrune(dest, plan, time.Now(), func(it pruneItem, err error) {
-		fmt.Fprintf(os.Stderr, "  x %s: %v\n", it.ID, err)
+	// applyPrune sets each one's exact date in plan.Remove, which res.Plan shares.
+	res.Deleted, res.Freed, err = applyPrune(dest, plan, time.Now(), func(it pruneItem, err error) {
+		fmt.Fprintf(s.Err, "  x %s: %v\n", it.ID, err)
 	})
-	if n > 0 {
-		fmt.Printf("\nDeleted %d conversation(s), %s.\n", n, mb(freed))
-		fmt.Println("A sync client may keep deleted files in its trash, still counting toward your storage -\n" +
+	if res.Deleted > 0 {
+		fmt.Fprintf(s.Out, "\nDeleted %d conversation(s), %s.\n", res.Deleted, mb(res.Freed))
+		fmt.Fprintln(s.Out, "A sync client may keep deleted files in its trash, still counting toward your storage -\n"+
 			"Google Drive does, for 30 days. Empty it to get the space back now.")
 	}
-	return err
+	return res, err
 }
 
 // planPrune finds the archived conversations sel names, leaving out those on the keep
@@ -890,35 +937,38 @@ func othersClock(dest string) (bound time.Time, machine string, pushed time.Time
 	return pushed.Add(25 * time.Hour), machine, pushed
 }
 
-func undoPrune(dest string, ids []string, now time.Time) error {
+// undoPrune takes ids off the deleted list, says so on w, and returns those it took off.
+func undoPrune(w io.Writer, dest string, ids []string, now time.Time) ([]string, error) {
 	d, err := archive.LoadDeleted(dest)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var add []archive.DeletedEntry
 	for _, id := range ids {
 		if e, ok := d[id]; !ok || e.Undone {
-			fmt.Printf("%s is not on the deleted list\n", id)
+			fmt.Fprintf(w, "%s is not on the deleted list\n", id)
 			continue
 		}
 		add = append(add, archive.DeletedEntry{ID: id, Buckets: d[id].Buckets, DeletedAt: after(now, d, id), Undone: true})
 	}
 	if len(add) == 0 {
-		return nil
+		return nil, nil
 	}
 	if err := archive.RecordDeleted(dest, machineName(), add); err != nil {
-		return err
+		return nil, err
 	}
+	var undone []string
 	for _, e := range add {
-		fmt.Printf("Off the deleted list: %s\n", e.ID)
+		fmt.Fprintf(w, "Off the deleted list: %s\n", e.ID)
+		undone = append(undone, e.ID)
 	}
-	fmt.Println("Any computer that still has it uploads it on its next push.")
-	return nil
+	fmt.Fprintln(w, "Any computer that still has it uploads it on its next push.")
+	return undone, nil
 }
 
-func printPrunePlan(plan prunePlan, yes bool) {
+func printPrunePlan(w io.Writer, plan prunePlan, yes bool) {
 	if len(plan.Matched) > 0 {
-		fmt.Println("--project matched:")
+		fmt.Fprintln(w, "--project matched:")
 		buckets := make([]string, 0, len(plan.Matched))
 		for b := range plan.Matched {
 			buckets = append(buckets, b)
@@ -926,9 +976,9 @@ func printPrunePlan(plan prunePlan, yes bool) {
 		sort.Strings(buckets)
 		for _, b := range buckets {
 			p := plan.Matched[b]
-			fmt.Printf("  %s  %s  %s\n", printable(b), printable(p.Owner()), printable(p.Path))
+			fmt.Fprintf(w, "  %s  %s  %s\n", printable(b), printable(p.Owner()), printable(p.Path))
 		}
-		fmt.Println()
+		fmt.Fprintln(w)
 	}
 	var total int64
 	for _, it := range plan.Remove {
@@ -940,27 +990,27 @@ func printPrunePlan(plan prunePlan, yes bool) {
 		if len(prompt) > 60 {
 			prompt = append(prompt[:57], []rune("...")...)
 		}
-		fmt.Printf("  %-40s  %s  %9s  %s\n", shorten(printable(it.Project), 40), date, mb(it.Size), string(prompt))
+		fmt.Fprintf(w, "  %-40s  %s  %9s  %s\n", shorten(printable(it.Project), 40), date, mb(it.Size), string(prompt))
 		total += it.Size
 	}
 	if len(plan.Remove) == 0 {
-		fmt.Println("No archived conversation to delete.")
+		fmt.Fprintln(w, "No archived conversation to delete.")
 	} else {
 		verb := "Would delete"
 		if yes && plan.Unread == "" && len(plan.Holdouts) == 0 {
 			verb = "Deleting"
 		}
-		fmt.Printf("%s %d conversation(s), %s: every copy in the archive.\n", verb, len(plan.Remove), mb(total))
+		fmt.Fprintf(w, "%s %d conversation(s), %s: every copy in the archive.\n", verb, len(plan.Remove), mb(total))
 	}
-	fmt.Printf("%d kept (on the keep list)\n", plan.Kept)
+	fmt.Fprintf(w, "%d kept (on the keep list)\n", plan.Kept)
 	if yes || len(plan.Remove) == 0 {
 		return
 	}
 	switch {
 	case plan.Unread != "":
-		fmt.Printf("--yes would delete nothing: %s.\n", plan.Unread)
+		fmt.Fprintf(w, "--yes would delete nothing: %s.\n", plan.Unread)
 	case len(plan.Holdouts) > 0:
-		fmt.Printf("--yes would delete nothing: %s\n", holdoutRefusal(plan.Holdouts))
+		fmt.Fprintf(w, "--yes would delete nothing: %s\n", holdoutRefusal(plan.Holdouts))
 	}
-	fmt.Println("Run with --yes to delete them")
+	fmt.Fprintln(w, "Run with --yes to delete them")
 }

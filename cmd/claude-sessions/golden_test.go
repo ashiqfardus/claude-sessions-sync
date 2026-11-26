@@ -316,6 +316,10 @@ var backupMasks = []mask{
 	{`(?m)^(Wrote .*\.zip \()[0-9.]+[BKM]\)$`, "${1}<SIZE>)"},
 }
 
+// sizeMasks hide a size in bytes other than 0: a copy's page holds the temp folder's
+// path, whose length differs from run to run.
+var sizeMasks = []mask{{`("(size|freed)": )[1-9]\d*`, "${1}<SIZE>"}}
+
 func TestGoldenChanging(t *testing.T) {
 	// pushed runs args on goldenFixture, unpushed on it before its push.
 	pushed := func(args ...string) func(*testing.T) string {
@@ -394,9 +398,17 @@ func TestGoldenChanging(t *testing.T) {
 		// LAP-2's copy holds LAP-1's in whole.
 		{"clean", func(t *testing.T) string { return runGolden(t, goldenTwoCopies(t), "clean") }, nil},
 		{"clean-yes", func(t *testing.T) string { return runGolden(t, goldenTwoCopies(t), "clean", "--yes") }, nil},
+		{"clean-json", func(t *testing.T) string { return runGolden(t, goldenTwoCopies(t), "clean", "--json") }, sizeMasks},
+		{"clean-yes-json", func(t *testing.T) string { return runGolden(t, goldenTwoCopies(t), "clean", "--yes", "--json") }, sizeMasks},
 
 		{"prune-list", func(t *testing.T) string { return runGolden(t, goldenAged(t), "prune", "--older-than", "30d") }, nil},
+		{"prune-list-json", func(t *testing.T) string {
+			return runGolden(t, goldenAged(t), "prune", "--older-than", "30d", "--json")
+		}, sizeMasks},
 		{"prune-yes", func(t *testing.T) string { return runGolden(t, goldenFixture(t), "prune", goldenNotes, "--yes") }, nil},
+		{"prune-yes-json", func(t *testing.T) string {
+			return runGolden(t, goldenFixture(t), "prune", goldenNotes, "--yes", "--json")
+		}, sizeMasks},
 		{"prune-undo", func(t *testing.T) string {
 			e := goldenFixture(t)
 			goldenStep(t, e, "prune", goldenNotes, "--yes")
@@ -407,6 +419,10 @@ func TestGoldenChanging(t *testing.T) {
 		{"backup-dry-run", func(t *testing.T) string {
 			e := goldenFixture(t)
 			return runGolden(t, e, "backup", "--out", filepath.Join(e.home, "backups"), "--dry-run")
+		}, backupMasks},
+		{"backup-dry-run-json", func(t *testing.T) string {
+			e := goldenFixture(t)
+			return runGolden(t, e, "backup", "--out", filepath.Join(e.home, "backups"), "--dry-run", "--json")
 		}, backupMasks},
 		{"backup", func(t *testing.T) string {
 			e := goldenFixture(t)

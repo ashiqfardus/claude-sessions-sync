@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,7 +68,7 @@ func TestCleanLeavesASessionWhoseBucketIsNamedTwice(t *testing.T) {
 		writeFile(t, planted, `{"type":"user","uuid":"u1"}`+"\n"+`{"type":"assistant","uuid":"m1"}`+"\n"+`{"type":"assistant","uuid":"zz"}`+"\n")
 		writeFile(t, filepath.Join(archive.ManifestDir(dest), "M.json"), `{"machine":"M","skipsHeld":true,"projects":{"B":{"path":"/x"}}}`)
 
-		if plan := planClean(dest, false); len(plan.Remove) > 0 {
+		if plan := planClean(dest, io.Discard); len(plan.Remove) > 0 {
 			t.Errorf("%s/%s: clean would delete %+v", twin.bucket, twin.id, plan.Remove)
 		}
 	}

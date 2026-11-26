@@ -38,28 +38,55 @@ func cmdBackup(args []string) error {
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	out := fs.String("out", "", "folder to write the zip into (default ~/claude-backups)")
 	dryRun := fs.Bool("dry-run", false, "report what would be backed up without writing")
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
-
-	root, _, err := resolveRoot(*claudeDir)
-	if err != nil {
+	s := stdStreams()
+	if *asJSON {
+		s = jsonStreams()
+	}
+	res, err := runBackup(s, backupOpts{ClaudeDir: *claudeDir, Out: *out, DryRun: *dryRun})
+	if err != nil || !*asJSON {
 		return err
 	}
+	return encodeJSON(os.Stdout, res)
+}
+
+type backupOpts struct {
+	ClaudeDir, Out string
+	DryRun         bool
+}
+
+type backupResult struct {
+	Source      string `json:"source"`
+	Target      string `json:"target"`
+	Files       int    `json:"files"`
+	Transcripts int    `json:"transcripts"`
+	Buckets     int    `json:"buckets"`
+	DryRun      bool   `json:"dryRun"`
+}
+
+// runBackup zips the profile into o.Out, or with o.DryRun only says what it would hold.
+func runBackup(s streams, o backupOpts) (backupResult, error) {
+	root, _, err := resolveRoot(o.ClaudeDir)
+	if err != nil {
+		return backupResult{}, err
+	}
 	if st, err := os.Stat(root); err != nil || !st.IsDir() {
-		return fmt.Errorf("no Claude profile at %s", root)
+		return backupResult{}, fmt.Errorf("no Claude profile at %s", root)
 	}
 
-	dir := *out
+	dir := o.Out
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return err
+			return backupResult{}, err
 		}
 		dir = filepath.Join(home, "claude-backups")
 	}
 	if abs, err := filepath.Abs(dir); err == nil && archive.ValidateDestination(root, abs) != nil {
-		return fmt.Errorf("%s is inside the Claude profile: the backup would contain itself", abs)
+		return backupResult{}, fmt.Errorf("%s is inside the Claude profile: the backup would contain itself", abs)
 	}
 
 	files := backupSet(root)
@@ -71,35 +98,36 @@ func cmdBackup(args []string) error {
 
 	name := fmt.Sprintf("claude-backup-%s-%s.zip", machineName(), time.Now().Format("20060102-150405"))
 	target := filepath.Join(dir, name)
-	fmt.Printf("source  %s\ntarget  %s\n\n%d file(s), %d transcript(s) in %d project bucket(s)\n",
+	res := backupResult{Source: root, Target: target, Files: len(files), Transcripts: transcripts, Buckets: len(buckets), DryRun: o.DryRun}
+	fmt.Fprintf(s.Out, "source  %s\ntarget  %s\n\n%d file(s), %d transcript(s) in %d project bucket(s)\n",
 		root, target, len(files), transcripts, len(buckets))
 
 	// The failure this command exists to prevent: a "backup" that captured memory and
 	// settings but not one conversation, discovered only after the machine is gone.
 	if transcripts == 0 {
-		fmt.Fprintf(os.Stderr, "\nWARNING: no session transcripts found under %s.\n"+
+		fmt.Fprintf(s.Err, "\nWARNING: no session transcripts found under %s.\n"+
 			"This backup holds NO conversation history. Check --claude-dir and CLAUDE_CONFIG_DIR.\n",
 			claude.ProjectsDir(root))
 	}
-	if *dryRun {
-		return nil
+	if o.DryRun {
+		return res, nil
 	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return backupResult{}, err
 	}
 	if err := writeBackup(root, target, files, manifestText(root, buckets, transcripts)); err != nil {
-		return err
+		return backupResult{}, err
 	}
 	if info, err := os.Stat(target); err == nil {
-		fmt.Printf("\nWrote %s (%s)\n", target, humanSize(info.Size()))
+		fmt.Fprintf(s.Out, "\nWrote %s (%s)\n", target, humanSize(info.Size()))
 	}
 	// The zip has the archive's layout (projects/<bucket>/...), and import reads a
 	// project's path from its transcripts when there is no manifest - so it takes the
 	// whole backup at once, on any machine, rather than one project by hand.
-	fmt.Println("To bring it back, unzip it anywhere and run:")
-	fmt.Println("  claude-sessions import --archive <unzipped folder>")
-	return nil
+	fmt.Fprintln(s.Out, "To bring it back, unzip it anywhere and run:")
+	fmt.Fprintln(s.Out, "  claude-sessions import --archive <unzipped folder>")
+	return res, nil
 }
 
 // backupSet lists every file to include, relative to root, with forward slashes.

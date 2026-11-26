@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -22,90 +23,120 @@ func cmdClean(args []string) error {
 	claudeDir := fs.String("claude-dir", "", "override $CLAUDE_CONFIG_DIR / ~/.claude")
 	archiveDir := fs.String("archive", "", "override the synced destination folder")
 	yes := fs.Bool("yes", false, "delete them; without it, only list what would be deleted")
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	if err := parseFlags(fs, args, false); err != nil {
 		return err
 	}
-	root, _, err := resolveRoot(*claudeDir)
-	if err != nil {
+	s := stdStreams()
+	if *asJSON {
+		s = jsonStreams()
+	}
+	res, err := runClean(s, cleanOpts{ClaudeDir: *claudeDir, ArchiveDir: *archiveDir, Yes: *yes})
+	if err != nil || !*asJSON {
 		return err
 	}
-	dest, _, err := archive.ResolveDestination(root, *archiveDir)
+	return encodeJSON(os.Stdout, res)
+}
+
+type cleanOpts struct {
+	ClaudeDir, ArchiveDir string
+	Yes                   bool
+}
+
+type cleanResult struct {
+	Plan    cleanPlan `json:"plan"`
+	Deleted int       `json:"deleted"`
+	Failed  int       `json:"failed"`
+	Freed   int64     `json:"freed"`
+}
+
+// runClean lists the duplicate copies, on s, and with o.Yes deletes them.
+func runClean(s streams, o cleanOpts) (cleanResult, error) {
+	root, _, err := resolveRoot(o.ClaudeDir)
 	if err != nil {
-		return err
+		return cleanResult{}, err
+	}
+	dest, _, err := archive.ResolveDestination(root, o.ArchiveDir)
+	if err != nil {
+		return cleanResult{}, err
 	}
 	if dest == "" {
-		return fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
+		return cleanResult{}, fmt.Errorf("no archive destination: run `claude-sessions config set-destination <folder>`")
 	}
 	if err := archive.ValidateDestination(root, dest); err != nil {
-		return err
+		return cleanResult{}, err
 	}
 	if !archive.IsRealDir(archive.ProjectsDir(dest)) {
-		return fmt.Errorf("%s holds no archived sessions", dest)
+		return cleanResult{}, fmt.Errorf("%s holds no archived sessions", dest)
 	}
-	if *yes {
+	if o.Yes {
 		// This machine's push must not archive a copy while it is being deleted.
 		lock, err := archive.AcquireLockWait(root, time.Minute)
 		if err != nil {
-			return err
+			return cleanResult{}, err
 		}
 		defer lock.Release()
 	}
 
-	plan := planClean(dest, true)
-	printCleanPlan(plan, *yes)
-	if !*yes || len(plan.Remove) == 0 {
-		return nil
+	plan := planClean(dest, s.Err)
+	plan.Remove = nonNil(plan.Remove)
+	res := cleanResult{Plan: plan}
+	printCleanPlan(s.Out, plan, o.Yes)
+	if !o.Yes || len(plan.Remove) == 0 {
+		return res, nil
 	}
 	if plan.Unread != "" {
 		// A machine whose manifest cannot be read may be one that uploads them again.
-		return fmt.Errorf("nothing deleted: %s", plan.Unread)
+		return res, fmt.Errorf("nothing deleted: %s", plan.Unread)
 	}
 
-	var freed int64
-	var failed int
 	for _, c := range plan.Remove {
 		if err := c.verify(dest); err != nil {
-			fmt.Fprintf(os.Stderr, "  - %s/%s kept: %v\n", c.Bucket, c.ID, err)
-			failed++
+			fmt.Fprintf(s.Err, "  - %s/%s kept: %v\n", c.Bucket, c.ID, err)
+			res.Failed++
 			continue
 		}
 		if err := c.delete(dest); err != nil {
-			fmt.Fprintf(os.Stderr, "  x %s/%s: %v\n", c.Bucket, c.ID, err)
-			failed++
+			fmt.Fprintf(s.Err, "  x %s/%s: %v\n", c.Bucket, c.ID, err)
+			res.Failed++
 			continue
 		}
-		freed += c.Size
+		res.Freed += c.Size
 	}
-	fmt.Printf("\nDeleted %d copies, %s.\n", len(plan.Remove)-failed, mb(freed))
-	fmt.Println("Run clean on one computer at a time, and only after the other has synced.")
-	fmt.Println("A sync client may keep deleted files in its trash, still counting toward your storage -\n" +
+	res.Deleted = len(plan.Remove) - res.Failed
+	fmt.Fprintf(s.Out, "\nDeleted %d copies, %s.\n", res.Deleted, mb(res.Freed))
+	fmt.Fprintln(s.Out, "Run clean on one computer at a time, and only after the other has synced.")
+	fmt.Fprintln(s.Out, "A sync client may keep deleted files in its trash, still counting toward your storage -\n"+
 		"Google Drive does, for 30 days. Empty it to get the space back now.")
-	if failed > 0 {
-		return fmt.Errorf("%d copies were not deleted", failed)
+	if res.Failed > 0 {
+		return res, fmt.Errorf("%d copies were not deleted", res.Failed)
 	}
-	return nil
+	return res, nil
 }
 
 // dupCopy is one archived copy of a session that another copy, In, holds in whole.
 type dupCopy struct {
-	Bucket, ID, In string
-	Size           int64 // the transcript, its own folder and its page
+	Bucket string `json:"bucket"`
+	ID     string `json:"id"`
+	In     string `json:"in"`
+	Size   int64  `json:"size"` // the transcript, its own folder and its page
 }
 
 type cleanPlan struct {
-	Remove []dupCopy
+	Remove []dupCopy `json:"remove"`
 	// Waiting are copies held in whole elsewhere that are kept for now, because a
 	// machine pushing to their bucket would archive them again; by machine.
-	Waiting     map[string][]dupCopy
-	WaitingSize int64
-	Unsure      int    // copies kept because their own folder holds a file the other lacks
-	Unread      string // why a machine's manifest could not be read, if one could not
+	Waiting     map[string][]dupCopy `json:"waiting"`
+	WaitingSize int64                `json:"waitingSize"`
+	Unsure      int                  `json:"unsure"`           // copies kept because their own folder holds a file the other lacks
+	Unread      string               `json:"unread,omitempty"` // why a machine's manifest could not be read, if one could not
 }
 
 // planClean finds, for every session archived in more than one bucket, the copies that
 // another holds in whole. Copies are compared by turns, as push compares them: a copy
-// filed on another machine has that machine's paths, so its bytes differ.
-func planClean(dest string, progress bool) cleanPlan {
+// filed on another machine has that machine's paths, so its bytes differ. It counts
+// its progress on progress; io.Discard for none.
+func planClean(dest string, progress io.Writer) cleanPlan {
 	plan := cleanPlan{Waiting: map[string][]dupCopy{}}
 
 	// Who pushes to each bucket, and whether every one of them leaves a held copy
@@ -138,8 +169,8 @@ func planClean(dest string, progress bool) cleanPlan {
 	sort.Strings(ids)
 
 	for n, id := range ids {
-		if progress && n%25 == 0 {
-			fmt.Fprintf(os.Stderr, "\rcomparing copies: %d/%d", n, len(ids))
+		if n%25 == 0 {
+			fmt.Fprintf(progress, "\rcomparing copies: %d/%d", n, len(ids))
 		}
 		// A bucket named twice - a second file whose id differs only in case, or folders
 		// whose names differ only in case on a case-sensitive drive - is one copy seen
@@ -232,8 +263,8 @@ func planClean(dest string, progress bool) cleanPlan {
 			plan.Remove = append(plan.Remove, d)
 		}
 	}
-	if progress && len(ids) > 0 {
-		fmt.Fprintf(os.Stderr, "\rcomparing copies: %d/%d\n", len(ids), len(ids))
+	if len(ids) > 0 {
+		fmt.Fprintf(progress, "\rcomparing copies: %d/%d\n", len(ids), len(ids))
 	}
 	return plan
 }
@@ -407,9 +438,9 @@ func (c dupCopy) delete(dest string) error {
 	return nil
 }
 
-func printCleanPlan(plan cleanPlan, yes bool) {
+func printCleanPlan(w io.Writer, plan cleanPlan, yes bool) {
 	if len(plan.Remove) == 0 && len(plan.Waiting) == 0 {
-		fmt.Println("No duplicate copies: every archived session is stored once.")
+		fmt.Fprintln(w, "No duplicate copies: every archived session is stored once.")
 		return
 	}
 	if len(plan.Remove) > 0 {
@@ -423,14 +454,14 @@ func printCleanPlan(plan cleanPlan, yes bool) {
 		if yes && plan.Unread == "" {
 			verb = "Deleting"
 		}
-		fmt.Printf("%s %d duplicate copies, %s - each session stays archived in the other folder:\n", verb, len(plan.Remove), mb(total))
+		fmt.Fprintf(w, "%s %d duplicate copies, %s - each session stays archived in the other folder:\n", verb, len(plan.Remove), mb(total))
 		buckets := make([]string, 0, len(byBucket))
 		for b := range byBucket {
 			buckets = append(buckets, b)
 		}
 		sort.Slice(buckets, func(i, j int) bool { return sizeOf(byBucket[buckets[i]]) > sizeOf(byBucket[buckets[j]]) })
 		for _, b := range buckets {
-			fmt.Printf("  %-60s %4d  %10s  (kept in %s)\n", b, len(byBucket[b]), mb(sizeOf(byBucket[b])), byBucket[b][0].In)
+			fmt.Fprintf(w, "  %-60s %4d  %10s  (kept in %s)\n", b, len(byBucket[b]), mb(sizeOf(byBucket[b])), byBucket[b][0].In)
 		}
 	}
 	if len(plan.Waiting) > 0 {
@@ -439,22 +470,22 @@ func printCleanPlan(plan cleanPlan, yes bool) {
 			machines = append(machines, m)
 		}
 		sort.Strings(machines)
-		fmt.Printf("\nKept for now: %s of duplicate copies that these computers would upload again:\n", mb(plan.WaitingSize))
+		fmt.Fprintf(w, "\nKept for now: %s of duplicate copies that these computers would upload again:\n", mb(plan.WaitingSize))
 		for _, m := range machines {
-			fmt.Printf("  %-60s %4d  %10s\n", m, len(plan.Waiting[m]), mb(sizeOf(plan.Waiting[m])))
+			fmt.Fprintf(w, "  %-60s %4d  %10s\n", m, len(plan.Waiting[m]), mb(sizeOf(plan.Waiting[m])))
 		}
-		fmt.Println("Update claude-sessions on each and let it push once (`claude-sessions push`), then run clean again.")
+		fmt.Fprintln(w, "Update claude-sessions on each and let it push once (`claude-sessions push`), then run clean again.")
 	}
 	if plan.Unsure > 0 {
-		fmt.Printf("\n%d copies kept: their subagent or tool-output files are not all in the other copy.\n", plan.Unsure)
+		fmt.Fprintf(w, "\n%d copies kept: their subagent or tool-output files are not all in the other copy.\n", plan.Unsure)
 	}
 	switch {
 	case plan.Unread != "" && len(plan.Remove) > 0:
-		fmt.Printf("\nNothing can be deleted: clean %s, and the computer it belongs to may upload them again.\n"+
+		fmt.Fprintf(w, "\nNothing can be deleted: clean %s, and the computer it belongs to may upload them again.\n"+
 			"If the file is a sync conflict copy - a name ending in (1) or holding \"conflict\" - delete it;\n"+
 			"otherwise let it finish syncing. Then run clean again.\n", plan.Unread)
 	case !yes && len(plan.Remove) > 0:
-		fmt.Println("\nRun `claude-sessions clean --yes` to delete them.")
+		fmt.Fprintln(w, "\nRun `claude-sessions clean --yes` to delete them.")
 	}
 }
 

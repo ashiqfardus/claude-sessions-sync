@@ -1,0 +1,23 @@
+$ claude-sessions clean --claude-dir <LAP2-CLAUDE> --yes --json
+exit 0
+--- stdout
+{
+  "plan": {
+    "remove": [
+      {
+        "bucket": "<HOME-SLUG>-Documents-GitHub-example-org-web-app",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "in": "<LAP2-HOME-SLUG>-dev-web-app",
+        "size": <SIZE>
+      }
+    ],
+    "waiting": {},
+    "waitingSize": 0,
+    "unsure": 0
+  },
+  "deleted": 1,
+  "failed": 0,
+  "freed": <SIZE>
+}
+--- stderr
+comparing copies: 0/1comparing copies: 1/1

@@ -1,0 +1,12 @@
+$ claude-sessions backup --claude-dir <CLAUDE> --out <HOME>/backups --dry-run --json
+exit 0
+--- stdout
+{
+  "source": "<CLAUDE>",
+  "target": "<HOME>/backups/claude-backup-LAP-1-<STAMP>.zip",
+  "files": 6,
+  "transcripts": 3,
+  "buckets": 2,
+  "dryRun": true
+}
+--- stderr
