@@ -12,6 +12,15 @@ All notable changes to this project are documented here. This project follows
 - **A conversation titled by another agent's report.** A title could still read
   `[Subagent hand-back] The text below is the final report…`. A message from another
   agent or session is no longer used as a title; the next thing you typed is, or none.
+- **After an upgrade, the panel kept running the old version.** With its tab still open,
+  the old panel never stopped, and the shortcut only opened another tab on it. Opening
+  the panel, or running `install`, now stops a panel of another version and starts the
+  new one. A panel busy with a job is left to finish it; the next time you open the
+  panel after that, you get the new version.
+- **An upgrade on Windows left a copy of the old program in `.claude\bin`.** `install`
+  moves a program that is still running aside, as `claude-sessionsw.exe.old-<number>`
+  (about 13 MB), and nothing removed it. `install` and `push` now remove these copies
+  once nothing runs them, and the log names each one.
 
 ## [0.7.3] - 2026-11-27
 

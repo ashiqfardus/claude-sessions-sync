@@ -109,6 +109,19 @@ func runInstall(s streams, o installOpts) (installResult, error) {
 	fmt.Fprintf(s.Out, "  archive   %s (%s)\n", dest, src)
 	res.Archive = dest
 
+	// Before the binaries: an idle panel of another version stops, so its program is no
+	// longer in use and the shortcut starts this version at once.
+	if pf, ok := readPanelFile(root); ok {
+		if key, ok := launchKey(pf); ok {
+			if _, note := replaceOtherVersion(pf, key); note != "" {
+				fmt.Fprintf(s.Out, "  panel     %s\n", note)
+			}
+		}
+	}
+	for _, p := range removeOldBinaries(filepath.Join(root, "bin")) {
+		fmt.Fprintf(s.Out, "  removed   %s, left by an earlier upgrade\n", p)
+	}
+
 	// Copy the binary somewhere stable.
 	//
 	// The hook and the sweep must not point at wherever the binary happened to be run
@@ -388,13 +401,6 @@ func installWindowless(binary string) (string, error) {
 // replaceExecutable writes src to target via a temporary file, even when target is
 // the program the hook or the sweep is running right now.
 func replaceExecutable(target string, src io.Reader) error {
-	// Copies left by an earlier upgrade that replaced a running binary.
-	if old, _ := filepath.Glob(target + ".old-*"); len(old) > 0 {
-		for _, o := range old {
-			os.Remove(o) // still running is fine: it goes next time
-		}
-	}
-
 	tmp, err := os.CreateTemp(filepath.Dir(target), ".tmp-claude-sessions-*")
 	if err != nil {
 		return err
@@ -416,7 +422,7 @@ func replaceExecutable(target string, src io.Reader) error {
 	if err := os.Rename(tmpName, target); err != nil {
 		// Windows refuses to replace an executable that is running - the hook or the
 		// sweep, mid-push - but does allow renaming it. Move it aside and retry; the
-		// leftover is removed by the next install.
+		// leftover is removed by the next install or push (removeOldBinaries).
 		aside := fmt.Sprintf("%s.old-%d", target, time.Now().UnixNano())
 		if runtime.GOOS != "windows" || os.Rename(target, aside) != nil {
 			os.Remove(tmpName)
@@ -432,6 +438,34 @@ func replaceExecutable(target string, src io.Reader) error {
 		os.Remove(aside)
 	}
 	return nil
+}
+
+// removeFile is os.Remove; a test fails it as Windows does for a program still running.
+var removeFile = os.Remove
+
+// removeOldBinaries removes from binDir the copies replaceExecutable moved aside, and
+// gives their paths. Windows refuses to remove one whose program still runs: it is
+// left for the next run.
+func removeOldBinaries(binDir string) []string {
+	entries, _ := os.ReadDir(binDir)
+	var removed []string
+	for _, e := range entries {
+		if p := filepath.Join(binDir, e.Name()); e.Type().IsRegular() && movedAside(e.Name()) && removeFile(p) == nil {
+			removed = append(removed, p)
+		}
+	}
+	return removed
+}
+
+// movedAside reports whether name is one replaceExecutable gives a binary it moves
+// aside: an installed binary's name, ".old-", and digits.
+func movedAside(name string) bool {
+	for _, b := range []string{"claude-sessions", "claude-sessions.exe", hostagent.WindowlessName} {
+		if n, ok := strings.CutPrefix(name, b+".old-"); ok && n != "" && strings.Trim(n, "0123456789") == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // sweepJob names the scheduled job for a profile. The default ~/.claude keeps the

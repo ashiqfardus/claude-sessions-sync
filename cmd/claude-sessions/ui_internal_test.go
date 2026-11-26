@@ -255,13 +255,17 @@ func TestUIOpensARedirectFileNotTheKey(t *testing.T) {
 func TestSecondLaunchReusesThePanel(t *testing.T) {
 	rec := recordOpens(t)
 	u := newTestUI(t, uiOpts{NoOpen: true})
-	runUI(t, u)
+	r := runUI(t, u)
 	waitUntil(t, "panel.json", func() bool { return panelFileExists(u.root) })
 
 	var out bytes.Buffer
-	ok, err := reuseRunning(u.root, false, &out)
+	ok, err := reuseRunning(u.root, false, &out, u.logf)
 	if err != nil || !ok {
 		t.Fatalf("reuseRunning = %v, %v with a panel running", ok, err)
+	}
+	// Of this same version, it is left running, not stopped as one of another would be.
+	if !r.running() || !panelFileExists(u.root) {
+		t.Error("a launch stopped the running panel of its own version")
 	}
 	paths := rec.get()
 	if len(paths) != 1 {
@@ -286,7 +290,7 @@ func TestSecondLaunchReusesThePanel(t *testing.T) {
 
 	// --no-open prints a new keyed address instead.
 	out.Reset()
-	if ok, err := reuseRunning(u.root, true, &out); err != nil || !ok {
+	if ok, err := reuseRunning(u.root, true, &out, u.logf); err != nil || !ok {
 		t.Fatalf("reuseRunning --no-open = %v, %v", ok, err)
 	}
 	prefix := fmt.Sprintf("Open this address once: http://127.0.0.1:%d/k/", u.panel.Port())
@@ -320,7 +324,7 @@ func TestStalePanelFileStartsANewPanel(t *testing.T) {
 	write(panelFile{PID: dead, Port: u.panel.Port(), Launch: u.panel.LaunchSecret(), ProofKey: u.panel.ProofKey()})
 	if archive.ProcessAlive(dead) {
 		t.Log("the dead PID was reused: that case is skipped")
-	} else if ok, err := reuseRunning(root, false, io.Discard); ok || err != nil {
+	} else if ok, err := reuseRunning(root, false, io.Discard, u.logf); ok || err != nil {
 		t.Errorf("a dead PID: reuseRunning = %v, %v", ok, err)
 	}
 
@@ -336,7 +340,7 @@ func TestStalePanelFileStartsANewPanel(t *testing.T) {
 		}))
 		port, _ := strconv.Atoi(fake.URL[strings.LastIndex(fake.URL, ":")+1:])
 		write(panelFile{PID: os.Getpid(), Port: port, Launch: "the-old-secret", ProofKey: "the-old-proof-key"})
-		if ok, err := reuseRunning(root, false, io.Discard); ok || err != nil {
+		if ok, err := reuseRunning(root, false, io.Discard, u.logf); ok || err != nil {
 			t.Errorf("%s: reuseRunning = %v, %v", name, ok, err)
 		}
 		fake.Close()
@@ -350,7 +354,7 @@ func TestStalePanelFileStartsANewPanel(t *testing.T) {
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
 	write(panelFile{PID: os.Getpid(), Port: port, Launch: "x"})
-	if ok, err := reuseRunning(root, false, io.Discard); ok || err != nil {
+	if ok, err := reuseRunning(root, false, io.Discard, u.logf); ok || err != nil {
 		t.Errorf("no panel on the port: reuseRunning = %v, %v", ok, err)
 	}
 	if got := rec.get(); len(got) != 0 {

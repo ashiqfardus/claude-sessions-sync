@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -123,7 +124,7 @@ func (u *uiServer) start(out io.Writer) error {
 		out = io.Discard // no terminal: whatever catches the output must not get a keyed address
 	}
 	panel.CleanRedirects(time.Minute)
-	if ok, err := reuseRunning(u.root, u.opts.NoOpen, out); ok {
+	if ok, err := reuseRunning(u.root, u.opts.NoOpen, out, u.logf); ok {
 		return err
 	}
 	l, err := u.panel.Listen(u.opts.Port)
@@ -219,17 +220,42 @@ func removePanelFile(root string, pf panelFile) {
 	}
 }
 
-// reuseRunning opens a new tab on the panel already running for this profile, and
-// reports whether there is one. A stale panel file, or a panel that does not answer,
-// is no panel: the caller starts a new one.
-func reuseRunning(root string, noOpen bool, out io.Writer) (bool, error) {
+// panelAlive reports whether a panel's process still runs; a test fakes it.
+var panelAlive = archive.ProcessAlive
+
+// readPanelFile gives the panel file of the panel running for this profile, if its
+// process still runs.
+func readPanelFile(root string) (panelFile, bool) {
 	var pf panelFile
 	b, err := os.ReadFile(panelFilePath(root))
-	if err != nil || json.Unmarshal(b, &pf) != nil || pf.PID <= 0 || !archive.ProcessAlive(pf.PID) {
+	if err != nil || json.Unmarshal(b, &pf) != nil || pf.PID <= 0 || !panelAlive(pf.PID) {
+		return pf, false
+	}
+	return pf, true
+}
+
+// reuseRunning opens a new tab on the panel already running for this profile, and
+// reports whether there is one. A stale panel file, or a panel that does not answer,
+// is no panel: the caller starts a new one. So is an idle panel of another version,
+// which is stopped first: after an upgrade its open tab would keep it running forever.
+func reuseRunning(root string, noOpen bool, out io.Writer, logf func(string, ...any)) (bool, error) {
+	pf, ok := readPanelFile(root)
+	if !ok {
 		return false, nil
 	}
 	key, ok := launchKey(pf)
 	if !ok {
+		return false, nil
+	}
+	stopped, note := replaceOtherVersion(pf, key)
+	if note != "" {
+		logf("PANEL: %s", note)
+		fmt.Fprintln(out, note)
+	}
+	if stopped {
+		return false, nil
+	}
+	if key, ok = launchKey(pf); !ok { // the first key went to reading its state
 		return false, nil
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d/k/%s", pf.Port, key)
@@ -278,6 +304,117 @@ func launchKey(pf panelFile) (string, bool) {
 		return "", false
 	}
 	return k.Key, true
+}
+
+// replaceOtherVersion stops the panel pf names if it runs another version and no job,
+// and waits up to 10 s for its process to exit; stopped reports that it is stopping.
+// note says what was done or why not: "" for the same version, or for a panel whose
+// state could not be read, which is handed off to as before.
+//
+// It asks only what a panel's own page asks, which every panel since 0.7.0 answers:
+// key swapped for the cookie, GET /api/state, then POST /api/stop with the page's
+// token. Stop is answered "after" with a job running, so a job that starts in between
+// is still waited for. It never kills the process: the panel file records no start
+// time, so a reused PID cannot be told apart, and every released panel answers Stop.
+// One that does not is handed off to, and the user is told how to stop it.
+func replaceOtherVersion(pf panelFile, key string) (stopped bool, note string) {
+	c := panelClient{port: pf.Port}
+	var st struct {
+		Version string         `json:"version"`
+		Job     *panel.Summary `json:"job"`
+	}
+	if c.login(key) != nil || c.getJSON("/api/state", &st) != nil || st.Version == "" || st.Version == version {
+		return false, ""
+	}
+	busy := func(label string) string {
+		return fmt.Sprintf("The running panel is version %s and busy with %s. It is replaced by %s when you open the panel after that ends.", st.Version, label, version)
+	}
+	if st.Job != nil {
+		return false, busy(st.Job.Label)
+	}
+	var stop struct{ Stopping, Label string }
+	if err := c.stop(&stop); err != nil {
+		return false, fmt.Sprintf("The running panel is version %s and could not be asked to stop. Use Stop the panel on its Settings page, then open the panel again to start %s.", st.Version, version)
+	}
+	if stop.Stopping != "now" {
+		return false, busy(stop.Label)
+	}
+	for end := time.Now().Add(10 * time.Second); panelAlive(pf.PID) && time.Now().Before(end); {
+		time.Sleep(50 * time.Millisecond)
+	}
+	return true, fmt.Sprintf("Stopped the running panel of version %s.", st.Version)
+}
+
+// panelClient makes a running panel's requests as its page does. Panels already
+// released answer exactly these, so they must not change.
+type panelClient struct {
+	port   int
+	cookie string
+}
+
+func (c *panelClient) send(method, path, token string) ([]byte, error) {
+	req, err := http.NewRequest(method, fmt.Sprintf("http://127.0.0.1:%d%s", c.port, path), nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.cookie != "" {
+		req.Header.Set("Cookie", c.cookie)
+	}
+	if token != "" {
+		req.Header.Set("Origin", "http://"+req.URL.Host)
+		req.Header.Set("X-CS-Token", token)
+	}
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err == nil && resp.StatusCode != http.StatusOK {
+		err = fmt.Errorf("%s %s: %s", method, path, resp.Status)
+	}
+	for _, ck := range resp.Cookies() { // only /k/ sets one
+		c.cookie = ck.Name + "=" + ck.Value
+	}
+	return b, err
+}
+
+// login swaps a one-time key for the panel's cookie.
+func (c *panelClient) login(key string) error {
+	if _, err := c.send(http.MethodGet, "/k/"+key, ""); err != nil {
+		return err
+	}
+	if c.cookie == "" {
+		return errors.New("no cookie for the key")
+	}
+	return nil
+}
+
+func (c *panelClient) getJSON(path string, v any) error {
+	b, err := c.send(http.MethodGet, path, "")
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
+}
+
+var pageToken = regexp.MustCompile(`<meta name="cs-token" content="([0-9a-f]{64})">`)
+
+// stop asks the panel to stop, with the token its page carries.
+func (c *panelClient) stop(v any) error {
+	page, err := c.send(http.MethodGet, "/", "")
+	if err != nil {
+		return err
+	}
+	m := pageToken.FindSubmatch(page)
+	if m == nil {
+		return errors.New("no token in the panel's page")
+	}
+	b, err := c.send(http.MethodPost, "/api/stop", string(m[1]))
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
 }
 
 func (u *uiServer) beat() {

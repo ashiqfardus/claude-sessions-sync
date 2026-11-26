@@ -272,6 +272,9 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 		for _, p := range archive.RemoveOwnTemps(claude.ProjectsDir(root)) {
 			logf("CLEAN: removed a temporary file an interrupted run left: %s", p)
 		}
+		for _, p := range removeOldBinaries(filepath.Join(root, "bin")) {
+			logf("CLEAN: removed a binary an upgrade replaced while it ran: %s", p)
+		}
 		removeStaleExtracts(time.Now())
 		pinMachineName(root)
 	}
