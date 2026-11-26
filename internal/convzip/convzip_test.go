@@ -307,6 +307,31 @@ func TestZipKeepsFileChangedWhileZipping(t *testing.T) {
 	}
 }
 
+// After the check, each loose file is looked at again just before it is removed: one a
+// sync client replaced in that window is not what the zip holds, and stays.
+func TestRemoveLooseKeepsAFileChangedAfterTheCheck(t *testing.T) {
+	for _, changed := range []int{0, 2} { // the transcript, which goes first, and the last file
+		dir, _ := bucket(t)
+		files, err := loose(dir, testID)
+		if err != nil || len(files) != 3 {
+			t.Fatalf("loose = %v, %v", files, err)
+		}
+		late := files[changed].Path
+		put(t, late, "replaced by a sync client", time.Now())
+		if err := removeLoose(dir, testID, files); err == nil {
+			t.Errorf("file %d: removeLoose removed a changed file without an error", changed)
+		}
+		if b, _ := os.ReadFile(late); string(b) != "replaced by a sync client" {
+			t.Errorf("file %d: the changed file was removed: %q", changed, b)
+		}
+		for i, f := range files[changed+1:] {
+			if !exists(f.Path) {
+				t.Errorf("file %d: %s, after the changed one, was removed", changed, files[changed+1+i].Rel)
+			}
+		}
+	}
+}
+
 func TestZipLeavesFilesItDidNotPack(t *testing.T) {
 	dir, _ := bucket(t)
 	late := filepath.Join(dir, testID, "tool-results", "late.txt")
