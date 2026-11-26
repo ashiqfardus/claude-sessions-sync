@@ -33,8 +33,7 @@ const cantOpen = "You can't open this folder."
 // files, no contents. A symlink is listed only if it points to a directory; the
 // listed path is never rewritten to the link's target.
 func ListFolders(path string, hidden bool) FolderList {
-	// UNC/SMB paths would make Windows connect to a chosen host and leak NTLM credentials.
-	if !filepath.IsAbs(path) || strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, "//") {
+	if !filepath.IsAbs(path) || !localPath(runtime.GOOS, path) {
 		return FolderList{Path: path, Error: cantOpen}
 	}
 	path = filepath.Clean(path)
@@ -81,6 +80,23 @@ func ListFolders(path string, hidden bool) FolderList {
 		out.Entries, out.Truncated = out.Entries[:maxEntries], true
 	}
 	return out
+}
+
+// localPath reports whether opening p, before it is cleaned, stays on this computer's
+// disks. A GET names it, so any page the browser shows can: a network path would make
+// Windows connect to a host the page chose and send it the user's NTLM credentials.
+// On Windows only a drive-letter path stays, which refuses \\host, /\host and \/host
+// (Go reads any two leading separators as UNC), \??\UNC\host, and the \\?\ and \\.\
+// device forms. Elsewhere a path starting with // is refused too.
+func localPath(goos, p string) bool {
+	if goos != "windows" {
+		return !strings.HasPrefix(p, "//") && !strings.HasPrefix(p, `\\`)
+	}
+	if len(p) < 3 || p[1] != ':' || p[2] != '\\' && p[2] != '/' {
+		return false
+	}
+	c := p[0] | 0x20 // lower case
+	return 'a' <= c && c <= 'z'
 }
 
 // Roots are the browser's starting points: the home folder, then each drive on

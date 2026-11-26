@@ -91,9 +91,39 @@ func TestRoots(t *testing.T) {
 }
 
 func TestListFoldersRefusesUNCAndEmpty(t *testing.T) {
-	for _, p := range []string{"", `\\host\share`, "//host/share", `\\?\C:\x`} {
-		if l := ListFolders(p, false); l.Error != cantOpen || len(l.Entries) != 0 {
+	paths := []string{"", `\\host\share`, "//host/share", `\\?\C:\x`}
+	if runtime.GOOS == "windows" { // Go reads any two leading separators, and \??\, as a network or device path
+		paths = append(paths, `/\h\s`, `\/h/s`, `\??\UNC\h\s`, `\\.\C:\x`)
+	}
+	for _, p := range paths {
+		// Refused as given: one cleaned first, /\h\s into \\h\s, was opened.
+		if l := ListFolders(p, false); l.Error != cantOpen || len(l.Entries) != 0 || l.Path != p || l.Parent != "" {
 			t.Fatalf("%q: %+v", p, l)
+		}
+	}
+}
+
+// On Windows only a drive-letter path stays on this computer's disks: the rule Go's
+// own parsing gives as IsAbs plus a two-byte volume, checked against it there.
+func TestLocalPath(t *testing.T) {
+	for p, want := range map[string]bool{
+		`C:\`: true, `c:/Users/you`: true, `D:\a\..\b`: true, `Z:\x`: true,
+		`\\host\share`: false, `//host/share`: false, `/\host\share`: false, `\/host/share`: false,
+		`\??\UNC\host\share`: false, `\\?\C:\x`: false, `\\.\C:\x`: false, `\\?\UNC\host\share`: false,
+		`C:x`: false, `C:`: false, `\x`: false, `/x`: false, "": false,
+	} {
+		if got := localPath("windows", p); got != want {
+			t.Errorf("windows %q: %v, want %v", p, got, want)
+		}
+		if runtime.GOOS == "windows" {
+			if got := filepath.IsAbs(p) && len(filepath.VolumeName(p)) == 2; got != want {
+				t.Errorf("Go on Windows reads %q as local %v, the classifier %v", p, got, want)
+			}
+		}
+	}
+	for p, want := range map[string]bool{"/Users/you": true, "/": true, "//host/share": false, `\\host\share`: false} {
+		if got := localPath("linux", p); got != want {
+			t.Errorf("linux %q: %v, want %v", p, got, want)
 		}
 	}
 }
