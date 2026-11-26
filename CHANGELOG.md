@@ -6,6 +6,10 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **The log names every temporary file an automatic run deletes.** `push` logged
+  only "removed 1 temporary file(s) left by an interrupted run". It now logs each path.
+  On one laptop that line came back on every push because the same leftover was
+  uploaded again each time; this release stops that upload.
 - **A new computer's first `push` could upload copies of the conversations it had just
   imported.** `push` never archives an imported conversation that another computer's
   copy already holds, but two cases slipped through. On one laptop the first push

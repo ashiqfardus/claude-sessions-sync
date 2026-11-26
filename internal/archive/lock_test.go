@@ -120,7 +120,7 @@ func TestRemoveOrphanTemps(t *testing.T) {
 		}
 	}
 
-	if n := RemoveOrphanTemps(dir); n != 1 {
+	if n := len(RemoveOrphanTemps(dir)); n != 1 {
 		t.Errorf("removed %d, want 1", n)
 	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
@@ -182,8 +182,8 @@ func TestRemoveOwnTemps(t *testing.T) {
 		t.Logf("no symlinks here: %v", err)
 	}
 
-	if n := RemoveOwnTemps(projects); n != 1 {
-		t.Errorf("removed %d, want 1", n)
+	if got := RemoveOwnTemps(projects); len(got) != 1 || got[0] != old {
+		t.Errorf("removed %q, want only %s (the log names each removed path)", got, old)
 	}
 	if _, err := os.Lstat(old); !os.IsNotExist(err) {
 		t.Error("the old temp file survived")
@@ -193,7 +193,7 @@ func TestRemoveOwnTemps(t *testing.T) {
 			t.Errorf("%s was removed", p)
 		}
 	}
-	if n := RemoveOwnTemps(filepath.Join(t.TempDir(), "missing")); n != 0 {
+	if n := len(RemoveOwnTemps(filepath.Join(t.TempDir(), "missing"))); n != 0 {
 		t.Errorf("removed %d from a missing folder", n)
 	}
 }

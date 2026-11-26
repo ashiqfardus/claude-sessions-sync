@@ -588,8 +588,12 @@ func runImport(s streams, o importOpts) (importResult, error) {
 // folder over an hour ago: half a copy each, which push would otherwise take for a
 // file no archived copy holds. Under the lock.
 func removeLocalTemps(w io.Writer, root string) {
-	if n := archive.RemoveOwnTemps(claude.ProjectsDir(root)); n > 0 {
-		fmt.Fprintf(w, "removed %d temporary file(s) an interrupted run left in %s\n\n", n, claude.ProjectsDir(root))
+	if removed := archive.RemoveOwnTemps(claude.ProjectsDir(root)); len(removed) > 0 {
+		fmt.Fprintf(w, "removed %d temporary file(s) an interrupted run left:\n", len(removed))
+		for _, p := range removed {
+			fmt.Fprintf(w, "  %s\n", p)
+		}
+		fmt.Fprintln(w)
 	}
 }
 

@@ -200,21 +200,21 @@ func parseLockPID(raw []byte) (int, bool) {
 const OrphanTempAge = time.Hour
 
 // RemoveOrphanTemps deletes ".tmp-*" files that a killed run left in the archive,
-// returning how many were removed. They are half-written copies that a sync client
+// returning the paths it removed, for the log. They are half-written copies that a sync client
 // would otherwise upload and keep forever.
 //
 // Only the folders this tool writes are searched, and the archive root itself. An
 // archive pointed at a whole drive ("G:\My Drive") would otherwise have every other
 // program's .tmp- files in it deleted.
-func RemoveOrphanTemps(dest string) int {
-	removed := 0
+func RemoveOrphanTemps(dest string) []string {
+	var removed []string
 	cutoff := time.Now().Add(-OrphanTempAge)
 	remove := func(path string, d fs.DirEntry) {
 		if !d.Type().IsRegular() || !strings.HasPrefix(d.Name(), ".tmp-") {
 			return
 		}
 		if info, err := d.Info(); err == nil && info.ModTime().Before(cutoff) && os.Remove(path) == nil {
-			removed++
+			removed = append(removed, path)
 		}
 	}
 
@@ -248,17 +248,17 @@ func IsOwnTemp(name string) bool {
 }
 
 // RemoveOwnTemps deletes, at any depth under dir, the files IsOwnTemp names that are
-// over OrphanTempAge old, returning how many. It is for ~/.claude/projects, which only
+// over OrphanTempAge old, returning the paths it removed. It is for ~/.claude/projects, which only
 // this machine writes: run it under the lock. Links are neither followed nor removed.
-func RemoveOwnTemps(dir string) int {
-	removed := 0
+func RemoveOwnTemps(dir string) []string {
+	var removed []string
 	cutoff := time.Now().Add(-OrphanTempAge)
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || !d.Type().IsRegular() || !IsOwnTemp(d.Name()) {
 			return nil
 		}
 		if info, err := d.Info(); err == nil && info.ModTime().Before(cutoff) && os.Remove(path) == nil {
-			removed++
+			removed = append(removed, path)
 		}
 		return nil
 	})

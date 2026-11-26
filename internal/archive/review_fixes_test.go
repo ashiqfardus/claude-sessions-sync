@@ -46,7 +46,7 @@ func TestRemoveOrphanTempsCoversForksAndProfile(t *testing.T) {
 		os.Chtimes(p, old, old)
 		paths = append(paths, p)
 	}
-	if n := RemoveOrphanTemps(dest); n != len(paths) {
+	if n := len(RemoveOrphanTemps(dest)); n != len(paths) {
 		t.Errorf("removed %d, want %d", n, len(paths))
 	}
 }

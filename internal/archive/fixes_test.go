@@ -51,7 +51,7 @@ func TestRemoveOrphanTempsStaysInItsOwnFolders(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := RemoveOrphanTemps(dest); n != 3 {
+	if n := len(RemoveOrphanTemps(dest)); n != 3 {
 		t.Errorf("removed %d, want 3", n)
 	}
 	if _, err := os.Stat(foreign); err != nil {

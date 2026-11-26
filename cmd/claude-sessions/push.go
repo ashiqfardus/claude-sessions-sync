@@ -265,11 +265,12 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 			logf("ERROR: %v", err)
 			return pushResult{}, err
 		}
-		if n := archive.RemoveOrphanTemps(dest); n > 0 {
-			logf("CLEAN: removed %d temporary file(s) left by an interrupted run", n)
+		// Each path is logged: anything an automatic run deletes must be traceable.
+		for _, p := range archive.RemoveOrphanTemps(dest) {
+			logf("CLEAN: removed a temporary file an interrupted run left: %s", p)
 		}
-		if n := archive.RemoveOwnTemps(claude.ProjectsDir(root)); n > 0 {
-			logf("CLEAN: removed %d temporary file(s) an interrupted run left in %s", n, claude.ProjectsDir(root))
+		for _, p := range archive.RemoveOwnTemps(claude.ProjectsDir(root)) {
+			logf("CLEAN: removed a temporary file an interrupted run left: %s", p)
 		}
 		removeStaleExtracts(time.Now())
 		pinMachineName(root)
