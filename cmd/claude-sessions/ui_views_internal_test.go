@@ -621,6 +621,9 @@ func TestSettingsAndProfileViews(t *testing.T) {
 	me := readShard(dest, "LAP-1")
 	me.WorkFolders = []archive.WorkFolder{{Path: "/Users/you/reports", Files: 3, Bytes: 10}}
 	writeShard(t, dest, me)
+	other := readShard(dest, "LAP-2")
+	other.WorkFolders = []archive.WorkFolder{{Path: "/Users/you/notes"}, {Path: "/Users/you/todo.txt", Exact: true}, {Path: "/Users/you/api-docs"}}
+	writeShard(t, dest, other)
 	old := time.Now().Add(-time.Hour)
 	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-1", "CLAUDE.md"), "one")
 	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-2", "CLAUDE.md"), "the other")
@@ -630,6 +633,10 @@ func TestSettingsAndProfileViews(t *testing.T) {
 		!set.FromShortcut || set.Version != version || set.LogPath != filepath.Join(root, "session-sync.log") ||
 		set.Pages.Pages != 1 || set.Pages.Transcripts == 0 || len(set.Computers) != 3 || set.Sweep.Mechanism == "" {
 		t.Errorf("settings %+v", set)
+	}
+	// The other computers' folders, sorted, without this one's or a file kept on its own.
+	if want := []machinePath{{"LAP-2", "/Users/you/api-docs"}, {"LAP-2", "/Users/you/notes"}}; !reflect.DeepEqual(set.OtherWorkFolders, want) {
+		t.Errorf("otherWorkFolders %+v, want %+v", set.OtherWorkFolders, want)
 	}
 	diffs := queryProfile(dest, &profileCache{})
 	if len(diffs) != 1 || diffs[0].File != "CLAUDE.md" || diffs[0].Newest != "LAP-2" || len(diffs[0].Copies) != 2 ||

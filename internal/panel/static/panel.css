@@ -300,9 +300,13 @@ p.status{white-space:normal}
 .profile-list{margin:0;padding-left:18px}
 .log{margin:0;padding:14px 16px;background:var(--ink);color:#DDE5E1;border-radius:12px;overflow-x:auto;line-height:1.65}
 [data-slot=auto-state]>svg{flex:none;align-self:flex-start;margin-top:2px} /* beside a long sentence it must not shrink */
+/* A control running its job: aria-disabled keeps it focusable (Settings' click guard drops its clicks). */
+.btn[aria-disabled=true],.switch[aria-disabled=true],.check[aria-disabled=true]{opacity:.55;cursor:progress}
+.btn[aria-disabled=true]:active{transform:none}
 .log{max-height:24em;overflow-y:auto}
 .log:focus-visible{outline-color:#9FD3C0} /* on --ink, as .archive's */
 .map-target{overflow-wrap:anywhere}
+.dialog .job-status{flex:1 1 auto} /* takes the room left of Cancel and Add, none when empty */
 .compare-list{max-height:min(50vh,360px);overflow-y:auto}
 .compare-list>li{flex-direction:column;align-items:stretch;gap:4px;padding:10px 14px}
 .compare-copies{list-style:none;margin:0;padding:0}

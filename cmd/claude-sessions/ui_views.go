@@ -1101,7 +1101,10 @@ type settingsView struct {
 	Config      *configView          `json:"config"` // nil when the config cannot be read
 	Computers   []computerView       `json:"computers"`
 	WorkFolders []archive.WorkFolder `json:"workFolders"` // this computer's
-	Pages       struct {
+	// OtherWorkFolders are the other computers' work folders, by the path each had there:
+	// what config map-folder takes.
+	OtherWorkFolders []machinePath `json:"otherWorkFolders"`
+	Pages            struct {
 		Pages       int  `json:"pages"`
 		Transcripts int  `json:"transcripts"`
 		Stale       bool `json:"stale"`
@@ -1118,7 +1121,7 @@ type settingsView struct {
 }
 
 func querySettings(root string, fromShortcut bool, now time.Time, profiles *profileCache) settingsView {
-	v := settingsView{Computers: []computerView{}, WorkFolders: []archive.WorkFolder{}, FromShortcut: fromShortcut,
+	v := settingsView{Computers: []computerView{}, WorkFolders: []archive.WorkFolder{}, OtherWorkFolders: []machinePath{}, FromShortcut: fromShortcut,
 		Version: version, LogPath: filepath.Join(root, "session-sync.log")}
 	if res, err := runConfig(quietStreams(), configOpts{ClaudeDir: root}); err == nil {
 		v.Config = res.View
@@ -1142,10 +1145,22 @@ func querySettings(root string, fromShortcut bool, now time.Time, profiles *prof
 	logged, _ := lastPush(root)
 	v.Computers = computersOf(shards, rows, logged, now)
 	for name, s := range shards {
-		if strings.EqualFold(name, machineName()) && s.WorkFolders != nil {
-			v.WorkFolders = s.WorkFolders
+		if strings.EqualFold(name, machineName()) {
+			if s.WorkFolders != nil {
+				v.WorkFolders = s.WorkFolders
+			}
+			continue
+		}
+		for _, f := range s.WorkFolders {
+			if !f.Exact { // a single file kept on its own, not a folder to place
+				v.OtherWorkFolders = append(v.OtherWorkFolders, machinePath{name, f.Path})
+			}
 		}
 	}
+	sort.Slice(v.OtherWorkFolders, func(i, j int) bool {
+		a, b := v.OtherWorkFolders[i], v.OtherWorkFolders[j]
+		return a.Machine < b.Machine || a.Machine == b.Machine && a.Path < b.Path
+	})
 	manifest, _ := archive.MergeShards(dest, shards)
 	v.Pages.Pages, v.Pages.Transcripts, v.Pages.Stale = renderState(dest, manifest, archive.RenderExcludes(root, dest, nil, false))
 	v.ProfileDiffs = len(profiles.diffs(dest))

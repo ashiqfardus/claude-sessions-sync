@@ -349,14 +349,14 @@
 
   <section aria-labelledby="arch-h" class="section">
     <h2 id="arch-h">Archive folder</h2>
-    <div class="panel pad row" data-slot="archive"><p class="grow"><span data-slot="archive-label"></span> Every computer must use this same folder.</p><button type="button" class="btn" data-slot="change-folder">Change folder</button></div>
+    <div class="panel pad row" data-slot="archive"><p class="grow"><span data-slot="archive-label"></span> Every computer must use this same folder.</p><span class="muted small job-status" role="status"></span><button type="button" class="btn" data-slot="change-folder">Change folder</button></div>
   </section>
 
   <section aria-labelledby="comp-h" class="section">
     <h2 id="comp-h">Computers</h2>
     <div class="panel pad row align-end">
       <div class="field name-field"><label for="mname">This computer's name in the archive</label><input id="mname" class="input" type="text" data-slot="name"></div>
-      <button type="button" class="btn" data-slot="rename">Rename</button>
+      <button type="button" class="btn" data-slot="rename">Rename</button><span class="muted small job-status" role="status"></span>
       <p class="muted small full-line">Each computer needs its own name. A Mac's network name can change, so a fixed name keeps its history together.</p>
     </div>
     <div class="panel table-box" data-slot="computers-box">
@@ -391,13 +391,13 @@
           <label class="opt"><input type="radio" name="placement" value="machine" class="check" data-slot="placement-machine"><span>Exactly the same path, where this computer has it</span></label>
         </fieldset>
       </div>
-      <div class="row"><button type="button" class="btn" data-slot="exclude">Exclude a folder</button><button type="button" class="btn" data-slot="scan-history">Look through older conversations</button><span class="muted small grow">Finds folders used before claude-sessions was installed. It also reads conversations from your other computers.</span></div>
+      <div class="row"><button type="button" class="btn" data-slot="exclude">Exclude a folder</button><button type="button" class="btn" data-slot="scan-history">Look through older conversations</button><span class="muted small job-status" role="status"></span><span class="muted small grow">Finds folders used before claude-sessions was installed. It also reads conversations from your other computers.</span></div>
     </section>
 
     <section aria-labelledby="map-h" class="section">
       <h2 id="map-h">Where the other computers' folders go here</h2>
       <ul class="panel rows" data-slot="maps"></ul>
-      <div class="row"><button type="button" class="btn" data-slot="add-folder">Add a folder</button><button type="button" class="btn" data-slot="add-project">Add a project</button><span class="muted small" role="status" data-slot="map-status"></span></div>
+      <div class="row"><button type="button" class="btn" data-slot="add-folder">Add a folder</button><button type="button" class="btn" data-slot="add-project">Add a project</button><span class="muted small job-status" role="status"></span></div>
     </section>
 
     <section aria-labelledby="auto-backup-h" class="section">
@@ -407,7 +407,7 @@
         <div class="row fields">
           <div class="every" data-slot="every" data-label="Scheduled backup"></div>
           <button type="button" class="btn" data-slot="install">Set up again</button>
-          <button type="button" class="btn quiet-danger" data-slot="uninstall">Turn off automatic backup</button>
+          <button type="button" class="btn quiet-danger" data-slot="uninstall">Turn off automatic backup</button><span class="muted small job-status" role="status"></span>
         </div>
         <p class="muted small">Turning it off keeps your archive. Restart Claude Code after setting it up again.</p>
       </div>
@@ -418,26 +418,26 @@
         <h2 id="prof-h">Rules and skills</h2>
         <p data-slot="profile-line"></p>
         <ul class="small profile-list" data-slot="profile"></ul>
-        <div class="row"><button type="button" class="btn" data-slot="compare">Compare</button><button type="button" class="btn" data-slot="take-newer">Take the newer copies here</button></div>
+        <div class="row"><button type="button" class="btn" data-slot="compare">Compare</button><button type="button" class="btn" data-slot="take-newer">Take the newer copies here</button><span class="muted small job-status" role="status"></span></div>
       </section>
       <section aria-labelledby="pages-h" class="panel pad stack">
         <h2 id="pages-h">Readable pages</h2>
         <p data-slot="pages-line"></p>
         <p class="small">Left out of pages: <span data-slot="left-out"></span> <button type="button" class="btn sm ghost" data-slot="change-left-out">Change</button></p>
-        <div class="row"><button type="button" class="btn" data-slot="rebuild">Rebuild all pages</button></div>
+        <div class="row"><button type="button" class="btn" data-slot="rebuild">Rebuild all pages</button><span class="muted small job-status" role="status"></span></div>
       </section>
     </div>
 
     <section aria-labelledby="full-h" class="panel pad row">
       <div class="grow stack gap-3"><h2 id="full-h">Full backup file</h2><p class="muted">One zip of everything on this computer: conversations, subagents, memory and settings. Keep it somewhere safe; it may hold passwords from your conversations.</p></div>
-      <div class="row"><button type="button" class="btn" data-slot="backup-preview">Preview</button><button type="button" class="btn" data-slot="backup">Create backup file</button><span class="muted small num" role="status" data-slot="backup-result"></span></div>
+      <div class="row"><button type="button" class="btn" data-slot="backup-preview">Preview</button><button type="button" class="btn" data-slot="backup">Create backup file</button><span class="muted small num job-status" role="status" data-slot="backup-result"></span></div>
     </section>
   </div>
 
   <section aria-labelledby="log-h" class="section">
     <h2 id="log-h">Log</h2>
-    <pre class="mono log" tabindex="0" aria-labelledby="log-h" data-slot="log"></pre>
-    <div class="row"><button type="button" class="btn" data-slot="open-log">Open the log file</button><button type="button" class="btn" data-slot="full-check">Run full check</button><span class="muted small grow">The full check also tests writing to the archive folder and reads archived conversations, so it can take a while.</span></div>
+    <pre class="mono log" role="region" tabindex="0" aria-labelledby="log-h" data-slot="log"></pre>
+    <div class="row"><button type="button" class="btn" data-slot="open-log">Open the log file</button><button type="button" class="btn" data-slot="full-check">Run full check</button><span class="muted small job-status" role="status"></span><span class="muted small grow">The full check also tests writing to the archive folder and reads archived conversations, so it can take a while.</span></div>
   </section>
 
   <div class="stack gap-8">
