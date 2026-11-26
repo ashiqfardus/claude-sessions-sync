@@ -291,7 +291,7 @@
   </section>
 
   <div class="cols">
-    <section aria-labelledby="opt-h" class="panel pad stack">
+    <section aria-labelledby="opt-h" class="panel pad stack bring-options">
       <h2 id="opt-h">What to bring in</h2>
       <label class="opt"><input type="checkbox" class="check" checked data-slot="update"><span>Update conversations that continued on another computer</span></label>
       <label class="opt"><input type="checkbox" class="check" checked data-slot="work"><span>Work folders, not just conversations</span></label>
@@ -303,7 +303,8 @@
         <summary><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>Advanced</summary>
         <div class="stack advanced-body">
           <div class="row fields">
-            <div class="field search-root"><label for="root">Look for your projects in</label><input id="root" class="input mono" type="text" data-slot="root"></div>
+            <div class="field search-root"><label for="root">Look for your projects in</label><input id="root" class="input mono" type="text" placeholder="Your home and your projects' folders" data-slot="root"></div>
+            <button type="button" class="btn" data-slot="root-choose">Choose folder</button>
             <div class="depth" data-slot="depth" data-label="Folders deep"></div>
           </div>
           <label class="opt"><input type="checkbox" class="check" data-slot="bare-name"><span>Also update the project's old folder name inside conversations<small>Also changes that name where it appears on its own in conversations, such as in code and prose.</small></span></label>
@@ -315,7 +316,7 @@
         <button type="button" class="btn primary" data-slot="bring">Bring in</button>
         <button type="button" class="btn" data-slot="preview">Preview first</button>
         <span class="progress grow bring-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Bringing in work" data-slot="progress" hidden><span></span></span>
-        <span class="muted grow num" data-slot="result"></span>
+        <span class="muted grow num" role="status" data-slot="result">Preview first to see exactly what changes.</span>
       </div>
     </section>
 
@@ -329,7 +330,7 @@
       </div>
       <label class="opt"><input type="checkbox" class="check" data-slot="restore-update"><span>Update conversations that are already here</span></label>
       <label class="opt"><input type="checkbox" class="check" data-slot="restore-bare-name"><span>Also update the project's old folder name inside conversations<small>Also changes that name where it appears on its own in conversations, such as in code and prose.</small></span></label>
-      <div class="row"><button type="button" class="btn primary" data-slot="restore">File them here</button><button type="button" class="btn" data-slot="restore-preview">Preview first</button></div>
+      <div class="row"><button type="button" class="btn primary" data-slot="restore">File them here</button><button type="button" class="btn" data-slot="restore-preview">Preview first</button><span class="muted grow num" role="status" data-slot="restore-result"></span></div>
     </section>
   </div>
 </template>

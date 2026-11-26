@@ -280,6 +280,9 @@ p.status{white-space:normal}
 .bring-row{padding-top:4px}
 .bring-progress{flex:1 1 200px;max-width:280px}
 .restore-field{flex:1 1 240px}
+.where-table code{overflow-wrap:anywhere}
+.bring-options .opt:has(>input:disabled){color:var(--muted);cursor:not-allowed}
+.bring-options .input:disabled{background:var(--surface-2);cursor:not-allowed}
 
 /* Settings */
 .name-field{flex:1 1 240px}
