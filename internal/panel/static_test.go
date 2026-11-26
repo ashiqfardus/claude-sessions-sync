@@ -313,7 +313,7 @@ func TestScreensRegister(t *testing.T) {
 	}
 	// The screens Tasks 20-23 have yet to add. Each task takes its own off the list, so
 	// every screen that exists is required from then on.
-	later := map[string]bool{"storage": true, "delete": true, "settings": true, "commands": true}
+	later := map[string]bool{"settings": true, "commands": true}
 	for name := range routed {
 		s, ok := files["static/js/"+name+".js"]
 		switch {
