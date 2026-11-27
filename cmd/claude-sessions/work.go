@@ -74,7 +74,7 @@ func workEnv(root string) work.Env {
 // transcripts that changed; those found before come from this machine's local record
 // (prev is not read for folders). The caller holds the push lock. history's warning
 // goes to warn.
-func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan []string, cfg archive.Config, dryRun, history bool, budget time.Duration, logf func(string, ...any), warn io.Writer) workPushResult {
+func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan []string, cfg archive.Config, dryRun, history bool, budget time.Duration, logf func(string, ...any), warn io.Writer, hb *heartbeat) workPushResult {
 	var res workPushResult
 	// Loaded with work off too: a first run marks what is here then, and conversations
 	// from then on are found when work is turned on.
@@ -108,7 +108,11 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 			"folders in those, and this push would upload it. Use it only if you trust everyone who can\n"+
 			"write to "+dest+".")
 	}
+	if len(scan) > 0 { // none: not a stage, which would show as one not counted
+		hb.reading("looking for work folders", len(scan))
+	}
 	for _, t := range scan {
+		hb.step()
 		// A conversation filed from elsewhere, or here before the first run, names folders
 		// only in lines added here since.
 		off := imported.offset(t)
@@ -298,7 +302,11 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 		return e, true
 	}
 
+	if len(folders) > 0 {
+		hb.reading(copyingText(dryRun, "work folders"), len(folders))
+	}
 	for i, f := range folders {
+		hb.step()
 		e, done := copyFolder(f)
 		if !done {
 			// Unfinished folders keep their last entry, or a bare one, so the next run

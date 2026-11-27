@@ -5,5 +5,5 @@ exit 0
 copied 5 file(s), 0 unchanged.
 3 session(s) across 2 project(s) -> <ARCHIVE> (session-sync.json)
 --- stderr
-<TIME>  PUSH: 5 copied, 0 unchanged, 3 session(s), 2 project(s) -> <ARCHIVE>
-<TIME>  HTML: 3 rendered, 0 up to date
+copying conversations: 0/3copying conversations: 3/3looking for work folders: 0/4looking for work folders: 4/4<TIME>  PUSH: 5 copied, 0 unchanged, 3 session(s), 2 project(s) -> <ARCHIVE>
+building readable pages: 0/3building readable pages: 3/3<TIME>  HTML: 3 rendered, 0 up to date

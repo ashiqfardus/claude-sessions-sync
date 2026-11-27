@@ -321,6 +321,20 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 	for _, p := range republished {
 		logf("RENDER: %s is published again (another computer ran render --include %s); run render --exclude %s to withdraw it", p, p, p)
 	}
+	// How far it has got, for the panel: never into the log, nor on a terminal.
+	progressTo := s.Err
+	if quiet {
+		progressTo = io.Discard
+	}
+	hb := startProgress(progressTo)
+	defer hb.stop()
+	total := 0
+	for _, b := range buckets {
+		total += len(b.Transcripts)
+	}
+	if total > 0 { // none: not a stage, which would show as one not counted
+		hb.reading(copyingText(dryRun, "conversations"), total)
+	}
 	repointed := loadRepointed(root)
 	repointedWas := len(repointed)
 	held, holders, zips := loadHeld(root), sessionHolders(dest), loadZipCompared(root)
@@ -353,6 +367,7 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 		var changed []string
 
 		for _, t := range b.Transcripts {
+			hb.step()
 			srcInfo, statErr := os.Stat(t.Path)
 			if statErr != nil {
 				res.Skipped = append(res.Skipped, t.ID)
@@ -488,7 +503,7 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 	if quiet {
 		workBudget = quietWorkBudget
 	}
-	wr := pushWork(root, dest, &shard, prevShard, workScan, cfg, dryRun, opts.ScanHistory, workBudget, logf, s.Err)
+	wr := pushWork(root, dest, &shard, prevShard, workScan, cfg, dryRun, opts.ScanHistory, workBudget, logf, s.Err, hb)
 	res.Copied += wr.Copied
 	res.Unchanged += wr.Unchanged
 
@@ -560,7 +575,7 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 			if quiet { // the sweep
 				zipBudget = quietRenderBudget
 			}
-			if n, raw, packed := zipIdleCopies(root, dest, mine, time.Now(), zipBudget, dryRun, logf); n > 0 {
+			if n, raw, packed := zipIdleCopies(root, dest, mine, time.Now(), zipBudget, dryRun, logf, hb); n > 0 {
 				logf("ZIP: %d conversation(s), %s -> %s", n, humanSize(raw), humanSize(packed))
 			}
 		}
@@ -570,7 +585,14 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 	// problem must never fail a sync that has already succeeded, so this is wrapped
 	// and only ever logged.
 	if !dryRun && !noHTML {
-		ropts := render.Options{Exclude: excludes, LocalProjects: claude.ProjectsDir(root)}
+		ropts := render.Options{Exclude: excludes, LocalProjects: claude.ProjectsDir(root), Progress: func(n, of int) {
+			switch {
+			case n > 0:
+				hb.step()
+			case of > 0:
+				hb.reading("building readable pages", of)
+			}
+		}}
 		if quiet {
 			ropts.Budget = quietRenderBudget
 		}
@@ -582,6 +604,7 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 			logf("HTML: %d rendered, %d up to date", r.Rendered, r.UpToDate)
 		}
 	}
+	hb.stop()
 
 	if !quiet {
 		for _, n := range wr.New {
@@ -608,6 +631,14 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 		}
 	}
 	return res, nil
+}
+
+// copyingText names a stage of push's progress: a dry run copies nothing, it checks.
+func copyingText(dryRun bool, what string) string {
+	if dryRun {
+		return "checking " + what
+	}
+	return "copying " + what
 }
 
 // projectIdentity recovers what is needed to place this bucket on another machine.
@@ -1150,7 +1181,7 @@ func bothState(dir, id string) string {
 // removed when the zip holds every one, and the zip left as it is; only loose files
 // holding something it lacks are unzipped into it, then zipped again. A dry run lists
 // them.
-func zipIdleCopies(root, dest string, buckets []string, now time.Time, budget time.Duration, dryRun bool, logf func(string, ...any)) (zipped int, raw, packed int64) {
+func zipIdleCopies(root, dest string, buckets []string, now time.Time, budget time.Duration, dryRun bool, logf func(string, ...any), hb *heartbeat) (zipped int, raw, packed int64) {
 	skipped := map[string]zipSkip{}
 	if data, err := os.ReadFile(zipSkippedPath(root)); err == nil && json.Unmarshal(data, &skipped) != nil {
 		skipped = map[string]zipSkip{} // unreadable is empty: each is tried, and said, again
@@ -1162,6 +1193,11 @@ func zipIdleCopies(root, dest string, buckets []string, now time.Time, budget ti
 	}
 	sawNow := map[string]bool{}
 	dirty, seenDirty, start, cutoff := false, false, time.Now(), now.Add(-zipIdle)
+	type idleCopy struct {
+		bucket, dir, id, zp, key string
+		size                     int64
+	}
+	var due []idleCopy
 each:
 	for _, bucket := range buckets {
 		dir := filepath.Join(archive.ProjectsDir(dest), bucket)
@@ -1199,80 +1235,94 @@ each:
 			if s, ok := skipped[key]; ok && s.Size == size && (s.Retry.IsZero() || now.Before(s.Retry)) {
 				continue
 			}
-			// Said once, then left until the copy changes, or a failure's retry time: one
-			// that recurs would otherwise be logged, and up to 250 MB read again, on every
-			// sweep.
-			remember := func(failed bool) {
-				z := zipSkip{Size: copyBytes(dir, id)}
-				if failed {
-					z.Retry = now.Add(zipRetry)
-				}
-				skipped[key], dirty = z, true
+			due = append(due, idleCopy{bucket, dir, id, zp, key, size})
+		}
+	}
+	// Listed first, for the count; then each is zipped, the budget checked before each.
+	if !dryRun && len(due) > 0 {
+		hb.reading("compressing old conversations", len(due))
+	}
+	for _, c := range due {
+		if budget > 0 && time.Since(start) >= budget {
+			break
+		}
+		if !dryRun {
+			hb.step()
+		}
+		bucket, dir, id, zp, key, size := c.bucket, c.dir, c.id, c.zp, c.key, c.size
+		// Said once, then left until the copy changes, or a failure's retry time: one
+		// that recurs would otherwise be logged, and up to 250 MB read again, on every
+		// sweep.
+		remember := func(failed bool) {
+			z := zipSkip{Size: copyBytes(dir, id)}
+			if failed {
+				z.Retry = now.Add(zipRetry)
 			}
-			if dryRun {
-				if zp != "" || size <= work.MaxFolderBytes {
-					logf("would zip %s", key)
-				}
+			skipped[key], dirty = z, true
+		}
+		if dryRun {
+			if zp != "" || size <= work.MaxFolderBytes {
+				logf("would zip %s", key)
+			}
+			continue
+		}
+		if zp != "" {
+			// The first sight of a zip beside loose files changes nothing: another
+			// machine may be zipping or unzipping it, its writes still on their way.
+			rec, act := seen[key].next(bothState(dir, id), now)
+			if !act {
+				seen[key], seenDirty, sawNow[key] = rec, true, true
 				continue
 			}
-			if zp != "" {
-				// The first sight of a zip beside loose files changes nothing: another
-				// machine may be zipping or unzipping it, its writes still on their way.
-				rec, act := seen[key].next(bothState(dir, id), now)
-				if !act {
-					seen[key], seenDirty, sawNow[key] = rec, true, true
-					continue
-				}
-				delete(seen, key) // settled below, or remembered as skipped
-				seenDirty = true
-				err := convzip.DropHeld(dir, id) // the zip stays
-				if err == nil {
-					if _, ok := skipped[key]; ok {
-						delete(skipped, key)
-						dirty = true
-					}
-					continue
-				}
-				if errors.Is(err, convzip.ErrNotHeld) {
-					err = unzip(dir, id)
-				}
-				switch {
-				case errors.Is(err, convzip.ErrDiverged):
-					logf("WARN: %s: %v; the zip and the loose copy beside it are both kept", id, err)
-					remember(false)
-					continue
-				case errors.Is(err, convzip.ErrNotRemoved):
-					logf("WARN: %s: %v; the zip is kept, and the loose files left stay beside it", id, err)
-					remember(true)
-					continue
-				case errors.Is(err, os.ErrNotExist) && zippedCopy(dest, bucket, id) == "":
-					logf("WARN: %s: the zip went while it was read; the loose files beside it are kept", id)
-					remember(true)
-					continue
-				case err != nil:
-					logf("WARN: %s: not unzipped to zip again; the zip and the loose files beside it are kept: %v", id, err)
-					remember(true)
-					continue
-				}
-			}
-			res, err := convzip.Zip(dir, id)
-			switch {
-			case errors.Is(err, convzip.ErrTooLarge):
-				logf("ZIP: %s is over %d MB; it stays loose", key, work.MaxFolderBytes>>20)
-				remember(false)
-			case errors.Is(err, convzip.ErrZipExists): // zipped elsewhere since the listing: next run
-			case err != nil && res.Files > 0: // written and checked; removing the loose files failed
-				logf("WARN: %s: zipped, but loose files stay beside the zip: %v", id, err)
-				remember(true)
-			case err != nil:
-				logf("WARN: %s: not zipped; it stays loose: %v", id, err)
-				remember(true)
-			default:
-				zipped, raw, packed = zipped+1, raw+res.Raw, packed+res.Packed
+			delete(seen, key) // settled below, or remembered as skipped
+			seenDirty = true
+			err := convzip.DropHeld(dir, id) // the zip stays
+			if err == nil {
 				if _, ok := skipped[key]; ok {
 					delete(skipped, key)
 					dirty = true
 				}
+				continue
+			}
+			if errors.Is(err, convzip.ErrNotHeld) {
+				err = unzip(dir, id)
+			}
+			switch {
+			case errors.Is(err, convzip.ErrDiverged):
+				logf("WARN: %s: %v; the zip and the loose copy beside it are both kept", id, err)
+				remember(false)
+				continue
+			case errors.Is(err, convzip.ErrNotRemoved):
+				logf("WARN: %s: %v; the zip is kept, and the loose files left stay beside it", id, err)
+				remember(true)
+				continue
+			case errors.Is(err, os.ErrNotExist) && zippedCopy(dest, bucket, id) == "":
+				logf("WARN: %s: the zip went while it was read; the loose files beside it are kept", id)
+				remember(true)
+				continue
+			case err != nil:
+				logf("WARN: %s: not unzipped to zip again; the zip and the loose files beside it are kept: %v", id, err)
+				remember(true)
+				continue
+			}
+		}
+		res, err := convzip.Zip(dir, id)
+		switch {
+		case errors.Is(err, convzip.ErrTooLarge):
+			logf("ZIP: %s is over %d MB; it stays loose", key, work.MaxFolderBytes>>20)
+			remember(false)
+		case errors.Is(err, convzip.ErrZipExists): // zipped elsewhere since the listing: next run
+		case err != nil && res.Files > 0: // written and checked; removing the loose files failed
+			logf("WARN: %s: zipped, but loose files stay beside the zip: %v", id, err)
+			remember(true)
+		case err != nil:
+			logf("WARN: %s: not zipped; it stays loose: %v", id, err)
+			remember(true)
+		default:
+			zipped, raw, packed = zipped+1, raw+res.Raw, packed+res.Packed
+			if _, ok := skipped[key]; ok {
+				delete(skipped, key)
+				dirty = true
 			}
 		}
 	}

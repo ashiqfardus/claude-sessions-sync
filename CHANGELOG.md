@@ -6,6 +6,11 @@ All notable changes to this project are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **Back up now showed no progress.** A first backup of a few thousand conversations ran
+  for a minute behind a disabled button. `push` now says how far it has got, for the
+  panel to show: `copying conversations: 120/2000`, then `looking for work folders`,
+  `copying work folders`, `compressing old conversations` and `building readable
+  pages`, each with its count. Preview backup says `checking` instead of `copying`.
 - **Bring in sat on "Looking for your projects…" for minutes.** On an archive folder
   that downloads each file only when it is opened, the preview read the other
   computers' work folders one file at a time, each a download, and said nothing while
@@ -36,6 +41,8 @@ All notable changes to this project are documented here. This project follows
   now says "That folder doesn't exist on this computer."
 
 ### Changed
+- `push` writes how far it has got on stderr when it is not a terminal, as `import`
+  does; `--json` output, `--quiet` runs, the log and a terminal get none of it.
 - `import` and `pull` write how far they have got on stderr when it is not a terminal,
   as `clean` does; `--json` output is unchanged. A terminal still gets its line every
   12 seconds. The text is written at most five times a second, with each stage's start

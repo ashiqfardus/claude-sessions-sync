@@ -5,4 +5,4 @@ exit 0
 would copy 5 file(s), 0 unchanged.
 3 session(s) across 2 project(s) -> <ARCHIVE> (session-sync.json)
 --- stderr
-<TIME>  DRY-RUN: would copy 5, 0 unchanged, 3 session(s), 2 project(s) -> <ARCHIVE>
+checking conversations: 0/3checking conversations: 3/3looking for work folders: 0/4looking for work folders: 4/4<TIME>  DRY-RUN: would copy 5, 0 unchanged, 3 session(s), 2 project(s) -> <ARCHIVE>
