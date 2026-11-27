@@ -81,7 +81,10 @@ All notable changes to this project are documented here. This project follows
   a shared archive may go by; `set-machine` kept it as this computer's and said to run
   `machines --forget` on it. It now keeps the old name, and says to forget it, only when
   the archive's record for that name was written by this computer. Settings offers
-  Forget after a rename only then too.
+  Forget after a rename only then too. When the archive, or that record, cannot be read
+  (the sync app offline, say), it does not guess: the rename is refused with a line
+  saying to try again when the archive can be read, in Settings too. With no archive at
+  all, the rename goes ahead.
 - **Readable pages were all rendered again, on every computer.** When
   `html/.render-state.json` could not be read, say while the sync app replaced it, every
   page counted as out of date, and the state saved afterwards held only that run's pages,

@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -227,12 +230,32 @@ func archiveMark(dir string) func(os.DirEntry) bool {
 
 // wasThisComputer reports whether the archive's record for name was written by this
 // install, whose ID is id: a name this computer pushed under, not another computer's.
-func wasThisComputer(root, id, name string) bool {
+// known is false when that cannot be told - the archive saved for this computer is
+// offline, or the record cannot be read or parsed - and the answer would be a guess.
+// With no archive at all, nor one found, there is nothing to tell.
+func wasThisComputer(root, id, name string) (yes, known bool) {
 	if id == "" {
-		return false // no push from this profile yet
+		return false, true // no push from this profile yet
 	}
-	dest, _, err := archive.ResolveDestination(root, "")
-	return err == nil && dest != "" && readShard(dest, name).InstallID == id
+	dest, src, err := archive.ResolveDestination(root, "")
+	if err != nil {
+		return false, false
+	}
+	if dest == "" {
+		return false, true
+	}
+	if _, err := os.Stat(dest); err != nil {
+		return false, src != archive.SourceConfig // a folder found, not saved, may just not be made yet
+	}
+	raw, err := os.ReadFile(filepath.Join(archive.ManifestDir(dest), name+".json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, true
+	}
+	var s archive.Shard
+	if err != nil || json.Unmarshal(raw, &s) != nil {
+		return false, false
+	}
+	return s.InstallID == id, true
 }
 
 // configAction runs every action but show, printing on w.
@@ -348,7 +371,14 @@ func configAction(w io.Writer, root string, rest []string) (err error) {
 		// The old name stays this machine's when its files in the archive carry it. A
 		// name it never pushed under - the hostname's default on a fresh profile - may be
 		// another computer's: it is neither kept nor offered to forget.
-		renamed := !strings.EqualFold(previous, name) && wasThisComputer(root, cfg.InstallID, previous)
+		renamed := false
+		if !strings.EqualFold(previous, name) {
+			yes, known := wasThisComputer(root, cfg.InstallID, previous)
+			if !known { // renames are rare: waiting costs less than a guess either way
+				return fmt.Errorf("the archive can't be read to check whether %s was this computer; try again when it can", previous)
+			}
+			renamed = yes
+		}
 		former := []string{} // saved even when empty: the name taken may have been a former one
 		for _, f := range cfg.FormerMachines {
 			if !strings.EqualFold(f, name) && !slices.ContainsFunc(former, func(x string) bool { return strings.EqualFold(x, f) }) {

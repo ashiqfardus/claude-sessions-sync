@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -191,5 +192,62 @@ func TestSetMachineKeepsOnlyANameThisComputerPushedUnder(t *testing.T) {
 		if kept != c.want || advised != c.want || cfg.Machine != "NEW" || !slices.Contains(cfg.FormerMachines, "OLDER") {
 			t.Errorf("%s: former %v, advised %v, want %v:\n%s", c.name, cfg.FormerMachines, advised, c.want, out.String())
 		}
+	}
+}
+
+// set-machine refuses a rename it cannot judge: the saved archive offline, or the old
+// name's record unreadable. A guess either way costs - kept, another computer's name
+// is forgotten; dropped, this computer's own forks come back to it as another's - and
+// renames are rare. With no archive saved or found there is nothing to protect.
+func TestSetMachineRefusesWhenItCannotTell(t *testing.T) {
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "OLD")
+	home := t.TempDir()
+	t.Setenv("HOME", home) // no archive is found
+	t.Setenv("USERPROFILE", home)
+	record := func(body string) string {
+		dest := t.TempDir()
+		writeFile(t, filepath.Join(archive.ManifestDir(dest), "OLD.json"), body)
+		return dest
+	}
+	cases := map[string]string{
+		"the archive offline": filepath.Join(t.TempDir(), "unmounted"),
+		"a garbled record":    record(`{"machine":"OLD","inst`),
+	}
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		dest := record(`{"machine":"OLD","installId":"id-mine"}`)
+		shard := filepath.Join(archive.ManifestDir(dest), "OLD.json")
+		os.Chmod(shard, 0)
+		t.Cleanup(func() { os.Chmod(shard, 0o644) })
+		cases["an unreadable record"] = dest
+	}
+	for name, dest := range cases {
+		root := t.TempDir()
+		if err := archive.SaveConfig(root, archive.Config{Destination: dest, InstallID: "id-mine", FormerMachines: []string{"OLDER"}}); err != nil {
+			t.Fatal(err)
+		}
+		before := mustReadFile(t, archive.ConfigPath(root))
+		var out bytes.Buffer
+		err := configAction(&out, root, []string{"set-machine", "NEW"})
+		if err == nil || err.Error() != "the archive can't be read to check whether OLD was this computer; try again when it can" {
+			t.Errorf("%s: set-machine = %v, want a refusal:\n%s", name, err, out.String())
+		}
+		if after := mustReadFile(t, archive.ConfigPath(root)); after != before {
+			t.Errorf("%s: the refused rename changed the config:\n%s", name, after)
+		}
+	}
+
+	if runtime.GOOS == "windows" {
+		return // a Drive letter may be found there
+	}
+	root := t.TempDir()
+	if err := archive.SaveConfig(root, archive.Config{InstallID: "id-mine"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := configAction(&out, root, []string{"set-machine", "NEW"}); err != nil {
+		t.Fatalf("with no archive: %v", err)
+	}
+	if cfg, _ := archive.LoadConfig(root); cfg.Machine != "NEW" || len(cfg.FormerMachines) != 0 || strings.Contains(out.String(), "--forget") {
+		t.Errorf("with no archive: machine %q, former %v:\n%s", cfg.Machine, cfg.FormerMachines, out.String())
 	}
 }

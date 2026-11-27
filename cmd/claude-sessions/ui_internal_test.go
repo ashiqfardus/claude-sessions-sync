@@ -687,15 +687,16 @@ func TestReadPageIsSandboxed(t *testing.T) {
 func TestPlainErrorNeverLeaksRawText(t *testing.T) {
 	const generic = "That didn't work. The details are in the log on the Settings page."
 	for err, want := range map[error]string{
-		errors.New("open /x/y: permission denied"):                                                          generic,
-		fmt.Errorf("push: %w", fmt.Errorf("%w (pid 7, 3s old)", archive.ErrLockHeld)):                       "Another backup or import is running on this computer. Try again in a minute.",
-		errors.New("no archive destination: run `claude-sessions config set-destination`"):                  "No archive folder yet. Choose the folder your sync app keeps in sync.",
-		errors.New("/a/b is not reachable - is the sync client mounted?"):                                   "The archive folder can't be reached right now. Check that your sync app is running, then try again.",
-		errors.New("/a is not available - is the sync client mounted?"):                                     "The archive folder can't be reached right now. Check that your sync app is running, then try again.",
-		errors.New(`"a b" cannot name a machine: use letters, digits, dots and dashes`):                     "Use letters, digits, dots and dashes in the name.",
-		errors.New("/x does not exist or is not a folder"):                                                  "That folder doesn't exist on this computer.",
-		fmt.Errorf("source not readable: %w", &os.PathError{Op: "open", Path: "/x", Err: os.ErrNotExist}):   "That folder doesn't exist on this computer.",
-		fmt.Errorf("source not readable: %w", &os.PathError{Op: "open", Path: "/x", Err: os.ErrPermission}): generic,
+		errors.New("open /x/y: permission denied"):                                                            generic,
+		fmt.Errorf("push: %w", fmt.Errorf("%w (pid 7, 3s old)", archive.ErrLockHeld)):                         "Another backup or import is running on this computer. Try again in a minute.",
+		errors.New("no archive destination: run `claude-sessions config set-destination`"):                    "No archive folder yet. Choose the folder your sync app keeps in sync.",
+		errors.New("/a/b is not reachable - is the sync client mounted?"):                                     "The archive folder can't be reached right now. Check that your sync app is running, then try again.",
+		errors.New("/a is not available - is the sync client mounted?"):                                       "The archive folder can't be reached right now. Check that your sync app is running, then try again.",
+		errors.New(`"a b" cannot name a machine: use letters, digits, dots and dashes`):                       "Use letters, digits, dots and dashes in the name.",
+		errors.New("/x does not exist or is not a folder"):                                                    "That folder doesn't exist on this computer.",
+		errors.New("the archive can't be read to check whether OLD was this computer; try again when it can"): "The archive can't be read to check whether OLD was this computer; try again when it can.",
+		fmt.Errorf("source not readable: %w", &os.PathError{Op: "open", Path: "/x", Err: os.ErrNotExist}):     "That folder doesn't exist on this computer.",
+		fmt.Errorf("source not readable: %w", &os.PathError{Op: "open", Path: "/x", Err: os.ErrPermission}):   generic,
 	} {
 		if got := plainError(err); got != want {
 			t.Errorf("plainError(%q) = %q, want %q", err, got, want)
