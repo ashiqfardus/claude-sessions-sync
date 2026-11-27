@@ -34,8 +34,8 @@ func TestWarmReadsEachOnceEightAtATime(t *testing.T) {
 	wait()
 	mu.Lock()
 	defer mu.Unlock()
-	if most != warmers {
-		t.Errorf("%d read at once at most, want %d", most, warmers)
+	if most != 8 {
+		t.Errorf("%d read at once at most, want 8", most)
 	}
 	sort.Strings(got)
 	if strings.Join(got, ",") != strings.Join(paths, ",") {
