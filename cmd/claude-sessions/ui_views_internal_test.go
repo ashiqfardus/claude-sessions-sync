@@ -1194,3 +1194,28 @@ func TestProfileReadyNeverWaits(t *testing.T) {
 		t.Errorf("after comparing, profileDiffs = %d, want 1", set.ProfileDiffs)
 	}
 }
+
+// Settings marks a name this computer went by - its record carries this install's ID -
+// and a rename offers to forget that alone, never another computer's (settings.js).
+func TestSettingsMarksANameThisComputerWentBy(t *testing.T) {
+	root, dest := queryFixture(t)
+	cfg, _ := archive.LoadConfig(root)
+	cfg.InstallID = "id-mine"
+	if err := archive.SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	for name, id := range map[string]string{"LAP-1": "id-mine", "LAP-2": "id-mine", "LAP-3": "id-other"} {
+		s := readShard(dest, name)
+		s.InstallID = id
+		writeShard(t, dest, s)
+	}
+	set := querySettings(root, false, time.Now(), &profileCache{})
+	for _, c := range set.Computers {
+		if want := c.Name == "LAP-2"; c.Former != want {
+			t.Errorf("%s: former %v, want %v", c.Name, c.Former, want)
+		}
+	}
+	if len(set.Computers) != 3 {
+		t.Errorf("computers %+v", set.Computers)
+	}
+}

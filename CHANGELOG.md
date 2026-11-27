@@ -63,6 +63,32 @@ All notable changes to this project are documented here. This project follows
   still comparing them; the comparison reads eight files at a time.
 - **Coming back to Overview during a backup showed no count until the next one.** The
   page now picks up the backup's latest stage and count straight away.
+- **Bring in's preview went quiet for minutes after reading the conversations.** Before it
+  said how many conversations here would still name other computers' work folders, it
+  read every conversation on this computer without a word: two and a half minutes on one
+  with a few thousand. It now says how far it has got, as `checking file paths in
+  conversations: 120/3800`, and looks for all the folders in one pass over each line
+  instead of one pass for each, about fifteen times faster, with the same count.
+- **Bring in's count of conversations stopped short**, at `reading conversations:
+  230/246`, when some projects were not found here. Their conversations count too, so it
+  ends at 246/246.
+- **Progress written to a pipe or a file ran into the next line.** Each text ended with a
+  carriage return, so with stdout and stderr captured together the next line was glued on
+  (`reading conversations: 0/246+ -Users-…`). There each is now a line of its own; the
+  panel and a terminal show progress as before.
+- **`config set-machine` could say to forget another computer.** On a profile that had
+  never pushed, the old name was only the host name's default, which another computer in
+  a shared archive may go by; `set-machine` kept it as this computer's and said to run
+  `machines --forget` on it. It now keeps the old name, and says to forget it, only when
+  the archive's record for that name was written by this computer. Settings offers
+  Forget after a rename only then too.
+- **Readable pages were all rendered again, on every computer.** When
+  `html/.render-state.json` could not be read, say while the sync app replaced it, every
+  page counted as out of date, and the state saved afterwards held only that run's pages,
+  so the other computers started over too. A state that cannot be read is read again a
+  moment later; if it still cannot be, nothing is rendered that run and the log says why
+  (`render --force` renders every page again). Each computer now adds its pages to the
+  state on disk when it saves, instead of writing over what another computer saved since.
 - **Back up now showed no progress, and a first backup showed nothing.** Overview now
   shows what the backup is doing above the cards, with a bar that fills when it reports
   a count, and the computers card says this computer's first backup is running.

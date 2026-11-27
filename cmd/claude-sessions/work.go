@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
@@ -1783,8 +1784,9 @@ var errLive = errors.New("changed while being rewritten")
 // transcripts included (spec §7a). A file changed in the hour before now may belong
 // to a live session and is left alone. Each original is copied to
 // <root>/repoint-backup/<yyyymmdd-hhmm>/<bucket>/ before the rewrite replaces it, and
-// with dryRun nothing at all is written. The caller holds the lock.
-func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool, imported *importRecord) repointResult {
+// with dryRun nothing at all is written. hb counts the conversations as they are
+// checked. The caller holds the lock.
+func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool, imported *importRecord, hb *heartbeat) repointResult {
 	var res repointResult
 	rules := rewrite.RulesForMoves(moves)
 	if len(rules) == 0 {
@@ -1794,11 +1796,18 @@ func repointLocal(root string, moves []rewrite.Move, now time.Time, dryRun bool,
 	for i, r := range rules {
 		finds[i] = strings.ToLower(r.Find)
 	}
+	quick := findsOf(finds)
 	rec, recorded := loadRepointed(root), false
 	buckets, _ := claude.ListBuckets(claude.ProjectsDir(root))
+	n := 0
+	for _, b := range buckets {
+		n += len(b.Transcripts)
+	}
+	hb.checking("checking file paths in conversations", n)
 buckets:
 	for _, b := range buckets {
 		for _, t := range b.Transcripts {
+			hb.step()
 			rels := []string{filepath.Base(t.Path)}
 			for _, x := range t.Extras {
 				if claude.IsSubagentTranscript(x) {
@@ -1808,7 +1817,7 @@ buckets:
 			for i, rel := range rels {
 				p := filepath.Join(b.Dir, rel)
 				st, err := os.Lstat(p)
-				if err != nil || !st.Mode().IsRegular() || !pointing(p, rules, finds) {
+				if err != nil || !st.Mode().IsRegular() || !pointing(p, rules, finds, quick) {
 					continue
 				}
 				if st.ModTime().After(now.Add(-time.Hour)) {
@@ -1866,30 +1875,85 @@ buckets:
 
 // countPointing is how many transcripts here a --repoint would rewrite: the same files
 // and the same hour's grace, read without writing.
-func countPointing(root string, moves []rewrite.Move) int {
-	return repointLocal(root, moves, time.Now(), true, nil).Rewritten
+func countPointing(root string, moves []rewrite.Move, hb *heartbeat) int {
+	return repointLocal(root, moves, time.Now(), true, nil, hb).Rewritten
 }
 
 // pointing reports whether a rule would change the file at p. It reads a line at a
 // time, never the whole file, and matches in full only a line holding one of finds
-// (the rules' Find strings, lower-cased: rules ignore case).
-func pointing(p string, rules []rewrite.Rule, finds []string) bool {
+// (the rules' Find strings, lower-cased: rules ignore case). quick passes over a line
+// that surely holds none first: most lines name no moved folder, and looking for each
+// find in turn was most of an import's preview.
+func pointing(p string, rules []rewrite.Rule, finds []string, quick *findSet) bool {
 	f, err := os.Open(p)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
 	r := bufio.NewReaderSize(f, 256<<10)
+	var buf []byte
 	for {
 		line, err := r.ReadString('\n')
-		low := strings.ToLower(line)
-		if slices.ContainsFunc(finds, func(x string) bool { return strings.Contains(low, x) }) && rewrite.Apply(line, rules, nil) != line {
-			return true
+		if quick.may(line, &buf) {
+			low := strings.ToLower(line)
+			if slices.ContainsFunc(finds, func(x string) bool { return strings.Contains(low, x) }) && rewrite.Apply(line, rules, nil) != line {
+				return true
+			}
 		}
 		if err != nil {
 			return false
 		}
 	}
+}
+
+// findSet looks for several lower-cased ASCII finds in one pass over a line: by each
+// one's first two bytes, then in full.
+type findSet struct {
+	first [1 << 16]bool
+	finds map[uint16][]string
+}
+
+// findsOf is the set of finds, or nil when one is not ASCII or shorter than two bytes:
+// then every line is matched in full.
+func findsOf(finds []string) *findSet {
+	set := &findSet{finds: map[uint16][]string{}}
+	for _, x := range finds {
+		if len(x) < 2 || strings.IndexFunc(x, func(r rune) bool { return r >= utf8.RuneSelf }) >= 0 {
+			return nil
+		}
+		k := uint16(x[0])<<8 | uint16(x[1])
+		set.first[k] = true
+		set.finds[k] = append(set.finds[k], x)
+	}
+	return set
+}
+
+// may reports whether line, as strings.ToLower lower-cases it, may hold one of the
+// finds; false only when it surely holds none. buf is room for the line's lower case.
+func (s *findSet) may(line string, buf *[]byte) bool {
+	// Of all the runes only A-Z, İ and the Kelvin sign lower-case to ASCII: with
+	// neither of the last two in line, its A-Z lower case holds every ASCII text that
+	// strings.ToLower's does.
+	if s == nil || strings.Contains(line, "\u0130") || strings.Contains(line, "\u212a") {
+		return true
+	}
+	b := append((*buf)[:0], line...)
+	*buf = b
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	for i := 0; i+1 < len(b); i++ {
+		if k := uint16(b[i])<<8 | uint16(b[i+1]); s.first[k] {
+			for _, x := range s.finds[k] {
+				if len(b)-i >= len(x) && string(b[i:i+len(x)]) == x { // compared in place, not copied
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // claimBackup makes this run's backup folder, <root>/repoint-backup/<yyyymmdd-hhmm>,

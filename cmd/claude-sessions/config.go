@@ -225,6 +225,16 @@ func archiveMark(dir string) func(os.DirEntry) bool {
 	}
 }
 
+// wasThisComputer reports whether the archive's record for name was written by this
+// install, whose ID is id: a name this computer pushed under, not another computer's.
+func wasThisComputer(root, id, name string) bool {
+	if id == "" {
+		return false // no push from this profile yet
+	}
+	dest, _, err := archive.ResolveDestination(root, "")
+	return err == nil && dest != "" && readShard(dest, name).InstallID == id
+}
+
 // configAction runs every action but show, printing on w.
 func configAction(w io.Writer, root string, rest []string) (err error) {
 	action := rest[0]
@@ -335,19 +345,25 @@ func configAction(w io.Writer, root string, rest []string) (err error) {
 		}
 		previous := machineName()
 		cfg.Machine = name
-		// The old name stays this machine's: its files in the archive carry it.
-		var former []string
-		for _, f := range append(cfg.FormerMachines, previous) {
+		// The old name stays this machine's when its files in the archive carry it. A
+		// name it never pushed under - the hostname's default on a fresh profile - may be
+		// another computer's: it is neither kept nor offered to forget.
+		renamed := !strings.EqualFold(previous, name) && wasThisComputer(root, cfg.InstallID, previous)
+		former := []string{} // saved even when empty: the name taken may have been a former one
+		for _, f := range cfg.FormerMachines {
 			if !strings.EqualFold(f, name) && !slices.ContainsFunc(former, func(x string) bool { return strings.EqualFold(x, f) }) {
 				former = append(former, f)
 			}
+		}
+		if renamed && !slices.ContainsFunc(former, func(x string) bool { return strings.EqualFold(x, previous) }) {
+			former = append(former, previous)
 		}
 		cfg.FormerMachines = former
 		if err := archive.SaveConfig(root, cfg); err != nil {
 			return err
 		}
 		fmt.Fprintf(w, "This machine is now known as %s (saved in %s).\n", name, archive.ConfigPath(root))
-		if !strings.EqualFold(previous, name) {
+		if renamed {
 			fmt.Fprintf(w, "It was %s. Run `claude-sessions push`, then `claude-sessions machines --forget %s`\n", previous, previous)
 			fmt.Fprintln(w, "so the archive does not keep listing the old name as another machine.")
 		}

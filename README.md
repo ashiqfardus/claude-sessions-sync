@@ -683,10 +683,13 @@ its projects at its own paths. Set each one up as in Step 8.
   claude-sessions config set-machine my-macbook
   ```
 
-  The hooks and the sweep use it too. The old name is remembered as this computer's,
-  so its files in the archive are still its own, and other computers keep the forks
-  they filed under it. Then run `claude-sessions push`, and
-  `claude-sessions machines --forget <old name>` so the list stops showing it.
+  The hooks and the sweep use it too. When this computer has pushed under the old
+  name, the old name is remembered as this computer's, so its files in the archive are
+  still its own, and other computers keep the forks they filed under it; `set-machine`
+  then says to run `claude-sessions push`, and
+  `claude-sessions machines --forget <old name>` so the list stops showing it. A name
+  this computer never pushed under, such as the host name before a first push, is
+  neither remembered nor offered to forget: another computer may go by it.
 - **Names must differ.** Two computers under one name would overwrite each other's
   manifest. Each install makes a random ID on its first push, keeps it in
   `session-sync.json` and writes it into its manifest, so when another computer has

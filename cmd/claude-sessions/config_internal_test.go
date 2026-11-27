@@ -154,3 +154,42 @@ func TestSetDestinationGivesTheArchiveAFolderOfItsOwn(t *testing.T) {
 		t.Errorf("a saved destination resolves to %q (%v)", dest, err)
 	}
 }
+
+// set-machine keeps the old name, and says to forget it, only when the archive's record
+// for that name was written by this install. On a fresh profile the old name is the
+// hostname's default, which another computer in a shared archive may go by: forgetting
+// it would forget that computer.
+func TestSetMachineKeepsOnlyANameThisComputerPushedUnder(t *testing.T) {
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "OLD")
+	for _, c := range []struct {
+		name, mine, record string
+		want               bool
+	}{
+		{"a fresh profile", "", "id-other", false},
+		{"another computer's record", "id-mine", "id-other", false},
+		{"no record", "id-mine", "", false},
+		{"this computer's record", "id-mine", "id-mine", true},
+	} {
+		root, dest := t.TempDir(), t.TempDir()
+		if err := archive.SaveConfig(root, archive.Config{Destination: dest, InstallID: c.mine, FormerMachines: []string{"OLDER"}}); err != nil {
+			t.Fatal(err)
+		}
+		if c.record != "" {
+			if err := os.MkdirAll(archive.ManifestDir(dest), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(archive.ManifestDir(dest), "OLD.json"), []byte(`{"machine":"OLD","installId":"`+c.record+`"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var out bytes.Buffer
+		if err := configAction(&out, root, []string{"set-machine", "NEW"}); err != nil {
+			t.Fatal(err)
+		}
+		cfg, _ := archive.LoadConfig(root)
+		kept, advised := slices.Contains(cfg.FormerMachines, "OLD"), strings.Contains(out.String(), "--forget OLD")
+		if kept != c.want || advised != c.want || cfg.Machine != "NEW" || !slices.Contains(cfg.FormerMachines, "OLDER") {
+			t.Errorf("%s: former %v, advised %v, want %v:\n%s", c.name, cfg.FormerMachines, advised, c.want, out.String())
+		}
+	}
+}

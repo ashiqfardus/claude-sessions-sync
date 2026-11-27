@@ -351,7 +351,8 @@ register('settings', {
     nameInput.addEventListener('input', () => { renameBtn.disabled = !nameInput.value.trim() || nameInput.value.trim() === me })
     nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !renameBtn.disabled && !busy(renameBtn)) rename() })
     // Any name goes to the CLI, which decides; a refusal shows its sentence (Ruling P9).
-    // The old name stays in the archive as another computer: offer to forget it, behind Forget's own confirm.
+    // The old name stays in the archive as another computer: offer to forget it, behind Forget's own confirm,
+    // only when its record is this computer's (former). A default name never pushed may be another computer's.
     async function rename() {
       const old = me
       if (!await config(renameBtn, 'Renaming…', 'set-machine', nameInput.value.trim())) return
@@ -359,7 +360,8 @@ register('settings', {
       nameInput.value = me // the name as saved, which the CLI may have tidied
       renameBtn.disabled = true
       const forgetOld = () => [...slot('computers').querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Forget ' + old)
-      if (!old || same(old, me) || !forgetOld()) return toast('Renamed. The next backup uses the new name.')
+      const former = (v.computers || []).some((c) => c.former && same(c.name, old))
+      if (!old || same(old, me) || !former || !forgetOld()) return toast('Renamed. The next backup uses the new name.')
       toast(`Renamed. The next backup uses the new name; ${old} stays listed until you forget it.`, {
         action: { label: 'Forget ' + old, run: () => { const b = forgetOld(); if (b) { b.focus(); forget(old, b) } } },
       })

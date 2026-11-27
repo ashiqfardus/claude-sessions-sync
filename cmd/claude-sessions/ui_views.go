@@ -81,6 +81,9 @@ type computerView struct {
 	Ready         bool      `json:"ready"`
 	LastPush      time.Time `json:"lastPush"` // zero when unknown (Ruling P33)
 	Conversations int       `json:"conversations"`
+	// Former is a name this computer went by: its record carries this install's ID.
+	// Settings offers to forget an old name after a rename only then. Settings sets it.
+	Former bool `json:"former"`
 }
 
 type summaryView struct {
@@ -1265,6 +1268,11 @@ func querySettings(root string, fromShortcut bool, now time.Time, profiles *prof
 	rows, _, _ := archivedNow(dest, shards)
 	logged, _ := lastPush(root)
 	v.Computers = computersOf(shards, rows, logged, now)
+	if cfg, err := archive.LoadConfig(root); err == nil && cfg.InstallID != "" {
+		for i, c := range v.Computers {
+			v.Computers[i].Former = !c.This && shards[c.Name].InstallID == cfg.InstallID
+		}
+	}
 	for name, s := range shards {
 		if strings.EqualFold(name, machineName()) {
 			if s.WorkFolders != nil {

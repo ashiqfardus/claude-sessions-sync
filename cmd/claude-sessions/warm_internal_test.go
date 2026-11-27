@@ -171,7 +171,7 @@ func TestImportPullProgressOnStderrOnly(t *testing.T) {
 	for _, c := range []struct {
 		args []string
 		work string
-	}{{[]string{"import", "--search-root", search, "--depth", "1"}, "reading work folders: 3/3\r"}, {[]string{"pull"}, "reading work folders\r"}} {
+	}{{[]string{"import", "--search-root", search, "--depth", "1"}, "reading work folders: 3/3\n"}, {[]string{"pull"}, "reading work folders\n"}} {
 		stdout, stderr := captureBoth(t, func() error {
 			cmd := map[string]func([]string) error{"import": cmdImport, "pull": cmdPull}[c.args[0]]
 			return cmd(append(c.args[1:], "--claude-dir", claudeDir, "--archive", dest, "--dry-run", "--json"))
@@ -180,7 +180,7 @@ func TestImportPullProgressOnStderrOnly(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout), &rows); err != nil || strings.Contains(stdout, "reading") {
 			t.Errorf("%s --json: not JSON alone (%v):\n%s", c.args[0], err, stdout)
 		}
-		if !strings.Contains(stderr, "reading conversations: 1/1\r") || !strings.Contains(stderr, c.work) {
+		if !strings.Contains(stderr, "reading conversations: 1/1\n") || !strings.Contains(stderr, c.work) { // a file: a line each
 			t.Errorf("%s --json: no progress on stderr: %q", c.args[0], stderr)
 		}
 	}

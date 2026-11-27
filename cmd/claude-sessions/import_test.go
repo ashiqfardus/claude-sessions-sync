@@ -277,7 +277,7 @@ func TestImportJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import --json failed: %v\n%s%s", err, out, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "reading conversations: 1/1\r") {
+	if !strings.Contains(stderr.String(), "reading conversations: 1/1\n") { // a pipe: a line each
 		t.Errorf("no progress text on stderr: %q", stderr.String())
 	}
 	var rows []struct {

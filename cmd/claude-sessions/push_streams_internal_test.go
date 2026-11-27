@@ -203,7 +203,7 @@ func TestPushSaysHowFarItHasGot(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &res); err != nil || res.Sessions != 3 {
 		t.Errorf("--json stdout is not the result alone (%v):\n%q", err, stdout)
 	}
-	if !strings.Contains(stderr, "copying conversations: 3/3\r") {
+	if !strings.Contains(stderr, "copying conversations: 3/3\n") { // a pipe or a file: a line each
 		t.Errorf("--json: no progress on stderr:\n%q", stderr)
 	}
 
