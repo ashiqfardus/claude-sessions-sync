@@ -93,9 +93,13 @@ All notable changes to this project are documented here. This project follows
   A page list that stays garbled across two runs on a computer is rebuilt by that
   computer; one that cannot be read at all waits. Each computer now adds its pages to the
   state on disk when it saves, instead of writing over what another computer saved since.
-- **Back up now showed no progress, and a first backup showed nothing.** Overview now
-  shows what the backup is doing above the cards, with a bar that fills when it reports
-  a count, and the computers card says this computer's first backup is running.
+- **Back up now showed no progress, and a first backup showed nothing.** A first backup
+  of a few thousand conversations ran for a minute behind a disabled button. `push` now
+  says how far it has got - `copying conversations: 120/2000`, then `looking for work
+  folders`, `copying work folders`, `compressing old conversations` and `building
+  readable pages`, each with its count (Preview backup says `checking`) - and Overview
+  shows it above the cards with a bar that fills, and says this computer's first backup
+  is running.
 - **Preview backup could list thousands of files.** It lists the first 50, then "and N
   more".
 - **Delete old conversations: a long preview pushed Delete and Cancel far down the page.**
@@ -103,7 +107,8 @@ All notable changes to this project are documented here. This project follows
 - **Remove duplicate copies said "0.0 MB" for small copies.** Its sizes use KB, MB or GB
   like the rest of Storage.
 - **Another computer's last backup read as an exact time.** The archive keeps it only to
-  the hour, so Overview says "About 07:00". This computer's time stays exact.
+  the hour, so Overview says "About 07:00" and Settings "Today, about 07:00". This
+  computer's time stays exact.
 - **Conversations, Bring in, Settings and Commands fit a phone.** Each row of their tables
   is a card with its details named, and long paths wrap instead of widening the page. On
   Conversations the filters sit two by two, Select all is written above the cards, the
@@ -126,15 +131,8 @@ All notable changes to this project are documented here. This project follows
 - **Renaming this computer left its old name listed as another computer.** After a rename
   the panel offers to forget the old name. Forget asks first, and the old name's
   conversations stay in the archive.
-- **Settings showed another computer's last backup as an exact time.** The archive keeps
-  it only to the hour, so it now says "Today, about 07:00".
 - **A long path under "Where the other computers' folders go here" widened the page on a
   phone.** It wraps.
-- **Back up now showed no progress.** A first backup of a few thousand conversations ran
-  for a minute behind a disabled button. `push` now says how far it has got, for the
-  panel to show: `copying conversations: 120/2000`, then `looking for work folders`,
-  `copying work folders`, `compressing old conversations` and `building readable
-  pages`, each with its count. Preview backup says `checking` instead of `copying`.
 - **Preview backup counted conversations it did not list.** "Would copy 2,000 files"
   came with an empty list: `push --dry-run` named only work-folder files. It now prints
   a `would copy` line for each file it counts: each conversation, the files in its
