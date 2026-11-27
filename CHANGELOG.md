@@ -14,6 +14,8 @@ All notable changes to this project are documented here. This project follows
 - **Bring in downloaded memory files it did not need.** To tell a memory file that is
   new here from one deleted here, it read the archived copy even when this computer had
   never taken it. It now reads one only when the copy it took is the same size.
+- **From a folder instead: a mistyped folder gave only "That didn't work".** The panel
+  now says "That folder doesn't exist on this computer."
 
 ### Changed
 - `import` and `pull` write how far they have got on stderr when it is not a terminal,

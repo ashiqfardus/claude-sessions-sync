@@ -657,7 +657,8 @@ func plainError(err error) string {
 		return "The archive folder can't be reached right now. Check that your sync app is running, then try again."
 	case strings.Contains(msg, "cannot name a machine"): // config set-machine refused the name
 		return "Use letters, digits, dots and dashes in the name."
-	case strings.Contains(msg, "does not exist or is not a folder"):
+	case strings.Contains(msg, "does not exist or is not a folder"),
+		strings.Contains(msg, "source not readable") && errors.Is(err, os.ErrNotExist): // restore's
 		return "That folder doesn't exist on this computer."
 	}
 	return "That didn't work. The details are in the log on the Settings page."
