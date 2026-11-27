@@ -18,6 +18,10 @@ All notable changes to this project are documented here. This project follows
   "Only on the schedule" beside "the scheduled backup isn't set up". With neither set
   up they now say one thing: "Automatic backup is off. Nothing is backed up until you
   choose Back up now.", with Set up again.
+- **Right after Bring in, Health showed a red Problem.** Conversations just brought in
+  from another computer were said not to be in the archive until the next backup. The
+  check now counts one as archived when the archive holds it under the other computer's
+  folder and it has not been continued here, as a backup does.
 - **Rules and skills never settled after Forget.** A forgotten computer's rules and
   skills stayed in the comparison, so Settings kept saying a file differs between your
   computers, and Compare listed it. A computer with no record in the archive is now
