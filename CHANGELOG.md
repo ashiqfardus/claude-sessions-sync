@@ -41,6 +41,10 @@ All notable changes to this project are documented here. This project follows
 - **Conversations is a list of cards on a tablet too**, and in any window where its table
   would scroll sideways, with Read beside each title.
 - **"Open the full log" on Overview goes to the log**, not to the top of Settings.
+- **Preview backup's "and N more" uses the backup's own count**, so a list longer than
+  the lines a job keeps still adds up.
+- **Change folder says where the archive went** when it made a folder of its own inside
+  the one you chose, and so does Choose folder on a page with no archive yet.
 - `push` writes how far it has got on stderr when it is not a terminal, as `import`
   does; `--json` output, `--quiet` runs, the log and a terminal get none of it.
 - `import` and `pull` write how far they have got on stderr when it is not a terminal,

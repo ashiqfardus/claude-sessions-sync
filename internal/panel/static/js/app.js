@@ -409,6 +409,15 @@ export async function chooseArchive(old, show = (p) => p) {
   return ok ? path : null
 }
 
+// ownFolder is what a set-destination run says when it put the archive in a folder of its
+// own inside the folder chosen (the CLI's "Using <path>: …" line), or null. show formats the path.
+export function ownFolder(st, show = (p) => p) {
+  const line = ((st && st.lines) || []).find((l) => l.startsWith('Using '))
+  const m = line && /^Using (.+): (a folder of its own inside the one you chose\.)$/.exec(line)
+  return m ? `The archive folder is now ${show(m[1])}, ${m[2]}` : line || null
+}
+const AFTER_RELOAD = 'cs.toastAfterReload' // a toast the page shows once it has reloaded
+
 async function setArchive(unreachable) {
   // The folder that can't be reached is the old one; read while the chooser is open.
   const old = unreachable ? api.get('/api/settings').then((s) => (s && s.config && s.config.inUse) || '', () => '') : null
@@ -416,8 +425,10 @@ async function setArchive(unreachable) {
   if (!path) return
   try {
     const st = await api.run('config', { action: 'set-destination', args: [path] }, { wait: true })
-    if (st.ok) location.reload()
-    else toast(st.error || GENERIC)
+    if (!st.ok) return toast(st.error || GENERIC)
+    const said = ownFolder(st)
+    if (said) try { sessionStorage.setItem(AFTER_RELOAD, said) } catch { /* the page shows the folder anyway */ }
+    location.reload()
   } catch (e) {
     toast(e.plain ? e.message : GENERIC)
   }
@@ -612,6 +623,11 @@ rail(nav, document.querySelector('.grip[role="separator"]'))
 addEventListener('hashchange', () => show())
 if (!location.hash.startsWith('#/')) history.replaceState(null, '', '#/overview')
 show(false, true)
+try {
+  const said = sessionStorage.getItem(AFTER_RELOAD)
+  sessionStorage.removeItem(AFTER_RELOAD)
+  if (said) toast(said)
+} catch { /* nothing to say */ }
 beat()
 beatTimer = setInterval(beat, 30000)
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !dead) { beat(); poll() } })

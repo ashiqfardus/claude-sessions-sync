@@ -370,7 +370,8 @@ register('overview', {
     function showPreview(n, lines) {
       const files = lines.filter((l) => l.startsWith(WOULD) && !TOTAL.test(l)).map((l) => l.slice(WOULD.length))
       const items = files.slice(0, LISTED).map((f) => h('li', null, f))
-      if (files.length > LISTED) items.push(h('li', { class: 'muted' }, 'and ' + (files.length - LISTED).toLocaleString('en-GB') + ' more'))
+      // The rest from push's own count: the job keeps only its last lines, so a long list loses its first.
+      if (n > items.length) items.push(h('li', { class: 'muted' }, 'and ' + (n - items.length).toLocaleString('en-GB') + ' more'))
       modal('Preview backup', null, (box, done) => {
         const id = box.getAttribute('aria-labelledby') + '-body'
         box.setAttribute('aria-describedby', id)

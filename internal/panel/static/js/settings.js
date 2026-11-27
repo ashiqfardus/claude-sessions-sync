@@ -3,7 +3,7 @@
 // pages, the full backup file, the log and About. Each control runs the CLI's command
 // as a panel action, then reads the page again. Names, paths and log lines come from
 // the archive or this computer: they reach the page only through h() and textContent.
-import { h, icon, api, follow, toast, modal, confirmDialog, register, noArchive, chooseArchive, when, allowExternal, README, GENERIC } from './app.js'
+import { h, icon, api, follow, toast, modal, confirmDialog, register, noArchive, chooseArchive, ownFolder, when, allowExternal, README, GENERIC } from './app.js'
 import { combo } from './combo.js'
 import { chooseFolder } from './folders.js'
 
@@ -351,8 +351,9 @@ register('settings', {
       const btn = e.currentTarget
       const path = await chooseArchive(v.archive ? v.archive.path : null, tilde)
       if (!path) return
-      if (!await config(btn, 'Changing the archive folder…', 'set-destination', path)) return
-      toast('Changed the archive folder.')
+      const st = await config(btn, 'Changing the archive folder…', 'set-destination', path)
+      if (!st) return
+      toast(ownFolder(st, tilde) || 'Changed the archive folder.')
       await reload(btn)
     })
 
