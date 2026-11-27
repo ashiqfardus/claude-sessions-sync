@@ -1025,7 +1025,7 @@ func sessionWriters(dest string) func(bucket, id string, info os.FileInfo) strin
 
 // safeBucketName reports whether name, an archive folder, may be filed as a bucket.
 // Each file this tool keeps beside a bucket's memory base in session-sync-base -
-// imported.json, imported.log, work-held.json - has a dot, and a bucket named like one
+// imported.json, imported.log, work-held.json, render-broken.txt - has a dot, and a bucket named like one
 // would take its path; claude.Slug never makes one.
 func safeBucketName(name string) bool {
 	return name != "" && !strings.ContainsAny(name, `./\`)

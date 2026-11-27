@@ -1492,7 +1492,7 @@ func heldPath(root string) string {
 // renderBrokenPath is this computer's note of a page list that did not parse
 // (render.Options.BrokenNote).
 func renderBrokenPath(root string) string {
-	return filepath.Join(root, "session-sync-base", "render-broken")
+	return filepath.Join(root, "session-sync-base", "render-broken.txt")
 }
 
 // loadHeld reads the record. Missing or unreadable is empty: push then compares again.
