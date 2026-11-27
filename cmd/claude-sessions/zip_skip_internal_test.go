@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -46,7 +47,7 @@ func TestZipSkippedIsRetriedOnlyWhenItMayPass(t *testing.T) {
 			rec := strings.Replace(c.record, "%d", strconv.FormatInt(copyBytes(dir, cleanID), 10), 1)
 			writeFile(t, zipSkippedPath(root), `{"web-app/`+cleanID+`":`+rec+"}\n")
 
-			n, _, _ := zipIdleCopies(root, dest, []string{"web-app"}, now, 0, false, func(string, ...any) {})
+			n, _, _ := zipIdleCopies(root, dest, []string{"web-app"}, now, 0, false, func(string, ...any) {}, startProgress(io.Discard))
 			if got := fileExistsHere(convzip.Path(dir, cleanID)); got != c.zips || (n == 1) != c.zips {
 				t.Errorf("zipped %v (%d), want %v", got, n, c.zips)
 			}
@@ -74,7 +75,7 @@ func TestZipSkippedRecordsWhenToRetry(t *testing.T) {
 	defer func(old func(string, string) error) { unzip = old }(unzip)
 	unzip = func(string, string) error { return errors.New("the file is held by another program") }
 
-	zipIdleCopies(root, dest, []string{"web-app"}, now, 0, false, func(string, ...any) {})
+	zipIdleCopies(root, dest, []string{"web-app"}, now, 0, false, func(string, ...any) {}, startProgress(io.Discard))
 	var got map[string]zipSkip
 	if err := json.Unmarshal([]byte(mustReadFile(t, zipSkippedPath(root))), &got); err != nil {
 		t.Fatal(err)

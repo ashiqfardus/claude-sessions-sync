@@ -7,8 +7,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 )
 
 func writeLog(t *testing.T, lines ...string) string {
@@ -97,5 +100,49 @@ func TestDoctorReportsAMissingHomeFolder(t *testing.T) {
 	}
 	if len(rep.Checks) != 1 || rep.Checks[0].Name != "claude root" || rep.Checks[0].Level != levelFail || rep.OK {
 		t.Errorf("report %+v; want one failed claude root check", rep)
+	}
+}
+
+// E2E M6: a conversation just brought in from the archive sits in this computer's folder
+// for its project, and the archive holds it in the other computer's. The archived check,
+// light or full, counts it as archived, loose or zipped there, as push leaves it to that
+// copy; once continued here it is not.
+func TestArchivedCheckCountsACopyInAnotherBucket(t *testing.T) {
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "LAP-2")
+	root, dest := t.TempDir(), t.TempDir()
+	const id = "44444444-4444-4444-4444-444444444444"
+	theirs := filepath.Join(archive.ProjectsDir(dest), "-home-a-web-app", id+".jsonl")
+	mine := filepath.Join(claude.ProjectsDir(root), "-Users-b-dev-web-app", id+".jsonl")
+	writeFile(t, theirs, `{"cwd":"/home/a/web-app"}`+"\n")
+	writeFile(t, mine, `{"cwd":"/Users/b/dev/web-app"}`+"\n") // repointed: another size
+	at := time.Now().Add(-3 * time.Hour)
+	os.Chtimes(theirs, at, at)
+	brought := at.Add(-(archive.MTimeToleranceSeconds + 1) * time.Second) // olderThanArchive
+	os.Chtimes(mine, brought, brought)
+	got := func() level {
+		t.Helper()
+		bs, err := claude.ListBuckets(claude.ProjectsDir(root))
+		if err != nil {
+			t.Fatal(err)
+		}
+		light, full := archivedCheck(root, dest, bs, true), archivedCheck(root, dest, bs, false)
+		if light.Level != full.Level {
+			t.Errorf("light %+v, full %+v", light, full)
+		}
+		return light.Level
+	}
+	if l := got(); l != levelOK {
+		t.Errorf("brought in, loose there: %s", l)
+	}
+	if _, err := convzip.Zip(filepath.Dir(theirs), id); err != nil {
+		t.Fatal(err)
+	}
+	if l := got(); l != levelOK {
+		t.Errorf("brought in, zipped there: %s", l)
+	}
+	later := time.Now().Add(-time.Hour) // continued here, an hour ago
+	os.Chtimes(mine, later, later)
+	if l := got(); l != levelFail {
+		t.Errorf("continued here: %s", l)
 	}
 }

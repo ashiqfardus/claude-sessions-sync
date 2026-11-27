@@ -624,6 +624,7 @@ func archivedCheck(root, dest string, buckets []claude.Bucket, light bool) check
 	cutoff := time.Now().Add(-archiveLag)
 	held, zips := loadHeld(root), loadZipCompared(root)
 	deleted, _ := archive.LoadDeleted(dest)
+	var holders map[string][]string // listed once, for the first session not in its own bucket
 	for _, b := range buckets {
 		for _, t := range b.Transcripts {
 			if t.ModTime.After(cutoff) {
@@ -643,7 +644,12 @@ func archivedCheck(root, dest string, buckets []claude.Bucket, light bool) check
 			if archive.NeedsCopy(src, dst) && (dst == nil || src.Size() >= dst.Size()) && archive.NeedsCopy(src, fork) &&
 				!held.leftTo(dest, b.Name, t.ID, src) && !(dst == nil && zipCovers(dest, b.Name, t.ID, src, zips, index)) &&
 				unsure == was {
-				pending = append(pending, b.Name+"/"+t.ID)
+				if holders == nil {
+					holders = sessionHolders(dest)
+				}
+				if !heldElsewhere(dest, othersHolding(holders, b.Name, t.ID), t.ID, src) {
+					pending = append(pending, b.Name+"/"+t.ID)
+				}
 			}
 		}
 	}
@@ -657,6 +663,24 @@ func archivedCheck(root, dest string, buckets []claude.Bucket, light bool) check
 		return check{"archived", levelInfo, inFullCheck, ""}
 	}
 	return check{"archived", levelOK, fmt.Sprintf("every session that ended over %d minutes ago is in the archive", int(archiveLag.Minutes())), ""}
+}
+
+// heldElsewhere reports whether one of others, archive buckets holding session id, has a
+// copy not older than the local one at src: a conversation brought in from another
+// computer and not continued here, which push leaves to that copy (heldOther). Told by
+// size and time alone, never by reading a copy: a zip by its own time, which Zip sets to
+// the conversation's last activity.
+func heldElsewhere(dest string, others []string, id string, src os.FileInfo) bool {
+	for _, b := range others {
+		if p := archivedCopy(dest, b, id); p != "" {
+			if !archive.NeedsCopy(src, archive.StatOrNil(p)) {
+				return true
+			}
+		} else if st := archive.StatOrNil(zippedCopy(dest, b, id)); st != nil && !src.ModTime().After(st.ModTime().Add(archive.MTimeToleranceSeconds*time.Second)) {
+			return true
+		}
+	}
+	return false
 }
 
 func liveness(root string) []check {

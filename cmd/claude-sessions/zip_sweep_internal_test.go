@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,7 @@ func TestSweepSaysWhenTheZipWentWhileUnzipping(t *testing.T) {
 		return os.ErrNotExist
 	}
 	var log strings.Builder
-	n, _, _ := zipIdleCopies(root, dest, []string{"web-app"}, now, 0, false, func(f string, a ...any) { log.WriteString(f) })
+	n, _, _ := zipIdleCopies(root, dest, []string{"web-app"}, now, 0, false, func(f string, a ...any) { log.WriteString(f) }, startProgress(io.Discard))
 	if n != 0 || fileExistsHere(convzip.Path(dir, cleanID)) {
 		t.Errorf("the sweep zipped again while another machine was acting")
 	}

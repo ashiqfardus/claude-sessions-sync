@@ -26,6 +26,16 @@ All notable changes to this project are documented here. This project follows
   as figures that count up when the page opens. Each computer has a status dot, and this
   computer's dot pulses while it backs up. On Storage, the biggest projects are one card
   each on a phone.
+- `push` writes how far it has got on stderr when it is not a terminal, as `import`
+  does; `--json` output, `--quiet` runs, the log and a terminal get none of it.
+- `import` and `pull` write how far they have got on stderr when it is not a terminal,
+  as `clean` does; `--json` output is unchanged. A terminal still gets its line every
+  12 seconds. The text is written at most five times a second, with each stage's start
+  and its last count, so a script that reads stdout before stderr never finds stderr
+  full.
+- `clean --yes` names each copy it removes in `session-sync.log`, with what it freed,
+  and each it keeps because the last check failed. From the panel too, which logged
+  only a total.
 
 ### Fixed
 - **Back up now showed no progress, and a first backup showed nothing.** Overview now
@@ -65,6 +75,48 @@ All notable changes to this project are documented here. This project follows
   it only to the hour, so it now says "Today, about 07:00".
 - **A long path under "Where the other computers' folders go here" widened the page on a
   phone.** It wraps.
+- **Back up now showed no progress.** A first backup of a few thousand conversations ran
+  for a minute behind a disabled button. `push` now says how far it has got, for the
+  panel to show: `copying conversations: 120/2000`, then `looking for work folders`,
+  `copying work folders`, `compressing old conversations` and `building readable
+  pages`, each with its count. Preview backup says `checking` instead of `copying`.
+- **Preview backup counted conversations it did not list.** "Would copy 2,000 files"
+  came with an empty list: `push --dry-run` named only work-folder files. It now prints
+  a `would copy` line for each file it counts: each conversation, the files in its
+  folder, memory, rules and skills, and work-folder files.
+- **Bring in sat on "Looking for your projects…" for minutes.** On an archive folder
+  that downloads each file only when it is opened, the preview read the other
+  computers' work folders one file at a time, each a download, and said nothing while
+  it did. It now downloads up to eight at once, however few each work folder holds,
+  and the page says how far it has got,
+  as in `reading work folders: 40/200`, then `reading conversations: 120/3657`.
+- **Bring in read compressed conversations one at a time.** Before filing anything, a
+  real Bring in reads the index of each compressed conversation it files; on a folder
+  that downloads each file when it is opened, each was a download of its own. Up to
+  eight now download at once, as work folders do.
+- **Bring in downloaded memory files it did not need.** To tell a memory file that is
+  new here from one deleted here, it read the archived copy even when this computer had
+  never taken it. It now reads one only when the copy it took is the same size.
+- **With automatic backup off, Health and Settings said two things that did not fit.**
+  "Only on the schedule" beside "the scheduled backup isn't set up". With neither set
+  up they now say one thing: "Automatic backup is off. Nothing is backed up until you
+  choose Back up now.", with Set up again.
+- **Right after Bring in, Health showed a red Problem.** Conversations just brought in
+  from another computer were said not to be in the archive until the next backup. The
+  check now counts one as archived when the archive holds it under the other computer's
+  folder and it has not been continued here, as a backup does.
+- **The archive could be made in your home folder.** Choosing the home folder, or a
+  folder of other files such as a sync app's root, as the archive folder put the
+  archive's folders among your own. `config set-destination`, and Change folder in the
+  panel, now make a `claude-sessions` folder inside it and say so: "Using …: a folder of
+  its own inside the one you chose." An archive folder, an empty one and a new one are
+  taken as before, and a folder saved earlier is not moved.
+- **Rules and skills never settled after Forget.** A forgotten computer's rules and
+  skills stayed in the comparison, so Settings kept saying a file differs between your
+  computers, and Compare listed it. A computer with no record in the archive is now
+  left out. Its copies are not deleted.
+- **From a folder instead: a mistyped folder gave only "That didn't work".** The panel
+  now says "That folder doesn't exist on this computer."
 
 ## [0.7.5] - 2026-11-27
 

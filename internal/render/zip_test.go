@@ -2,6 +2,7 @@ package render
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -340,4 +341,31 @@ func mustStat(t *testing.T, p string) os.FileInfo {
 		t.Fatal(err)
 	}
 	return st
+}
+
+// Progress is given how many conversations the pass takes up - loose and zipped, none
+// of a project left out - and is called once as each is taken up.
+func TestRenderProgressCountsEachConversation(t *testing.T) {
+	dest, bucket, _ := zippedArchive(t)
+	body := `{"type":"user","message":{"role":"user","content":"hi"}}` + "\n"
+	for _, p := range []string{
+		filepath.Join(bucket, "22222222-2222-3333-4444-555555555555.jsonl"),
+		filepath.Join(dest, "projects", "e--work-web", "33333333-2222-3333-4444-555555555555.jsonl"),
+		filepath.Join(dest, "projects", "e--work-secret", "44444444-2222-3333-4444-555555555555.jsonl"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	res, err := Archive(dest, Options{Exclude: []string{"secret"}, Progress: func(n, of int) { got = append(got, fmt.Sprintf("%d/%d", n, of)) }})
+	if err != nil || res.Rendered+res.UpToDate != 3 {
+		t.Fatalf("%+v, %v", res, err)
+	}
+	if strings.Join(got, " ") != "0/3 1/3 2/3 3/3" {
+		t.Errorf("progress %v", got)
+	}
 }

@@ -90,17 +90,23 @@ func runClean(s streams, o cleanOpts) (cleanResult, error) {
 		return res, fmt.Errorf("nothing deleted: %s", plan.Unread)
 	}
 
+	// Each copy is logged: anything a panel or unattended run deletes must be traceable,
+	// and the panel's own line only sums it up. Names come from the archive.
+	logf := newLogger(root, true, nil)
 	for _, c := range plan.Remove {
 		if err := c.verify(dest); err != nil {
 			fmt.Fprintf(s.Err, "  - %s/%s kept: %v\n", c.Bucket, c.ID, err)
+			logf("CLEAN: kept duplicate copy %s/%s: %s", printable(c.Bucket), c.ID, printable(err.Error()))
 			res.Failed++
 			continue
 		}
 		if err := c.delete(dest); err != nil {
 			fmt.Fprintf(s.Err, "  x %s/%s: %v\n", c.Bucket, c.ID, err)
+			logf("CLEAN: could not remove duplicate copy %s/%s, perhaps in part: %s", printable(c.Bucket), c.ID, printable(err.Error()))
 			res.Failed++
 			continue
 		}
+		logf("CLEAN: removed duplicate copy %s/%s (kept in %s), %s", printable(c.Bucket), c.ID, printable(c.In), mb(c.Size))
 		res.Freed += c.Size
 	}
 	res.Deleted = len(plan.Remove) - res.Failed

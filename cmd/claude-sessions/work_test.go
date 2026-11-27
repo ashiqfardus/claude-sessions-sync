@@ -2955,6 +2955,7 @@ func TestDryRunPlacesAHomeFolderAsTheRealRunDoes(t *testing.T) {
 	elsewhere := t.TempDir()
 	placement := func(out string) string {
 		for _, l := range strings.Split(out, "\n") {
+			l = l[strings.LastIndex(l, "\r")+1:] // after the progress text stderr adds
 			if strings.Contains(l, " "+claude.Slug(desk)+":") || strings.Contains(l, " "+claude.Slug(desk)+" ->") {
 				return l
 			}

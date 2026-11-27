@@ -84,6 +84,9 @@ func TestDoctorReportsRulesThatDifferBetweenMachines(t *testing.T) {
 	mustWrite(t, filepath.Join(p, "MAC-BOX", "CLAUDE.md"), "mac rules\n")
 	mustWrite(t, filepath.Join(p, "WIN-BOX", "RTK.md"), "same\n")
 	mustWrite(t, filepath.Join(p, "MAC-BOX", "RTK.md"), "same\n")
+	for _, m := range []string{"WIN-BOX", "MAC-BOX"} { // computers the archive knows: not forgotten
+		mustWrite(t, filepath.Join(f.archive, "manifest", m+".json"), `{"schemaVersion": 1, "machine": "`+m+`", "projects": {}}`)
+	}
 
 	out, _ := f.run(t, "doctor", "--no-write-probe")
 	if !strings.Contains(out, "CLAUDE.md") || !strings.Contains(out, "differ") {

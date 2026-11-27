@@ -721,6 +721,30 @@ func TestSettingsAndProfileViews(t *testing.T) {
 	}
 }
 
+// E2E M4: a computer forgotten with machines --forget is out of the comparison, so the
+// copies of the computers left can agree; its own copies are not deleted.
+func TestProfileDiffsLeaveOutAForgottenComputer(t *testing.T) {
+	_, dest := queryFixture(t)
+	for machine, body := range map[string]string{"LAP-1": "same", "LAP-2": "same", "LAP-3": "an older one"} {
+		writeFile(t, filepath.Join(profileDir(dest), "machines", machine, "CLAUDE.md"), body)
+	}
+	if got := profileDiffs(dest); !reflect.DeepEqual(got, []string{"CLAUDE.md"}) {
+		t.Fatalf("fixture: diffs %v", got)
+	}
+	if err := archive.ForgetMachine(dest, "LAP-3"); err != nil {
+		t.Fatal(err)
+	}
+	if got := profileDiffs(dest); len(got) != 0 {
+		t.Errorf("diffs %v after LAP-3 was forgotten", got)
+	}
+	if copies := profileCopies(dest)["CLAUDE.md"]; len(copies) != 2 || slices.ContainsFunc(copies, func(c profileCopy) bool { return c.Machine == "LAP-3" }) {
+		t.Errorf("copies %+v", copies)
+	}
+	if archive.StatOrNil(filepath.Join(profileDir(dest), "machines", "LAP-3", "CLAUDE.md")) == nil {
+		t.Error("the forgotten computer's copy was deleted")
+	}
+}
+
 // idleHere gives this computer its own copy of qZipped, idle 200 days: only the zip's
 // index can show the archive holds it.
 func idleHere(t *testing.T, root string) {
@@ -1032,6 +1056,35 @@ func TestSweepSentencesMatchSettings(t *testing.T) {
 	} {
 		if got := plainCheck(c.c).Text; got != c.want {
 			t.Errorf("%s %q gave %q, want %q", c.c.Level, c.c.Detail, got, c.want)
+		}
+	}
+}
+
+// E2E M2: with neither the hook at a session's end nor the scheduled backup set up,
+// Health, and Settings' line built from it, say one thing: automatic backup is off.
+// With one of them set up, each keeps its own sentence.
+func TestHealthSaysAutomaticBackupIsOff(t *testing.T) {
+	hookOff := check{"session hook", levelWarn, "no SessionEnd hook installed", "Sessions are only archived by the periodic sweep, so the most recent one can be missed."}
+	hookOn := check{"session hook", levelOK, "claude-sessions push --quiet", ""}
+	sweepOff := check{"sweep", levelWarn, "launchd: not loaded", "A session killed abruptly will not be archived until the next manual push."}
+	sweepOn := check{"sweep", levelOK, "launchd: loaded", ""}
+	sweepUnknown := check{"sweep", levelWarn, "exec: \"launchctl\": executable file not found in $PATH", ""}
+	texts := func(cs ...check) []string {
+		items, _ := healthOf(cs, t.Logf)
+		var out []string
+		for _, it := range items {
+			if it.Name == "session hook" || it.Name == "sweep" {
+				out = append(out, it.Level+" "+it.Text+" ["+it.FixLabel+"]")
+			}
+		}
+		return out
+	}
+	if got, want := texts(hookOff, sweepOff), []string{"warn " + autoOff + " [Set up again]"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("both off: %q, want %q", got, want)
+	}
+	for _, c := range [][]check{{hookOff, sweepOn}, {hookOn, sweepOff}, {hookOff, sweepUnknown}} {
+		if got := texts(c...); len(got) != 2 || slices.ContainsFunc(got, func(s string) bool { return strings.Contains(s, autoOff) }) {
+			t.Errorf("%s / %s: %q", c[0].Detail, c[1].Detail, got)
 		}
 	}
 }

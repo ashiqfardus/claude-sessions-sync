@@ -17,3 +17,4 @@ work folders from LAP-1: <HOME>/reports/q3 -> <LAP2-HOME>/reports/q3 (0 file(s) 
 For anything not placed, say where it lives here once, then run import again:
   claude-sessions config map <bucket> '<local folder>'
 --- stderr
+reading work foldersreading conversations: 0/4

@@ -128,7 +128,7 @@ func replacedDir(dest, machine string) string {
 // newer file wins as it does for memory, and into this machine's own copy, which no
 // other machine writes. It never fails the push: the sessions are what must get
 // through.
-func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (copied, unchanged int) {
+func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (copied []string, unchanged int) {
 	own := machineProfileDir(dest, machineName())
 	files := profileFiles(root)
 	if !dryRun {
@@ -156,7 +156,7 @@ func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (cop
 				continue
 			}
 		}
-		copied++
+		copied = append(copied, src)
 	}
 
 	if dryRun {
@@ -590,13 +590,14 @@ type profileCopy struct {
 }
 
 // profileCopies is every machine's copy of each profile file, by the file's path
-// relative to the profile: names, sizes and times, no content.
+// relative to the profile: names, sizes and times, no content. A machine forgotten -
+// its manifest shard removed - is left out; its copies stay in the archive.
 func profileCopies(dest string) map[string][]profileCopy {
 	out := map[string][]profileCopy{}
 	machines, _ := os.ReadDir(filepath.Join(profileDir(dest), "machines"))
 	for _, m := range machines {
 		dir := filepath.Join(profileDir(dest), "machines", m.Name())
-		if !archive.IsRealDir(dir) {
+		if !archive.IsRealDir(dir) || archive.StatOrNil(filepath.Join(archive.ManifestDir(dest), m.Name()+".json")) == nil {
 			continue
 		}
 		for _, rel := range profileFiles(dir) {

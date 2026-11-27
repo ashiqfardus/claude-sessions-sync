@@ -58,6 +58,10 @@ type Options struct {
 	// Budget, when set, stops rendering new pages once it has elapsed; the rest are
 	// left for the next pass. Pages already current are still listed.
 	Budget time.Duration
+
+	// Progress, when set, is called with (0, of) before the first conversation, of being
+	// how many the pass takes up, then with (n, of) as it takes up the nth.
+	Progress func(n, of int)
 }
 
 // Result reports what a render pass did.
@@ -129,6 +133,14 @@ func Archive(dest string, opts Options) (Result, error) {
 	next := renderState{Version: templateVersion, Pages: map[string]pageState{}}
 	lastSave := time.Now()
 
+	// Each bucket to render is listed first, for the count Progress is given.
+	type listed struct {
+		bucket, dir, project string
+		files                []os.DirEntry
+		zips                 map[string]string // by lower-cased id
+	}
+	var todo []listed
+	total := 0
 	for _, bucket := range buckets {
 		bucketDir := filepath.Join(archive.ProjectsDir(dest), bucket)
 		files, err := os.ReadDir(bucketDir)
@@ -164,6 +176,31 @@ func Archive(dest string, opts Options) (Result, error) {
 		}
 
 		zips := convzip.Find(bucketDir)
+		loose := map[string]bool{}
+		for _, f := range files { // as the loop below takes them up
+			if id, ok := strings.CutSuffix(strings.ToLower(f.Name()), ".jsonl"); ok && f.Type().IsRegular() {
+				loose[id] = true
+				total++
+			}
+		}
+		for lid := range zips {
+			if !loose[lid] {
+				total++
+			}
+		}
+		todo = append(todo, listed{bucket, bucketDir, project, files, zips})
+	}
+	done := 0
+	step := func() {
+		if opts.Progress != nil {
+			opts.Progress(done, total)
+			done++
+		}
+	}
+	step()
+
+	for _, l := range todo {
+		bucket, bucketDir, project, files, zips := l.bucket, l.dir, l.project, l.files, l.zips
 
 		// one renders or lists the transcript name, of size and mtime; open gives its path,
 		// and is called only when its page is due. z is its zip, for a zipped one.
@@ -241,6 +278,7 @@ func Archive(dest string, opts Options) (Result, error) {
 			if !f.Type().IsRegular() || !strings.EqualFold(filepath.Ext(f.Name()), ".jsonl") {
 				continue
 			}
+			step()
 			info, err := f.Info()
 			if err != nil {
 				res.Failed++
@@ -271,6 +309,7 @@ func Archive(dest string, opts Options) (Result, error) {
 			if loose[lid] {
 				continue
 			}
+			step()
 			id := strings.TrimSuffix(filepath.Base(zp), convzip.Suffix)
 			key := bucket + "/" + id
 			ps, had := prev.Pages[key]

@@ -285,6 +285,15 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 	// run files none of them, so it lists no folder and opens no zip for them: on a
 	// drive that downloads each file as it is opened, that was most of its time.
 	if !opts.DryRun {
+		// Each zip's index is read below, one by one: on a drive that downloads each file
+		// as it is opened, they download side by side first.
+		var zipped []string
+		for _, c := range convs {
+			if c.zip != "" {
+				zipped = append(zipped, c.zip)
+			}
+		}
+		wait := warm(zipped, func(p string) { _, _ = convzip.Entries(p) })
 		var landing []string
 		for _, c := range convs {
 			if dst := filepath.Join(res.Bucket, c.name); archive.StatOrNil(dst) == nil {
@@ -297,6 +306,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 				}
 			}
 		}
+		wait()
 		if err := opts.Imported.pend(landing...); err != nil {
 			return res, err
 		}
@@ -994,7 +1004,7 @@ func restoreMemory(root, srcDir, dstDir, source string, dryRun, update, own bool
 		}
 		// A file this machine deleted after taking it is not brought back, as long as
 		// the archived copy is still the one it took.
-		if archive.StatOrNil(dst) == nil && (sameContent(src, baseFile) || held.Files[strings.ToLower(e.Name())]) {
+		if archive.StatOrNil(dst) == nil && (held.Files[strings.ToLower(e.Name())] || sameContent(src, baseFile)) {
 			continue
 		}
 		if !shouldRestore(srcInfo, dst, update) {
@@ -1021,7 +1031,13 @@ func restoreMemory(root, srcDir, dstDir, source string, dryRun, update, own bool
 	return n
 }
 
+// sameContent reports whether a and b hold the same bytes. Neither is read when one is
+// missing or their sizes differ: on a drive that downloads each file as it is opened,
+// that read was a download for an answer the sizes already gave.
 func sameContent(a, b string) bool {
+	if sa, sb := archive.StatOrNil(a), archive.StatOrNil(b); sa == nil || sb == nil || sa.Size() != sb.Size() {
+		return false
+	}
 	x, err1 := os.ReadFile(a)
 	y, err2 := os.ReadFile(b)
 	return err1 == nil && err2 == nil && bytes.Equal(x, y)

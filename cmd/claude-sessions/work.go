@@ -74,7 +74,7 @@ func workEnv(root string) work.Env {
 // transcripts that changed; those found before come from this machine's local record
 // (prev is not read for folders). The caller holds the push lock. history's warning
 // goes to warn.
-func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan []string, cfg archive.Config, dryRun, history bool, budget time.Duration, logf func(string, ...any), warn io.Writer) workPushResult {
+func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan []string, cfg archive.Config, dryRun, history bool, budget time.Duration, logf func(string, ...any), warn io.Writer, hb *heartbeat) workPushResult {
 	var res workPushResult
 	// Loaded with work off too: a first run marks what is here then, and conversations
 	// from then on are found when work is turned on.
@@ -108,7 +108,11 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 			"folders in those, and this push would upload it. Use it only if you trust everyone who can\n"+
 			"write to "+dest+".")
 	}
+	if len(scan) > 0 { // none: not a stage, which would show as one not counted
+		hb.reading("looking for work folders", len(scan))
+	}
 	for _, t := range scan {
+		hb.step()
 		// A conversation filed from elsewhere, or here before the first run, names folders
 		// only in lines added here since.
 		off := imported.offset(t)
@@ -298,7 +302,11 @@ func pushWork(root, dest string, shard *archive.Shard, prev archive.Shard, scan 
 		return e, true
 	}
 
+	if len(folders) > 0 {
+		hb.reading(copyingText(dryRun, "work folders"), len(folders))
+	}
 	for i, f := range folders {
+		hb.step()
 		e, done := copyFolder(f)
 		if !done {
 			// Unfinished folders keep their last entry, or a bare one, so the next run
@@ -984,7 +992,8 @@ func forgetPrevious(root string, placed map[string]string) error {
 // case: recorded paths, as they are. Everything read from the archive is untrusted:
 // each folder goes through work.Place, each file through the push filter and
 // work.SafeJoin, and files are written add-only, mode 0644, never through a link.
-func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive.Config, dryRun, update, sameLayout bool) ([]rewrite.Move, workRestoreResult) {
+// hb counts the packs as they are read.
+func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive.Config, dryRun, update, sameLayout bool, hb *heartbeat) ([]rewrite.Move, workRestoreResult) {
 	res := workRestoreResult{Placed: map[string]string{}, ByMachine: map[string]string{}, Made: map[string]bool{}}
 	if !cfg.WorkOn() {
 		return nil, res
@@ -1036,9 +1045,37 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 		names = append(names, n)
 	}
 	sort.Strings(names) // the first machine to place a path keeps it
+	other := func(s archive.Shard) bool {
+		return !isMe(s.Machine) && (strings.HasPrefix(s.Home, "/") || work.WindowsPath(s.Home))
+	}
+	// The packs the loop below reads, listed first for the count, by the checks it makes
+	// before it reads a folder's.
+	var packed []string
 	for _, name := range names {
 		s := shards[name]
-		if isMe(s.Machine) || !(strings.HasPrefix(s.Home, "/") || work.WindowsPath(s.Home)) {
+		for _, wf := range s.WorkFolders {
+			dir, err := workDir(dest, s.Machine, wf.Path)
+			if !other(s) || err != nil || wf.Exact || broad(wf.Path) || !realArchivePath(dest, dir, false) {
+				continue
+			}
+			if target, err := work.Place(work.Source{Machine: s.Machine, Home: s.Home, Path: wf.Path, Origin: wf.Origin}, l); err == nil && !excludedHere(target) {
+				packed = append(packed, packsIn(dir)...)
+			}
+		}
+	}
+	hb.reading("work folders", len(packed))
+	// Each pack's index is read below, one by one: on a drive that downloads each file as
+	// it is opened, they download side by side first. A dry run writes nothing, so that
+	// list is exactly what it reads, and every pack of it is warmed at once. A real run
+	// warms a folder's as it reaches it: where a later folder goes may depend on what an
+	// earlier one wrote.
+	waitAll := func() {}
+	if dryRun {
+		waitAll = warm(packed, func(p string) { _, _ = work.ReadPackIndex(p) })
+	}
+	for _, name := range names {
+		s := shards[name]
+		if !other(s) {
 			continue
 		}
 		var n workRestoreResult // this machine's counts
@@ -1215,13 +1252,15 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			// the overlay files a newer entry replaces. Entries pass through file() as loose
 			// files do, from a private temp folder.
 			lost := map[string]bool{}
-			ents, _ := os.ReadDir(dir)
-			for _, d := range ents {
-				u, ok := packOf(d.Name())
-				if !ok || !d.Type().IsRegular() {
-					continue
-				}
-				pack, over := filepath.Join(dir, d.Name()), looseTimes(filepath.Join(dir, u))
+			packs := packsIn(dir)
+			wait := func() {} // a dry run's are warmed above
+			if !dryRun {
+				wait = warm(packs, func(p string) { _, _ = work.ReadPackIndex(p) })
+			}
+			for _, pack := range packs {
+				hb.step()
+				u, _ := packOf(filepath.Base(pack))
+				over := looseTimes(filepath.Join(dir, u))
 				tmp := ""
 				var mk func() (string, error) // none in a dry run: nothing is written
 				var mkErr error
@@ -1231,7 +1270,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 						return tmp, mkErr
 					}
 				}
-				files, bad, err := work.ExtractPack(pack, mk, func(rel string, size int64, at time.Time) bool {
+				files, bad, err := extractPack(pack, mk, func(rel string, size int64, at time.Time) bool {
 					r := u + "/" + rel
 					o, inOver := over[rel]
 					if inOver && !o.Before(at.Add(-archive.MTimeToleranceSeconds*time.Second)) {
@@ -1281,6 +1320,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 					}
 				}
 			}
+			wait()
 			// WalkDir never follows a link; only regular files are read.
 			_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 				if err != nil || !d.Type().IsRegular() {
@@ -1312,6 +1352,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			s.Machine, where, n.Filed, would("filed"), n.Kept, n.Beside, n.Refused, n.Excluded, size))
 		res.Notes = append(res.Notes, notes...)
 	}
+	waitAll()
 	if !dryRun {
 		if err := held.Save(heldWorkPath(root)); err != nil {
 			res.Notes = append(res.Notes, fmt.Sprintf("  x restored work record: %v", err))
@@ -1330,6 +1371,26 @@ func (p packEntryInfo) Mode() fs.FileMode  { return 0o644 }
 func (p packEntryInfo) ModTime() time.Time { return p.f.ModTime }
 func (p packEntryInfo) IsDir() bool        { return false }
 func (p packEntryInfo) Sys() any           { return nil }
+
+// warm and extractPack are archive.Warm and work.ExtractPack; tests count and slow
+// their reads.
+var (
+	warm        = archive.Warm
+	extractPack = work.ExtractPack
+)
+
+// packsIn lists the packs in dir, a work folder's archive copy, by name: each regular
+// file at its top that packOf names.
+func packsIn(dir string) []string {
+	var out []string
+	ents, _ := os.ReadDir(dir)
+	for _, d := range ents {
+		if _, ok := packOf(d.Name()); ok && d.Type().IsRegular() {
+			out = append(out, filepath.Join(dir, d.Name()))
+		}
+	}
+	return out
+}
 
 // packOf returns the unit that name - "/"-separated, below a work folder's archive
 // copy - is the pack of: a top-level <unit>.cspack.zip, the unit a plain name.

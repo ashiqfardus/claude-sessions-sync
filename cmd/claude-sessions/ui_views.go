@@ -835,15 +835,32 @@ func (f *flight[T]) drop() {
 // conversation and writes no test file to the archive.
 func queryHealth(root string, logf func(string, ...any), profiles *profileCache) ([]healthItem, time.Duration) {
 	rep, _ := runDoctor(quietStreams(), doctorOpts{ClaudeDir: root, NoProbe: true, Light: true, ProfileDiffs: profiles.diffs})
-	items, keep := make([]healthItem, 0, len(rep.Checks)), time.Minute
-	for _, c := range rep.Checks {
+	return healthOf(rep.Checks, logf)
+}
+
+// autoOff is Health's one item, and Settings' line, when neither the hook at the end of
+// a session nor the scheduled backup is set up: each one's own sentence names the other.
+const autoOff = "Automatic backup is off. Nothing is backed up until you choose Back up now."
+
+// healthOf is queryHealth's items from doctor's checks.
+func healthOf(checks []check, logf func(string, ...any)) ([]healthItem, time.Duration) {
+	off := slices.ContainsFunc(checks, func(c check) bool { return c.Name == "session hook" && strings.HasPrefix(c.Detail, "no SessionEnd") }) &&
+		slices.ContainsFunc(checks, func(c check) bool { return c.Name == "sweep" && c.Level == levelWarn && c.Advice != "" }) // not set up, as plainChecks reads it
+	items, keep := make([]healthItem, 0, len(checks)), time.Minute
+	for _, c := range checks {
 		if plainChecks[c.Name] == nil {
 			logf("PANEL: health: %s: %s: %s", c.Name, c.Level, c.Detail) // what the generic sentence points to
 		}
 		if c.Name == "archive checks" || strings.Contains(c.Detail, ": not finished after ") {
 			keep = 5 * time.Minute
 		}
-		items = append(items, plainCheck(c))
+		switch {
+		case off && c.Name == "sweep":
+		case off && c.Name == "session hook":
+			items = append(items, say(c, autoOff, "Set up again", toSettings))
+		default:
+			items = append(items, plainCheck(c))
+		}
 	}
 	return sortHealth(items), keep
 }

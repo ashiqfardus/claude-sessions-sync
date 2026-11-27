@@ -4,6 +4,7 @@ package main_test
 // where the projects live at different paths.
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -267,9 +268,17 @@ func TestImportJSON(t *testing.T) {
 		},
 	})
 
-	out, err := f.run(t, "import", "--search-root", f.dev, "--json")
+	// stdout alone: stderr carries the progress text, as clean's does.
+	cmd := exec.Command(binary, "import", "--claude-dir", f.claudeDir, "--archive", f.archive, "--search-root", f.dev, "--json")
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("import --json failed: %v\n%s", err, out)
+		t.Fatalf("import --json failed: %v\n%s%s", err, out, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "reading conversations: 1/1\r") {
+		t.Errorf("no progress text on stderr: %q", stderr.String())
 	}
 	var rows []struct {
 		Bucket string `json:"bucket"`

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,5 +143,52 @@ func TestCleanFreedIsTheBytesRemoved(t *testing.T) {
 	}
 	if removed := before - bytesIn(); res.Freed != removed || removed <= 1333 {
 		t.Errorf("Freed %d, but %d bytes were removed", res.Freed, removed)
+	}
+}
+
+// clean --yes logs each copy it removes, and each it keeps because the check before
+// deleting it failed: the panel's one line only sums them up. A list deletes nothing
+// and logs nothing.
+func TestCleanLogsEachCopy(t *testing.T) {
+	t.Setenv("CLAUDE_SESSIONS_MACHINE", "LAP-1")
+	root := t.TempDir()
+	claudeDir, dest := filepath.Join(root, ".claude"), filepath.Join(root, "archive")
+	writeFile(t, filepath.Join(claudeDir, "settings.json"), "{}")
+	const kept = "22222222-2222-2222-2222-222222222222"
+	turns := `{"type":"user","uuid":"u1","timestamp":"2026-08-30T09:00:00.000Z"}` + "\n" +
+		`{"type":"assistant","uuid":"m1","timestamp":"2026-08-30T09:00:01.000Z"}` + "\n"
+	for _, id := range []string{cleanID, kept} {
+		writeFile(t, filepath.Join(archive.ProjectsDir(dest), "A", id+".jsonl"),
+			turns+`{"type":"assistant","uuid":"m2","timestamp":"2026-08-30T09:00:02.000Z"}`+"\n")
+		writeFile(t, filepath.Join(archive.ProjectsDir(dest), "B", id+".jsonl"), turns)
+	}
+	// A's tool output is shorter than B's: planned by name, refused by the check.
+	writeFile(t, filepath.Join(archive.ProjectsDir(dest), "A", kept, "tool-results", "out.txt"), "short")
+	writeFile(t, filepath.Join(archive.ProjectsDir(dest), "B", kept, "tool-results", "out.txt"), "longer output")
+	writeFile(t, filepath.Join(archive.ManifestDir(dest), "LAP-1.json"),
+		`{"machine":"LAP-1","skipsHeld":true,"honorsDeleted":true,"projects":{"A":{"path":"/x/a"},"B":{"path":"/x/b"}}}`)
+	logged := func() string { b, _ := os.ReadFile(filepath.Join(claudeDir, "session-sync.log")); return string(b) }
+
+	if _, err := runClean(streams{io.Discard, io.Discard}, cleanOpts{ClaudeDir: claudeDir, ArchiveDir: dest}); err != nil {
+		t.Fatal(err)
+	}
+	if l := logged(); l != "" {
+		t.Errorf("a list logged:\n%s", l)
+	}
+	res, err := runClean(streams{io.Discard, io.Discard}, cleanOpts{ClaudeDir: claudeDir, ArchiveDir: dest, Yes: true})
+	if err == nil || res.Deleted != 1 || res.Failed != 1 {
+		t.Fatalf("clean --yes = %+v, %v; want one deleted, one kept", res, err)
+	}
+	l := logged()
+	for _, want := range []string{
+		"  CLEAN: removed duplicate copy B/" + cleanID + " (kept in A), 0.0 MB\n",
+		"  CLEAN: kept duplicate copy B/" + kept + ": A has a smaller tool-results/out.txt\n",
+	} {
+		if !strings.Contains(l, want) {
+			t.Errorf("the log has no %q:\n%s", want, l)
+		}
+	}
+	if strings.Count(l, "CLEAN:") != 2 {
+		t.Errorf("want two CLEAN lines:\n%s", l)
 	}
 }

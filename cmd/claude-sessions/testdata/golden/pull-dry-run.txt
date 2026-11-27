@@ -6,3 +6,4 @@ would file 1 transcript(s) and 0 memory file(s), 2 already present.
 pull files by bucket name only. If a project lives at a different path here,
 use `claude-sessions import`, which matches by identity and rewrites paths.
 --- stderr
+reading conversations: 0/3reading conversations: 3/3reading work folders

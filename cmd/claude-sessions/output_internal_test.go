@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
@@ -113,5 +115,59 @@ func TestUnreadableZipIsNotedOnItsStream(t *testing.T) {
 		if !strings.Contains(errs.String(), "skipped "+convzip.Path(filepath.Join(archive.ProjectsDir(dest), "-x-web-app"), id)) {
 			t.Errorf("%s: the skipped note is not on s.Err: %q (s.Out %q)", name, errs.String(), out.String())
 		}
+	}
+}
+
+// Progress text is held back to one write every progressEvery, so a script reading
+// stdout first never finds stderr's pipe full. A stage's first text and its last count
+// are always written: the last on the step that completes the count, or, for a stage
+// that ends short of it, when the next stage starts or the heartbeat stops.
+func TestProgressIsThrottled(t *testing.T) {
+	var buf bytes.Buffer
+	hook(t, &progressEvery, time.Hour)
+	h := startProgress(&buf)
+	h.reading("copying conversations", 3657)
+	for i := 0; i < 3657; i++ {
+		h.step()
+	}
+	h.reading("copying work folders", 10)
+	h.step()
+	h.step()
+	h.reading("building readable pages", 0)
+	h.reading("compressing old conversations", 5)
+	h.step()
+	h.stop()
+	h.step()
+	h.reading("after stop", 1)
+	want := "copying conversations: 0/3657\rcopying conversations: 3657/3657\r" +
+		"copying work folders: 0/10\rcopying work folders: 2/10\r" +
+		"building readable pages\r" +
+		"compressing old conversations: 0/5\rcompressing old conversations: 1/5\r"
+	if buf.String() != want {
+		t.Errorf("got %q\nwant %q", buf.String(), want)
+	}
+
+	// Once progressEvery has passed, a step is written.
+	buf.Reset()
+	hook(t, &progressEvery, 20*time.Millisecond)
+	h = startProgress(&buf)
+	h.reading("copying conversations", 3)
+	h.step()
+	time.Sleep(30 * time.Millisecond)
+	h.step()
+	h.stop()
+	if want := "copying conversations: 0/3\rcopying conversations: 2/3\r"; buf.String() != want {
+		t.Errorf("got %q, want %q", buf.String(), want)
+	}
+
+	// On a terminal push's progress writes nothing: its own lines are what it shows.
+	buf.Reset()
+	hook(t, &isTerminal, func(io.Writer) bool { return true })
+	h = startProgress(&buf)
+	h.reading("copying conversations", 1)
+	h.step()
+	h.stop()
+	if buf.Len() != 0 || h.on() {
+		t.Errorf("on a terminal: %q", buf.String())
 	}
 }
