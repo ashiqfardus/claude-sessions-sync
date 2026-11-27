@@ -285,6 +285,15 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 	// run files none of them, so it lists no folder and opens no zip for them: on a
 	// drive that downloads each file as it is opened, that was most of its time.
 	if !opts.DryRun {
+		// Each zip's index is read below, one by one: on a drive that downloads each file
+		// as it is opened, they download side by side first.
+		var zipped []string
+		for _, c := range convs {
+			if c.zip != "" {
+				zipped = append(zipped, c.zip)
+			}
+		}
+		wait := warm(zipped, func(p string) { _, _ = convzip.Entries(p) })
 		var landing []string
 		for _, c := range convs {
 			if dst := filepath.Join(res.Bucket, c.name); archive.StatOrNil(dst) == nil {
@@ -297,6 +306,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 				}
 			}
 		}
+		wait()
 		if err := opts.Imported.pend(landing...); err != nil {
 			return res, err
 		}

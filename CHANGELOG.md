@@ -20,6 +20,10 @@ All notable changes to this project are documented here. This project follows
   computers' work folders one file at a time, each a download, and said nothing while
   it did. It now downloads up to eight at once, and the page says how far it has got,
   as in `reading work folders: 40/200`, then `reading conversations: 120/3657`.
+- **Bring in read compressed conversations one at a time.** Before filing anything, a
+  real Bring in reads the index of each compressed conversation it files; on a folder
+  that downloads each file when it is opened, each was a download of its own. Up to
+  eight now download at once, as work folders do.
 - **Bring in downloaded memory files it did not need.** To tell a memory file that is
   new here from one deleted here, it read the archived copy even when this computer had
   never taken it. It now reads one only when the copy it took is the same size.

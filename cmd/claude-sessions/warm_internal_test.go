@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
+	"github.com/ashiqfardus/claude-sessions-sync/internal/convzip"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/work"
 )
 
@@ -170,5 +172,116 @@ func TestImportPullProgressOnStderrOnly(t *testing.T) {
 		if !strings.Contains(stderr, "reading conversations: 1/1\r") || !strings.Contains(stderr, c.work) {
 			t.Errorf("%s --json: no progress on stderr: %q", c.args[0], stderr)
 		}
+	}
+}
+
+// slowWarm hooks warm to archive.Warm with each read held until eight are under way,
+// or hold has passed: a warming that reads one at a time shows as most < 8. It gives
+// what was warmed, and the most read at once.
+func slowWarm(t *testing.T, hold time.Duration) (warmed func() []string, most func() int) {
+	t.Helper()
+	var mu sync.Mutex
+	var got []string
+	inFlight, top := 0, 0
+	eight, full := make(chan struct{}), sync.Once{}
+	hook(t, &warm, func(paths []string, r func(string)) func() {
+		return archive.Warm(paths, func(p string) {
+			mu.Lock()
+			got = append(got, p)
+			if inFlight++; inFlight > top {
+				top = inFlight
+			}
+			if inFlight == 8 {
+				full.Do(func() { close(eight) })
+			}
+			mu.Unlock()
+			select {
+			case <-eight:
+			case <-time.After(hold):
+			}
+			r(p)
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+		})
+	})
+	return func() []string { mu.Lock(); defer mu.Unlock(); return slices.Clone(got) },
+		func() int { mu.Lock(); defer mu.Unlock(); return top }
+}
+
+// zippedConvArchive is packedArchive's archive with no work packs to file and n more
+// conversations of web-app, every one of them zipped.
+func zippedConvArchive(t *testing.T, n int) (claudeDir, dest, search string) {
+	t.Helper()
+	claudeDir, dest, search = packedArchive(t, 0)
+	proj := filepath.Join(search, "web-app")
+	dir := filepath.Join(archive.ProjectsDir(dest), claude.Slug(proj))
+	cwd, _ := json.Marshal(proj)
+	ids := []string{"11111111-1111-1111-1111-111111111111"}
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("%08d-2222-2222-2222-222222222222", i)
+		writeFile(t, filepath.Join(dir, id+".jsonl"),
+			`{"type":"user","cwd":`+string(cwd)+`,"sessionId":"`+id+`","message":{"role":"user","content":"hi"}}`+"\n")
+		writeFile(t, filepath.Join(dir, id, "tool-results", "r.txt"), "out\n")
+		ids = append(ids, id)
+	}
+	for _, id := range ids {
+		if _, err := convzip.Zip(dir, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return claudeDir, dest, search
+}
+
+// A real Bring in reads each zipped conversation's index to journal its folder's files
+// before any lands. Those indexes are read first, side by side, eight at once: each
+// zip it reads, once, and no other. What it files is what it filed with no warming.
+func TestImportWarmsEachZipIndexItReads(t *testing.T) {
+	const n = 11
+	var mu sync.Mutex
+	var read []string
+	realIndex := readZipIndex
+	hook(t, &readZipIndex, func(p string) (map[string]work.PackEntry, error) {
+		mu.Lock()
+		read = append(read, p)
+		mu.Unlock()
+		return realIndex(p)
+	})
+	run := func() string {
+		t.Helper()
+		claudeDir, dest, search := zippedConvArchive(t, n)
+		var out bytes.Buffer
+		if _, err := runImport(streams{&out, io.Discard}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1}); err != nil {
+			t.Fatal(err)
+		}
+		filed, _ := filepath.Glob(filepath.Join(claudeDir, "projects", "*", "*", "tool-results", "r.txt"))
+		root := filepath.Dir(claudeDir)
+		said := strings.NewReplacer(root, "<ROOT>", claude.Slug(root), "<ROOT>", os.Getenv("HOME"), "<HOME>").Replace(out.String())
+		return said + fmt.Sprintf("\n%d folders filed", len(filed))
+	}
+
+	warmed, most := slowWarm(t, 5*time.Second)
+	got := run()
+	var zips []string
+	for _, p := range warmed() {
+		if strings.HasSuffix(p, convzip.Suffix) {
+			zips = append(zips, p)
+		}
+	}
+	sort.Strings(zips)
+	sort.Strings(read)
+	if len(read) != n+1 || strings.Join(zips, "\n") != strings.Join(read, "\n") {
+		t.Errorf("warmed:\n%s\nwant each zip read, once:\n%s", strings.Join(zips, "\n"), strings.Join(read, "\n"))
+	}
+	if most() != 8 {
+		t.Errorf("%d zip(s) read at once at most, want 8", most())
+	}
+	if !strings.Contains(got, fmt.Sprintf("\n%d folders filed", n)) {
+		t.Errorf("fixture: the folders were not filed:\n%s", got)
+	}
+
+	hook(t, &warm, func([]string, func(string)) func() { return func() {} }) // as before warming
+	if before := run(); got != before {
+		t.Errorf("warming changed what was filed:\n%s\nwithout it:\n%s", got, before)
 	}
 }
