@@ -745,6 +745,36 @@ func TestProfileDiffsLeaveOutAForgottenComputer(t *testing.T) {
 	}
 }
 
+// E2E M4, review M-2: Take the newer copies here, and a Bring in's profile step, take
+// the shared copy - the newest pushed. One that only a forgotten computer's own copy
+// holds is not taken; one a computer left holds too is.
+func TestTakeNewerCopiesLeavesAForgottenComputersFile(t *testing.T) {
+	_, dest := queryFixture(t)
+	root := t.TempDir()
+	for _, f := range []struct{ where, body string }{
+		{"CLAUDE.md", "the retired laptop's rules"}, // the shared copy: the retired laptop pushed last
+		{"machines/OLD-1/CLAUDE.md", "the retired laptop's rules"},
+		{"machines/LAP-2/CLAUDE.md", "rules"},
+		{"skills/x/SKILL.md", "a skill"}, // pushed last by both
+		{"machines/OLD-1/skills/x/SKILL.md", "a skill"},
+		{"machines/LAP-2/skills/x/SKILL.md", "a skill"},
+	} {
+		writeFile(t, filepath.Join(profileDir(dest), filepath.FromSlash(f.where)), f.body)
+	}
+	take := func() []string {
+		t.Helper()
+		res := restoreProfile(root, dest, true, true, false, true) // a dry run lists what it would take
+		return res.Files
+	}
+	if got := take(); !reflect.DeepEqual(got, []string{"skills/x/SKILL.md"}) {
+		t.Errorf("took %v with OLD-1 forgotten (no shard)", got)
+	}
+	writeShard(t, dest, archive.Shard{SchemaVersion: archive.SchemaVersion, Machine: "OLD-1"})
+	if got := take(); !slices.Contains(got, "CLAUDE.md") {
+		t.Errorf("took %v with OLD-1 known", got)
+	}
+}
+
 // idleHere gives this computer its own copy of qZipped, idle 200 days: only the zip's
 // index can show the archive holds it.
 func idleHere(t *testing.T, root string) {

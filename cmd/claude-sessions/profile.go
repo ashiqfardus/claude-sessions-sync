@@ -225,8 +225,27 @@ func restoreProfile(root, dest string, dryRun, update, installPlugins, files boo
 	// A file deleted here after this machine had it is not brought back by another
 	// machine's copy. A backup is restored whole: bringing files back is its purpose.
 	held := map[string]bool{}
+	var gone, live []string // each computer's own copy of its profile, by whether it was forgotten
 	if !backup {
 		held = loadHeldProfile(root)
+		ms, _ := os.ReadDir(filepath.Join(src, "machines"))
+		for _, m := range ms {
+			dir := filepath.Join(src, "machines", m.Name())
+			switch {
+			case !archive.IsRealDir(dir):
+			case forgotten(dest, m.Name()):
+				gone = append(gone, dir)
+			default:
+				live = append(live, dir)
+			}
+		}
+	}
+	// A forgotten computer's file is never taken: the shared copy is the newest pushed,
+	// so it stays that computer's until another pushes one. Only one no computer left
+	// holds too is left alone.
+	onlyGone := func(from, rel string) bool {
+		holds := func(dir string) bool { return sameContent(from, filepath.Join(dir, filepath.FromSlash(rel))) }
+		return slices.ContainsFunc(gone, holds) && !slices.ContainsFunc(live, holds)
 	}
 	var rels []string // none with --no-profile
 	if files {
@@ -239,7 +258,7 @@ func restoreProfile(root, dest string, dryRun, update, installPlugins, files boo
 		if err != nil || !shouldRestore(info, to, update) {
 			continue
 		}
-		if held[rel] && archive.StatOrNil(to) == nil {
+		if held[rel] && archive.StatOrNil(to) == nil || onlyGone(from, rel) {
 			continue
 		}
 		// A local file that differs is another machine's version winning over this
@@ -597,7 +616,7 @@ func profileCopies(dest string) map[string][]profileCopy {
 	machines, _ := os.ReadDir(filepath.Join(profileDir(dest), "machines"))
 	for _, m := range machines {
 		dir := filepath.Join(profileDir(dest), "machines", m.Name())
-		if !archive.IsRealDir(dir) || archive.StatOrNil(filepath.Join(archive.ManifestDir(dest), m.Name()+".json")) == nil {
+		if !archive.IsRealDir(dir) || forgotten(dest, m.Name()) {
 			continue
 		}
 		for _, rel := range profileFiles(dir) {
@@ -608,6 +627,12 @@ func profileCopies(dest string) map[string][]profileCopy {
 		}
 	}
 	return out
+}
+
+// forgotten reports whether machine, which has a copy of its profile in the archive, has
+// no record there: machines --forget removed its shard.
+func forgotten(dest, machine string) bool {
+	return archive.StatOrNil(filepath.Join(archive.ManifestDir(dest), machine+".json")) == nil
 }
 
 // diffsOf is the files whose copies differ, sorted. Copies of different sizes differ

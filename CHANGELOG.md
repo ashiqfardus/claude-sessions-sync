@@ -140,7 +140,9 @@ All notable changes to this project are documented here. This project follows
 - **Rules and skills never settled after Forget.** A forgotten computer's rules and
   skills stayed in the comparison, so Settings kept saying a file differs between your
   computers, and Compare listed it. A computer with no record in the archive is now
-  left out. Its copies are not deleted.
+  left out. Its copies are not deleted. Take the newer copies here, and Bring in, no
+  longer install a file that only a forgotten computer's copy holds, as when it was the
+  last to push it.
 - **From a folder instead: a mistyped folder gave only "That didn't work".** The panel
   now says "That folder doesn't exist on this computer."
 
