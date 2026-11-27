@@ -329,6 +329,7 @@ register('overview', {
         return
       }
       if (dryRun) try { sessionStorage.setItem(PREVIEW, id) } catch { /* then a reload shows it as a backup until it ends */ }
+      if (signal.aborted) return // left while it started: the job goes on, and a new Overview finds it
       watch(id, dryRun ? 'preview' : 'backup', btn)
     }
 

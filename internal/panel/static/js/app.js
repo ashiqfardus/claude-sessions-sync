@@ -556,7 +556,7 @@ new MutationObserver(() => {
 
 // --- Heartbeat, stopped notice, rail foot ------------------------------------------
 
-let dead = false, leaving = false, beatTimer, pollTimer, busy = null
+let dead = false, leaving = false, beatTimer, pollTimer, busy = null, polls = 0
 let footText = '', summaryAt = 0 // the last summary's foot text, and when a summary was last asked for
 addEventListener('pagehide', () => { leaving = true })
 addEventListener('pageshow', () => { leaving = false })
@@ -588,10 +588,10 @@ function beat() {
 async function poll() {
   clearTimeout(pollTimer)
   if (dead) return
-  const asked = Date.now()
+  const asked = Date.now(), n = ++polls
   let st
-  try { st = await get('/api/state') } catch { return }
-  if (!st) return
+  try { st = await call('/api/state') } catch { return } // its own request: one asked before a job began would say none runs
+  if (!st || n !== polls) return // a later poll's answer is newer than this one
   nav.querySelector('[data-slot="machine"]').textContent = st.machine || ''
   const job = st.job && st.job.running ? st.job : null
   const foot = nav.querySelector('[data-slot="foot"]')

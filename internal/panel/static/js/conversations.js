@@ -79,6 +79,10 @@ register('conversations', {
     const search = slot('q'), since = slot('since'), until = slot('until')
     const line = slot('summary'), fix = slot('fix'), rowsEl = slot('rows'), all = slot('select-all')
     const tableBox = rowsEl.closest('.table-box'), pages = slot('pages')
+    // The sticky header goes under the sticky selection bar, which grows when a note shows in it.
+    const tools = el.querySelector('.conv-tools'), toolsH = new ResizeObserver(() => tableBox.style.setProperty('--tools-h', tools.offsetHeight + 'px'))
+    toolsH.observe(tools, { box: 'border-box' }) // its padding grows with the bar too
+    signal.addEventListener('abort', () => toolsH.disconnect())
     const bar = slot('selection'), keepBtn = slot('keep'), delBtn = slot('delete')
     const selected = new Map() // id -> row, of the rows shown
     let shown = [], seq = 0, timer, busy = '' // busy: what the running action is doing, said in the bar
