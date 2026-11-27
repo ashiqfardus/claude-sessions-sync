@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-11-27
+
 ### Changed
 - **The panel shows that it is working.** A button you click keeps its place and spins
   until the work it started ends, then shows a check for a moment when it succeeded. While
