@@ -244,7 +244,7 @@ p.status{white-space:normal}
 .search-field{flex:0 1 380px;min-width:220px}
 .filters,.search-fields{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px}
 .search-fields{padding-top:12px}
-.filter{flex:1 1 170px;min-width:0;max-width:300px}
+.filter{flex:1 1 140px;min-width:0;max-width:300px} /* four to a row from a tablet up */
 .look-in{flex:1 1 220px;min-width:0;max-width:300px}
 .messages-from,.stop-after{flex:1 1 150px;min-width:0;max-width:240px}
 .date-field{flex:0 1 160px}
@@ -262,6 +262,64 @@ p.status{white-space:normal}
 .title-cell strong{overflow-wrap:anywhere}
 .conv-table th:nth-child(2){width:50%} /* on a wide screen the title takes the room, and the details stay together */
 .conv-table td:not(:nth-child(2)){white-space:nowrap} /* only the title wraps: "web-app" and "Yesterday, 16:47" stay whole */
+/* -- Conversations, 0.7.6 (lane L) --
+   The summary line and the selection bar share one place (.conv-tools), so ticking a row moves nothing; with rows
+   ticked, the bar rides along at the top while the list scrolls. A tick's click area is larger than its box. While the
+   list reloads its rows stay, dimmed, under a line that runs along the top of the box. The header sticks on a screen
+   wide enough that the table needs no sideways scroll. On a phone each row is a card and the bar sits at the bottom. */
+.conv-tools{display:grid;align-items:center;min-height:44px}
+.conv-tools>*{grid-area:1/1;min-width:0}
+.selection{align-self:stretch;box-shadow:0 8px 24px rgba(22,32,28,.18)}
+.conv-tools:has(>.selection:not([hidden])){position:sticky;top:0;z-index:4;margin-top:-8px;padding-top:8px;background:var(--ground)}
+@media (pointer:coarse){.conv-tools{min-height:60px}}
+.tick{display:inline-flex;align-items:center;gap:10px;margin:-8px;padding:8px;cursor:pointer;vertical-align:middle}
+@media (pointer:coarse){.tick{margin:-14px;padding:14px}}
+.conv-table tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+@media (hover:hover) and (pointer:fine){.conv-table tbody tr:hover .btn.ghost:not(:disabled){border-color:var(--line-strong);background:var(--surface)}}
+.conv-table tbody{transition:opacity var(--t-fast) var(--ease-out)}
+.table-box[aria-busy=true] .conv-table tbody{opacity:.5;transition-delay:150ms} /* a quick reload never dims */
+.table-box[aria-busy=true]::after{content:'';position:absolute;top:0;left:0;right:0;z-index:3;height:2px;margin:0 10px;background:var(--accent);animation:conv-load 1.1s var(--ease-in-out) 150ms infinite both}
+@keyframes conv-load{0%{transform:scaleX(0);transform-origin:left}50%{transform:scaleX(1);transform-origin:left}50.01%{transform:scaleX(1);transform-origin:right}100%{transform:scaleX(0);transform-origin:right}}
+@container main (min-width:880px){
+  .table-box:has(>.conv-table){overflow:clip} /* not a scroll box, so the header sticks to the window */
+  .conv-table th{position:sticky;top:0;z-index:2;background:var(--surface);border-bottom-color:transparent;box-shadow:inset 0 -1px 0 var(--line)}
+}
+@media (max-width:760px){
+  .filters,.search-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+  .filters>*,.search-fields>*{max-width:none;min-width:0}
+  .look-in{grid-column:1/-1}
+  /* Select all, in words, above the cards. */
+  .conv-table.cards thead{position:static;width:auto;height:auto;overflow:visible;clip:auto;display:block}
+  .conv-table.cards thead tr{display:block;padding:2px 16px;border-bottom:1px solid var(--line-soft)}
+  .conv-table.cards th:not(.col-check){display:none}
+  .conv-table.cards th.col-check{display:block;width:auto;padding:0;border:0;font-size:14px;font-weight:500;color:var(--ink)}
+  .conv-table.cards thead .tick{margin:0;padding:10px 0}
+  .conv-table.cards .tick .sr{position:static;width:auto;height:auto;overflow:visible;clip:auto;white-space:normal}
+  /* The tick beside the title; under it the details two by two, each named above its value; Read across the card. */
+  .conv-table.cards tbody tr{display:grid;grid-template-columns:auto repeat(2,minmax(0,1fr));gap:8px 14px;align-items:start}
+  .conv-table.cards td{grid-column:2/-1;display:block;padding:0;white-space:normal}
+  .conv-table.cards td[data-label]::before{display:block;margin-bottom:1px}
+  .conv-table.cards td:first-child{grid-column:1;padding-top:2px}
+  .conv-table.cards td:nth-child(2)::before,.conv-table.cards td:nth-child(7):has(>.row:empty){display:none}
+  .conv-table.cards td:is(:nth-child(3),:nth-child(5)){grid-column:2}
+  .conv-table.cards td:is(:nth-child(4),:nth-child(6)){grid-column:3}
+  .conv-table.cards td:last-child{grid-column:1/-1;padding-top:4px}
+  .conv-table.cards tr.sel{box-shadow:inset 3px 0 0 var(--accent)}
+  .conv-table.cards tr.sel td:first-child{box-shadow:none}
+  .conv-table.cards td>.btn.ghost{border-color:var(--line-strong);background:var(--surface)}
+  /* The bar: at the bottom, in reach of a thumb, over the list, which leaves it room. */
+  .conv-tools:has(>.selection:not([hidden])){position:static;margin:0;padding:0}
+  .selection{position:fixed;left:12px;right:12px;bottom:12px;z-index:30;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px 12px 12px 16px;box-shadow:0 12px 32px rgba(22,32,28,.32);animation:sel-up var(--t-base) var(--ease-out) both}
+  .selection-count{grid-area:1/1;align-self:center;margin:0}
+  .selection [data-slot=clear]{grid-area:1/2;justify-self:end}
+  .selection [data-slot=keep],.selection [data-slot=delete]{grid-row:2}
+  .selection .full-line{grid-column:1/-1}
+  .main:has(.selection:not([hidden])){padding-bottom:160px}
+  /* Pages: Previous, this page and Next, beside "51 to 100 of 1,234". */
+  [data-slot=pages] .pager>.btn:not(:first-child,:last-child,[aria-current]),[data-slot=pages] .pager>.gap{display:none}
+  [data-slot=pages] .pager>.btn{min-width:44px}
+}
+@keyframes sel-up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
 
 /* Storage */
 .usage{font-size:16px}
@@ -307,6 +365,17 @@ p.status{white-space:normal}
 .bring-options .input:disabled{background:var(--surface-2);cursor:not-allowed}
 .bring-options .input[aria-invalid=true],.restore-field .input[aria-invalid=true]{border-color:var(--red)}
 #bring-result [role=alert],#restore-result [role=alert]{color:var(--red)}
+/* -- Bring in, 0.7.6 (lane L) --
+   The bar fills to a count (--p, from import.js) while it has one; without one, a short segment runs along it
+   (reduced motion: the still stripes). On a phone each row is a card and the buttons share the width. */
+.bring-progress>span{transform-origin:left}
+.bring-progress[aria-valuenow]>span{background:var(--accent);animation:none;transform:scaleX(var(--p,0));transition:transform var(--t-base) var(--ease-out)}
+@media (prefers-reduced-motion:no-preference){.bring-progress:not([aria-valuenow])>span{width:40%;background:var(--accent);animation:sweep 1.4s linear infinite}}
+@media (max-width:760px){
+  .bring-row>.btn,.restore-row>.btn,.advanced .fields>.btn,.depth{flex:1 1 140px}
+  .bring-progress{flex:1 1 100%;max-width:none}
+  .search-root{flex-basis:100%}
+}
 
 /* Settings: one column, as on a phone, until there is room for two (from about a 1500px window).
    Column one holds the archive, its computers and their folders; column two the backups, shared files and the log.
@@ -337,6 +406,15 @@ p.status{white-space:normal}
 .compare-list>li{flex-direction:column;align-items:stretch;gap:4px;padding:10px 14px}
 .compare-copies{list-style:none;margin:0;padding:0}
 .compare-copies>li{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:2px 0}
+/* -- Settings, 0.7.6 (lane L) --
+   Long paths and names wrap wherever they must, never widening the page. On a phone the tables are cards, the log
+   wraps its lines, and a section's buttons share its width. */
+.board code,.board .grow,.board strong,.profile-list li{overflow-wrap:anywhere}
+@media (max-width:760px){
+  .board .row>.btn,.board .rows>li>.btn{flex:1 1 auto}
+  .every{flex:1 1 100%}
+  .log{white-space:pre-wrap;overflow-wrap:anywhere}
+}
 
 /* Commands */
 .command-groups{columns:2 760px;column-gap:28px} /* two columns of groups once each can hold a table */
@@ -345,6 +423,8 @@ p.status{white-space:normal}
 .col-terminal{width:42%}
 .commands-table caption{padding:16px 18px 8px;text-align:left;font-size:15px;font-weight:600;background:var(--surface-2)}
 .commands-table td{padding-top:9px;padding-bottom:9px}
+/* -- Commands, 0.7.6 (lane L): on a phone each group's caption heads its cards. */
+@media (max-width:760px){.commands-table caption{display:block}}
 
 /* Searchable dropdown (Combo.dc.html) */
 .combo{position:relative;min-width:150px}
@@ -362,7 +442,21 @@ p.status{white-space:normal}
 /* Folder browser: the list of folders in the Choose folder dialog */
 .folder-browser{display:flex;flex-direction:column;gap:2px;margin:0;padding:4px;list-style:none;max-height:240px;overflow-y:auto;border:1px solid var(--line);border-radius:10px}
 .folder-browser .btn{width:100%;justify-content:flex-start;border-color:transparent;background:transparent;white-space:normal;text-align:left;overflow-wrap:anywhere;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px}
-.folder-browser .btn:hover{background:var(--surface-2)}
+@media (hover:hover) and (pointer:fine){.folder-browser .btn:hover{background:var(--surface-2)}}
+
+/* -- Dialogs, 0.7.6 (lane L): one taller than the window scrolls inside the scrim instead of losing its top and its
+   buttons; long paths in a title or a list wrap; on a phone the closing buttons share the width. */
+.scrim{overflow-y:auto;place-items:normal}
+.dialog{margin:auto}
+.dialog :is(h2,p,li){overflow-wrap:anywhere}
+@media (pointer:coarse){.combo-opt{min-height:44px}}
+@media (max-width:760px){
+  .scrim{padding:12px}
+  .dialog{padding:18px}
+  .dialog .row.end>.btn{flex:1 1 auto}
+  .dialog .row.end>.job-status{flex-basis:100%}
+  .dialog .fields>.grow{flex:1 1 0} /* Go to and Choose folder stay beside their field */
+}
 
 /* The phone's Menu button (shown by the 760px query above). */
 .menu-btn{align-items:center;gap:8px;min-height:36px;padding:0 12px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);font-weight:500;cursor:pointer;transition:transform var(--t-press) var(--ease-out)}

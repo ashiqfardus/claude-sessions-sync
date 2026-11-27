@@ -41,6 +41,13 @@ function day(t) {
   return !s ? 'Unknown' : /^\d\d:\d\d$/.test(s) ? 'Today, ' + s : s
 }
 
+// about is another computer's last backup, which its record keeps only to the hour (UTC):
+// "Today, about 07:00", "Yesterday, about 18:00" or "18 Nov".
+function about(t) {
+  const s = when(t)
+  return !s ? 'Unknown' : /^\d\d:\d\d$/.test(s) ? 'Today, about ' + s : s.replace(/^Yesterday, /, 'Yesterday, about ')
+}
+
 // leftOutBy is every project that render --exclude <pattern> leaves out, by
 // render.IsExcluded's rule: the pattern, trimmed and in any case, inside a project's path
 // or folder name. It is applied on every computer, so it is checked against them all.
@@ -196,7 +203,7 @@ register('settings', {
       slot('computers').replaceChildren(...(computers.length ? computers.map((c, i) => h('tr', null,
         h('td', null, h('strong', { class: 'medium' }, c.name), c.this && [' ', h('span', { class: 'muted' }, '(this computer)')]),
         h('td', null, c.version || 'Unknown'),
-        h('td', null, day(c.lastPush)),
+        h('td', null, c.this ? day(c.lastPush) : about(c.lastPush)), // this computer's is its log's exact time
         h('td', null, c.ready ? h('span', { class: 'status ok' }, icon(14, ...OK), 'Ready') : h('span', { class: 'status warn' }, icon(14, ...WAIT), 'Needs update')),
         h('td', { class: 'r' }, !c.this && button('Forget', (e) => forget(c.name, e.currentTarget), { 'aria-label': 'Forget ' + c.name }))))
         : [h('tr', null, h('td', { colspan: 5, class: 'muted' }, 'No computer has backed up to this archive yet.'))]))
@@ -325,12 +332,18 @@ register('settings', {
     nameInput.addEventListener('input', () => { renameBtn.disabled = !nameInput.value.trim() || nameInput.value.trim() === me })
     nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !renameBtn.disabled && !busy(renameBtn)) rename() })
     // Any name goes to the CLI, which decides; a refusal shows its sentence (Ruling P9).
+    // The old name stays in the archive as another computer: offer to forget it, behind Forget's own confirm.
     async function rename() {
+      const old = me
       if (!await config(renameBtn, 'Renaming…', 'set-machine', nameInput.value.trim())) return
-      toast('Renamed. The next backup uses the new name.')
       await reload(nameInput)
       nameInput.value = me // the name as saved, which the CLI may have tidied
       renameBtn.disabled = true
+      const forgetOld = () => [...slot('computers').querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Forget ' + old)
+      if (!old || same(old, me) || !forgetOld()) return toast('Renamed. The next backup uses the new name.')
+      toast(`Renamed. The next backup uses the new name; ${old} stays listed until you forget it.`, {
+        action: { label: 'Forget ' + old, run: () => { const b = forgetOld(); if (b) { b.focus(); forget(old, b) } } },
+      })
     }
 
     // The new folder is confirmed with the old one, a detected one too (Ruling P62).

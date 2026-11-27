@@ -600,3 +600,33 @@ func TestScreensUseTheFullWidth(t *testing.T) {
 		t.Errorf("Settings reads %q, want %q", got, want)
 	}
 }
+
+// On a phone the tables of Conversations, Bring in, Settings and Commands are one card per
+// row (panel.css's table.cards, labelled by app.js); a table left out scrolls sideways in
+// its box instead. Conversations' Select all says so in words, which the cards show.
+func TestTablesAreCardsOnAPhone(t *testing.T) {
+	files := staticFiles(t)
+	shell := files["static/index.html"]
+	for _, name := range []string{"conversations", "import", "settings"} {
+		i := strings.Index(shell, `<template id="t-`+name+`">`)
+		if i < 0 {
+			t.Fatalf("index.html has no template for %s", name)
+		}
+		tpl := shell[i : i+strings.Index(shell[i:], "</template>")]
+		tables := regexp.MustCompile(`<table class="([^"]*)"`).FindAllStringSubmatch(tpl, -1)
+		if len(tables) == 0 {
+			t.Errorf("%s has no table", name)
+		}
+		for _, m := range tables {
+			if !strings.Contains(" "+m[1]+" ", " cards ") {
+				t.Errorf("%s's table %q is not marked cards", name, m[1])
+			}
+		}
+	}
+	if !strings.Contains(files["static/js/commands.js"], `h('table', { class: 'commands-table cards' }`) {
+		t.Error("commands.js's tables are not marked cards")
+	}
+	if !regexp.MustCompile(`<label class="tick"><input type="checkbox" class="check" data-slot="select-all"><span class="sr">Select all shown</span></label>`).MatchString(shell) {
+		t.Error("Conversations' Select all lacks its words")
+	}
+}

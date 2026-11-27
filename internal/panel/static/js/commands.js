@@ -25,7 +25,7 @@ function place(r) {
   if (!/^[a-z]+$/.test(r.screen || '')) return h('td', { class: 'muted' }, text)
   const i = text.indexOf(', ')
   const [name, rest] = i < 0 ? [text, ''] : [text.slice(0, i), text.slice(i)]
-  return h('td', null, h('a', { href: '#/' + r.screen }, name), ...linked(rest))
+  return h('td', null, h('span', null, h('a', { href: '#/' + r.screen }, name), ...linked(rest))) // one value for a phone card's label
 }
 
 register('commands', {
@@ -41,7 +41,7 @@ register('commands', {
       g.body.append(h('tr', null, h('td', null, (r.terminal || []).flatMap((t, i) => [i ? ', ' : '', h('code', null, t)])), place(r)))
     }
     el.querySelector('[data-slot="groups"]').replaceChildren(...(groups.length
-      ? groups.map((g) => h('div', { class: 'panel table-box' }, h('table', { class: 'commands-table' }, h('caption', null, g.name),
+      ? groups.map((g) => h('div', { class: 'panel table-box' }, h('table', { class: 'commands-table cards' }, h('caption', null, g.name),
         h('thead', null, h('tr', null, h('th', { scope: 'col', class: 'col-terminal' }, 'In the terminal'), h('th', { scope: 'col' }, 'In the panel'))), g.body)))
       : [h('p', { class: 'panel pad muted' }, "The command list can't be shown right now. Reload the page to try again.")]))
   },
