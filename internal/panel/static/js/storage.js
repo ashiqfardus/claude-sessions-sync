@@ -14,9 +14,7 @@ const and = (names) => new Intl.ListFormat('en-GB', { type: 'conjunction' }).for
 const plain = (e) => (e && e.plain ? e.message : GENERIC)
 // refocus puts focus back on btn when disabling a button dropped it to the page.
 const refocus = (btn) => { if (document.activeElement === document.body && btn.isConnected && !btn.hidden) btn.focus() }
-// The CLI's own form for what clean and prune free: MB with one decimal.
-const mb = (n) => (n / 2 ** 20).toFixed(1) + ' MB'
-// sized is the Overview's form: 4.8 GB, 230 MB, 12 KB.
+// sized is the Overview's form, for every size here: 4.8 GB, 230 MB, 12 KB.
 function sized(b) {
   for (const [unit, n, d] of [['GB', 2 ** 30, 1], ['MB', 2 ** 20, 0], ['KB', 2 ** 10, 0]]) if (b >= n) return (b / n).toFixed(d) + ' ' + unit
   return b + ' B'
@@ -117,7 +115,7 @@ register('storage', {
       const waiting = plan ? Object.keys(plan.waiting || {}).sort() : []
       if (!plan && !last) dupLine.textContent = 'Not checked yet.'
       else if (!n) dupLine.textContent = `None ${waiting.length ? 'can be removed yet' : 'found'}. Checked ${checked(plan ? plan.at : last.at)}.`
-      else dupLine.textContent = `${dups(n)}, ${mb(bytes)}.`
+      else dupLine.textContent = `${dups(n)}, ${sized(bytes)}.`
       remove.hidden = !n
       remove.textContent = 'Remove ' + copies(n)
       let note = ''
@@ -126,7 +124,7 @@ register('storage', {
           : "A computer's list in the archive can't be read, so this may be incomplete.") + ' Let your sync app finish, then check again.'
         remove.disabled = true
       } else if (waiting.length) {
-        note = `${mb(plan.waitingSize)} more is kept for now, because ${and(waiting)} would upload those copies again. Check again once ${waiting.length === 1 ? 'it has' : 'they have'} updated and backed up.`
+        note = `${sized(plan.waitingSize)} more is kept for now, because ${and(waiting)} would upload those copies again. Check again once ${waiting.length === 1 ? 'it has' : 'they have'} updated and backed up.`
       }
       slot('dup-wait-text').textContent = note
       dupWait.hidden = !note
@@ -199,12 +197,12 @@ register('storage', {
         (provider === 'Google Drive' ? ' Google Drive keeps deleted files in its trash for 30 days.' : '')
       const label = 'Remove ' + copies(n)
       if (busy || signal.aborted) return // a check started meanwhile
-      if (!await confirmDialog({ title: label + '?', body, items: [...groups].map(([name, g]) => `${name}: ${copies(g.n)}, ${mb(g.bytes)}`), confirm: label, danger: true })) return
+      if (!await confirmDialog({ title: label + '?', body, items: [...groups].map(([name, g]) => `${name}: ${copies(g.n)}, ${sized(g.bytes)}`), confirm: label, danger: true })) return
       const st = await runClean(true)
       // A run that fails partway still says what it removed (Ruling P44). clean compares
       // again before removing, so it may find other copies than the dialog listed.
       const res = st.result || {}, done = res.deleted || 0
-      let text = `Removed ${dups(done)} and freed ${mb(res.freed || 0)}`
+      let text = `Removed ${dups(done)} and freed ${sized(res.freed || 0)}`
       if (st.ok && done !== n) text += `. The check found ${number(n)}: the archive changed since`
       if (!st.ok) text = (done ? text + '. ' : '') + (st.error || GENERIC)
       toast(text)

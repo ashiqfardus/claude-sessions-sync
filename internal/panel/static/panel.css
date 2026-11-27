@@ -120,7 +120,7 @@ details[open]>summary svg{transform:rotate(90deg)}
 .archive .flow circle{fill:none;stroke:#7FB5A3;stroke-width:1.2;stroke-dasharray:3 6;animation:spin 30s linear infinite;transform-origin:90px 90px}
 .archive .flow circle:nth-child(2){animation-duration:22s;animation-direction:reverse}
 .bar{display:flex;height:10px;border-radius:999px;overflow:hidden;background:var(--line-soft)}
-.bar>span{transform-origin:left;animation:grow .9s var(--ease) both}
+.bar>span{transform-origin:left;animation:grow 600ms var(--ease-out) both}
 .legend{display:flex;flex-wrap:wrap;gap:6px 20px;font-size:12px}
 .legend span{display:inline-flex;align-items:center;gap:7px}
 .legend i{width:9px;height:9px;border-radius:2px}
@@ -212,8 +212,10 @@ p.status{white-space:normal}
 .archive-path{color:#B9C6C0}
 .archive-size{margin-top:10px}
 .archive-action{align-self:flex-start;margin-top:10px}
+.computers{align-self:flex-start} /* as tall as its rows, not the archive card */
 .computer-name{flex-basis:170px}
-.computer-name strong{display:block;font-weight:600}
+.computer-name strong{display:flex;align-items:center;gap:8px;font-weight:600}
+.dot.warn{background:var(--amber)}
 .computer-when{flex:0 1 170px}
 .computer-progress{display:block;margin-top:7px}
 .computer-count{flex:0 1 100px}
@@ -224,8 +226,16 @@ p.status{white-space:normal}
 .bar>.part-work{animation-delay:120ms}
 .bar>.part-other{animation-delay:200ms}
 .legend span span{display:inline}
-.activity-time{flex:0 0 112px} /* fits "Yesterday, 18:30" */
+.activity-time{flex:0 0 160px} /* fits "Yesterday, about 18:00" */
 .archive-size{min-height:38px} /* holds the card still until the size arrives */
+/* The archive's figures, under its size: two by two, four in a row once the card is wide. */
+.archive{container-type:inline-size}
+.figures{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;margin:4px 0 0;padding-top:14px;border-top:1px solid rgba(238,242,240,.14)}
+@container (min-width:520px){.figures{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.figures>div{min-width:0}
+.figures dt{font-size:12px;color:#B9C6C0} /* 9.6:1 on --ink */
+.figures dd{margin:2px 0 0;font-size:17px;font-weight:600;color:#EEF2F0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rows>li.skel-row{padding:16px 18px;gap:12px;flex-wrap:nowrap}
 .archive-path,.computer-name,.would-copy>li{overflow-wrap:anywhere}
 .status.fail{color:var(--red)}
 .fail-row,.fail-row:hover{background:var(--red-soft)}
@@ -268,10 +278,11 @@ p.status{white-space:normal}
 /* Delete old conversations */
 .auto-age{flex:0 1 300px;min-width:220px}
 .now-field{flex:0 1 220px;min-width:170px}
-.preview{border:1px solid #E9C6C1;border-radius:10px;overflow:hidden}
+.preview{border:1px solid #E9C6C1;border-radius:10px;overflow:clip} /* clip, not hidden: the actions below can stick */
 .preview-summary{border-radius:0}
 .preview-items>li{padding:9px 14px}
-.preview-actions{padding:12px 14px;border-top:1px solid #E9C6C1}
+.preview-items{max-height:min(50vh,420px);overflow-y:auto;overscroll-behavior:contain} /* hundreds of rows scroll here, not the page */
+.preview-actions{padding:12px 14px;border-top:1px solid #E9C6C1;position:sticky;bottom:0;z-index:1;background:var(--surface)} /* Delete and Cancel stay in view while the list is */
 .ruled{border-top:1px solid var(--line-soft)}
 .ruled>li{padding:10px 0}
 .keep-add{flex:1 1 280px;max-width:420px}

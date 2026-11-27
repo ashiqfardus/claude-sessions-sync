@@ -42,11 +42,16 @@
   <header class="head">
     <h1 tabindex="-1">Overview</h1>
     <div class="row">
-      <span class="muted small" data-slot="last"></span>
       <button type="button" class="btn" data-slot="preview">Preview backup</button>
       <button type="button" class="btn primary" data-slot="push">Back up now</button>
     </div>
+    <span class="sr" role="status" data-slot="say"></span>
   </header>
+
+  <div class="panel pad stack gap-8 run slide" data-slot="run" hidden>
+    <div class="row spread"><span class="medium" id="run-stage" data-slot="run-stage"></span><span class="muted small num" data-slot="run-count"></span></div>
+    <span class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-labelledby="run-stage" data-slot="run-bar"><span></span></span>
+  </div>
 
   <section aria-labelledby="sync-h" class="section">
     <h2 id="sync-h">Your computers and the archive</h2>
@@ -56,24 +61,29 @@
         <p class="archive-title" data-slot="provider"></p>
         <p><code class="archive-path" data-slot="path"></code></p>
         <p class="big archive-size" data-slot="size"></p>
-        <p class="sub" data-slot="counts"></p>
+        <dl class="figures num">
+          <div><dt>Conversations</dt><dd data-slot="n-conversations">—</dd></div>
+          <div><dt>Work folders</dt><dd data-slot="n-work">—</dd></div>
+          <div><dt>Computers</dt><dd data-slot="n-computers">—</dd></div>
+          <div><dt>Last backup</dt><dd data-slot="n-last">—</dd></div>
+        </dl>
         <a href="#/import" class="btn on-dark archive-action">Bring in work from another computer</a>
       </div>
-      <ul aria-label="Computers" class="panel rows flex-2" data-slot="computers"></ul>
+      <ul aria-label="Computers" class="panel rows flex-2 computers" data-slot="computers"></ul>
     </div>
   </section>
 
   <div class="cols">
     <section aria-labelledby="health-h" class="section">
       <h2 id="health-h">Health</h2>
-      <ul class="panel rows" data-slot="health"><li class="muted">Checking…</li></ul>
+      <ul class="panel rows" data-slot="health" aria-busy="true"><li class="skel-row"><span class="sr">Checking…</span><span class="skel w-75" aria-hidden="true"></span></li><li class="skel-row" aria-hidden="true"><span class="skel w-60"></span></li><li class="skel-row" aria-hidden="true"><span class="skel w-45"></span></li></ul>
     </section>
 
     <div class="stack gap-28">
       <section aria-labelledby="storage-h" class="section">
         <h2 id="storage-h">Storage</h2>
         <div class="panel pad stack">
-          <p data-slot="usage">Loading…</p>
+          <p data-slot="usage"><span class="sr">Loading…</span><span class="skel w-60" aria-hidden="true"></span></p>
           <div class="bar" role="img" aria-label="Archive space by kind" data-slot="bar" hidden><span class="part-conversations"></span><span class="part-work"></span><span class="part-other"></span></div>
           <p class="legend num" data-slot="legend" hidden><span><i class="part-conversations"></i><span>Conversations <span data-slot="conversations-size"></span></span></span><span><i class="part-work"></i><span>Work folders <span data-slot="work-size"></span></span></span><span><i class="part-other"></i><span>Other <span data-slot="other-size"></span></span></span></p>
           <p><span data-slot="saving"></span> <a href="#/storage" class="medium">Manage storage</a></p>
@@ -81,7 +91,7 @@
       </section>
       <section aria-labelledby="activity-h" class="section">
         <h2 id="activity-h">Recent activity</h2>
-        <ol class="panel rows num" data-slot="activity"></ol>
+        <ol class="panel rows num" data-slot="activity" aria-busy="true"><li class="skel-row" aria-hidden="true"><span class="skel w-30"></span><span class="skel w-60"></span></li><li class="skel-row" aria-hidden="true"><span class="skel w-30"></span><span class="skel w-45"></span></li></ol>
         <a href="#/settings" class="medium">Open the full log</a>
       </section>
     </div>
@@ -216,7 +226,7 @@
       <section aria-labelledby="big-h" class="section">
         <h2 id="big-h">Biggest projects</h2>
         <div class="panel table-box">
-          <table class="num projects-table">
+          <table class="num projects-table cards">
             <caption class="sr">Archive space by project</caption>
             <thead><tr><th scope="col">Project</th><th scope="col" class="r">Conversations</th><th scope="col" class="col-space">Space</th></tr></thead>
             <tbody data-slot="projects"></tbody>
@@ -257,7 +267,7 @@
         <p class="muted small">Or tick conversations on the <a href="#/conversations">Conversations</a> page and choose Delete from archive.</p>
         <div class="preview slide" data-slot="preview" hidden>
           <p class="note red preview-summary" role="status" data-slot="summary"></p>
-          <ul class="rows preview-items" data-slot="items"></ul>
+          <ul class="rows preview-items" aria-label="Conversations that would be deleted" data-slot="items"></ul>
           <div class="row preview-actions">
             <button type="button" class="btn danger" data-slot="delete"></button>
             <button type="button" class="btn" data-slot="cancel">Cancel</button>

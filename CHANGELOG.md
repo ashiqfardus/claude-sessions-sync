@@ -21,6 +21,24 @@ All notable changes to this project are documented here. This project follows
   button that opens every page and what is running. On a tablet the sidebar starts folded
   to icons. Text and fields are larger on a phone, and a page that is still loading shows
   the shape of what is coming instead of a bare "Loading…".
+- **Overview shows the archive at a glance.** The archive card lists its conversations,
+  work folders, computers and last backup ("13 min ago"; the exact time is in its tooltip)
+  as figures that count up when the page opens. Each computer has a status dot, and this
+  computer's dot pulses while it backs up. On Storage, the biggest projects are one card
+  each on a phone.
+
+### Fixed
+- **Back up now showed no progress, and a first backup showed nothing.** Overview now
+  shows what the backup is doing above the cards, with a bar that fills when it reports
+  a count, and the computers card says this computer's first backup is running.
+- **Preview backup could list thousands of files.** It lists the first 50, then "and N
+  more".
+- **Delete old conversations: a long preview pushed Delete and Cancel far down the page.**
+  The list scrolls in its own box, and the two buttons stay in view.
+- **Remove duplicate copies said "0.0 MB" for small copies.** Its sizes use KB, MB or GB
+  like the rest of Storage.
+- **Another computer's last backup read as an exact time.** The archive keeps it only to
+  the hour, so Overview says "About 07:00". This computer's time stays exact.
 
 ## [0.7.5] - 2026-11-27
 

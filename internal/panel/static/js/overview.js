@@ -17,17 +17,24 @@ const STATE = { ok: ['ok', 'ok', 'Backing up normally'], update: ['warn', 'clock
 const LEVEL = { fail: ['fail', 'fail-row', 'Problem: '], warn: ['warn', 'warn-row', 'Warning: '], ok: ['ok', null, ''] }
 const WOULD = 'would copy '
 const TOTAL = /^would copy \d+ file\(s\), \d+ unchanged\.$/ // push's own count line, not a file
-const LISTED = 500 // files the preview lists before "and N more"
+const LISTED = 50 // files the preview lists before "and N more"
+// STEP is push's progress text: "<stage>: n/m" or "<stage>", e.g. "copying conversations: 120/2000".
+const STEP = /^(.*?)(?::\s*(\d+)\s*\/\s*(\d+))?\s*$/
 const PREVIEW = 'cs.previewJob' // the last preview this tab started: its job reads like a backup's
 
 const count = (n, word) => (n === 1 ? '1 ' + word : n.toLocaleString('en-GB') + ' ' + word + 's')
-const lower = (s) => s.replace(/^Yesterday/, 'yesterday')
 const plain = (e) => (e && e.plain ? e.message : GENERIC)
-// at is a time as when() gives it. A zero time is unknown, never "not backing up"
-// (Ruling P33): it shows "—" and is read as "Not known yet".
-const at = (t, low) => {
+// about is a time kept only to the hour, as another computer's last backup is (push
+// keeps the hour): "About 07:00", "Yesterday, about 18:00", or the day.
+function about(t) {
   const s = when(t)
-  if (s) return low ? lower(s) : s
+  return s && (/^\d\d:\d\d$/.test(s) ? 'About ' + s : s.replace(/^Yesterday, /, 'Yesterday, about '))
+}
+// at is a time as when() gives it, or as about() does when rough. A zero time is
+// unknown, never "not backing up" (Ruling P33): it shows "—" and is read as "Not known yet".
+const at = (t, rough) => {
+  const s = rough ? about(t) : when(t)
+  if (s) return s
   return h('span', null, h('span', { 'aria-hidden': 'true' }, '—'), h('span', { class: 'sr' }, 'Not known yet'))
 }
 
@@ -38,6 +45,15 @@ function size(b) {
 }
 const sized = (b) => { const [v, d, u] = size(b); return v.toFixed(d) + ' ' + u }
 
+// ago is "Just now", "12 min ago" or "3 h ago" up to 12 hours, then when()'s words; null
+// for no time.
+function ago(t) {
+  const s = when(t)
+  if (!s) return null
+  const m = Math.floor((Date.now() - new Date(t)) / 60000)
+  return m < 1 ? 'Just now' : m < 60 ? m + ' min ago' : m < 720 ? Math.floor(m / 60) + ' h ago' : s
+}
+
 register('overview', {
   // Only the summary holds the screen back; storage, health and activity fill in as
   // they come, so a slow health check holds up nothing else.
@@ -46,12 +62,13 @@ register('overview', {
     const pushBtn = slot('push'), previewBtn = slot('preview')
     let me = null // this computer's row: {c, cell, label, live}
     let progress = null // while a backup runs, its latest progress text ('' before any)
+    let firstRun = null // while this computer's first backup runs: its row {row, label}
     let watching = false // one watcher at a time
-    let raf = 0
-    signal.addEventListener('abort', () => cancelAnimationFrame(raf))
+    const frames = new Map() // each counting figure's next frame
+    signal.addEventListener('abort', () => { for (const f of frames.values()) cancelAnimationFrame(f) })
 
-    function showSummary(v) {
-      slot('last').replaceChildren('Last backup ', at(v.lastBackup, true))
+    // showSummary fills the archive card and the computers; first, the figures count up.
+    function showSummary(v, first) {
       if (v.problem) {
         el.querySelector('.split').replaceChildren(noArchive(v.problem, () => location.reload()))
         slot('usage').closest('section').hidden = true
@@ -59,10 +76,18 @@ register('overview', {
       }
       slot('provider').textContent = 'Archive in ' + (v.archive.provider || 'your sync folder') // Ruling P25
       slot('path').textContent = v.archive.display
-      slot('counts').textContent = `${count(v.conversations, 'conversation')} and ${count(v.workFolders, 'work folder')}, from ${count(v.computers.length, 'computer')}`
-      me = null
+      const whole = (n) => Math.round(n).toLocaleString('en-GB')
+      countUp(slot('n-conversations'), v.conversations, whole, first)
+      countUp(slot('n-work'), v.workFolders, whole, first)
+      countUp(slot('n-computers'), v.computers.length, whole, first)
+      const last = slot('n-last'), rel = ago(v.lastBackup)
+      last.replaceChildren(rel || at(v.lastBackup))
+      if (rel) last.title = new Date(v.lastBackup).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })
+      else last.removeAttribute('title')
+      me = firstRun = null
       const rows = v.computers.map(computer)
-      slot('computers').replaceChildren(...(rows.length ? rows : [h('li', { class: 'muted' }, 'No computer has backed up to this archive yet.')]))
+      slot('computers').replaceChildren(...(rows.length ? rows : [h('li', { class: 'muted none-yet' }, 'No computer has backed up to this archive yet.')]))
+      if (progress != null) showRun()
     }
 
     function computer(c) {
@@ -70,16 +95,14 @@ register('overview', {
       const sub = c.this ? 'This computer' + (c.version ? ', version ' + c.version : '') : c.version ? 'Version ' + c.version : 'An older version'
       const cell = h('span', { class: 'small num computer-when' })
       const label = whenCell(cell, c, c.this ? progress : null)
-      // This computer's row says how its backup is going; the region is made once with
-      // the row, so its updates are announced.
-      const live = c.this ? h('span', { class: 'sr', role: 'status' }) : null
-      if (c.this) me = { c, cell, label, live }
+      // The dot is the state at a glance; this computer's pulses while it backs up.
+      const dot = h('span', { class: 'dot' + (cls === 'ok' ? '' : ' warn') + (c.this && progress != null ? ' live' : ''), 'aria-hidden': 'true' })
+      if (c.this) me = { c, cell, label, dot }
       return h('li', null,
-        h('span', { class: 'grow computer-name' }, h('strong', null, c.name), h('span', { class: 'muted small' }, sub)),
+        h('span', { class: 'grow computer-name' }, h('strong', null, dot, c.name), h('span', { class: 'muted small' }, sub)),
         cell,
         h('span', { class: 'small num computer-count' }, h('span', { class: 'muted block' }, 'Conversations'), c.conversations.toLocaleString('en-GB')),
-        h('span', { class: 'status computer-state ' + cls }, icon(16, ...ICON[ic]), words),
-        live)
+        h('span', { class: 'status computer-state ' + cls }, icon(16, ...ICON[ic]), words))
     }
 
     // whenCell shows the last backup, or, while a backup runs (text not null), its
@@ -88,29 +111,61 @@ register('overview', {
     function whenCell(cell, c, text) {
       const label = h('span', { class: 'muted block' }, text == null ? 'Last backup' : text || 'Backing up')
       cell.replaceChildren(label,
-        text == null ? at(c.lastPush) : h('span', { class: 'progress computer-progress', role: 'progressbar', 'aria-label': 'Backing up' }, h('span')))
+        text == null ? at(c.lastPush, !c.this) : h('span', { class: 'progress computer-progress', role: 'progressbar', 'aria-label': 'Backing up' }, h('span')))
       return label
     }
-    const showRun = () => { if (me) me.label = whenCell(me.cell, me.c, progress) }
-    const say = (text) => { if (me) me.live.textContent = text }
-    const step = (text) => {
-      progress = text
-      if (me) me.label.textContent = text
-      say(text)
+    // showRun shows a backup running (progress not null) in this computer's row. Before
+    // its first backup this computer has no row: the card gets one that says so.
+    function showRun() {
+      if (me) {
+        me.label = whenCell(me.cell, me.c, progress)
+        me.dot.classList.toggle('live', progress != null)
+        return
+      }
+      const list = slot('computers'), none = list.querySelector('.none-yet')
+      if (none) none.hidden = progress != null
+      if (progress == null) { if (firstRun) firstRun.row.remove(); firstRun = null; return }
+      if (firstRun) { firstRun.label.textContent = progress || 'Backing up'; return }
+      const label = h('span', { class: 'muted block' }, progress || 'Backing up')
+      firstRun = { label, row: h('li', null,
+        h('span', { class: 'grow computer-name' }, h('strong', null, h('span', { class: 'dot live', 'aria-hidden': 'true' }), 'This computer'),
+          h('span', { class: 'muted small' }, 'Its first backup is running')),
+        h('span', { class: 'small num computer-when' }, label, h('span', { class: 'progress computer-progress', 'aria-hidden': 'true' }, h('span')))) }
+      list.prepend(firstRun.row)
+    }
+    // say speaks in the screen's one live region: the start, each new stage, the end.
+    const say = (text) => { slot('say').textContent = text }
+
+    // step shows a job's progress text above the cards: its stage, and a bar that fills
+    // when the text has a count; until then, doing. It gives the text for the row.
+    let stage = ''
+    function step(text, doing) {
+      const [, s, n, m] = STEP.exec(text || '') || []
+      const words = s ? s[0].toUpperCase() + s.slice(1) : doing
+      const of = Number(m || 0), pct = of ? Math.min(100, Math.round((Number(n) / of) * 100)) : null
+      const counted = of ? `${Number(n).toLocaleString('en-GB')} of ${of.toLocaleString('en-GB')}` : ''
+      slot('run-stage').textContent = words
+      slot('run-count').textContent = counted
+      const bar = slot('run-bar')
+      bar.firstElementChild.style.width = (pct == null ? 100 : pct) + '%'
+      if (pct == null) bar.removeAttribute('aria-valuenow')
+      else bar.setAttribute('aria-valuenow', pct)
+      if (words !== stage) { stage = words; say(words) } // a stage, not every count
+      return counted ? words + ': ' + counted : words
     }
 
-    // The size counts up over 900 ms, easing out, except under reduced motion.
-    function countUp(node, bytes, animate) {
-      const [v, d, u] = size(bytes)
-      cancelAnimationFrame(raf)
-      if (!animate || reducedMotion) { node.textContent = v.toFixed(d) + ' ' + u; return }
+    // countUp shows show(to) in node; animate, it counts up to it over 600 ms, easing
+    // out, except under reduced motion.
+    function countUp(node, to, show, animate) {
+      cancelAnimationFrame(frames.get(node))
+      if (!animate || reducedMotion) { node.textContent = show(to); return }
       const t0 = performance.now()
       const tick = (now) => {
-        const k = Math.min(1, (now - t0) / 900)
-        node.textContent = (v * (1 - (1 - k) ** 3)).toFixed(d) + ' ' + u
-        if (k < 1) raf = requestAnimationFrame(tick)
+        const k = Math.min(1, (now - t0) / 600)
+        node.textContent = show(to * (1 - (1 - k) ** 3))
+        if (k < 1) frames.set(node, requestAnimationFrame(tick))
       }
-      raf = requestAnimationFrame(tick)
+      frames.set(node, requestAnimationFrame(tick))
     }
 
     async function loadStorage(first) {
@@ -120,7 +175,8 @@ register('overview', {
       if (v.problem) { slot('usage').closest('section').hidden = true; return } // the archive card says why
       const { conversations, work, other } = v.sizes
       const total = conversations + work + other
-      countUp(slot('size'), total, first)
+      const [sv, sd, su] = size(total) // counts in its final unit, so the unit never changes
+      countUp(slot('size'), sv, (x) => x.toFixed(sd) + ' ' + su, first)
       slot('usage').replaceChildren('Your archive uses ', h('strong', { class: 'num' }, sized(total)), v.archive.provider ? ' of ' + v.archive.provider + '.' : '.')
       const bar = slot('bar')
       for (const [part, b] of [['conversations', conversations], ['work', work], ['other', other]]) {
@@ -144,7 +200,8 @@ register('overview', {
     async function loadHealth() {
       const list = slot('health')
       let items
-      try { items = await api.get('/api/health') } catch (e) { if (!signal.aborted) list.replaceChildren(h('li', null, plain(e))); return }
+      try { items = await api.get('/api/health') } catch (e) { list.removeAttribute('aria-busy'); if (!signal.aborted) list.replaceChildren(h('li', null, plain(e))); return }
+      list.removeAttribute('aria-busy')
       const shown = [...items.filter((i) => i.level === 'fail' || i.level === 'warn'),
         ...['archived', 'sweep'].flatMap((name) => items.filter((i) => i.level === 'ok' && i.name === name))]
       list.replaceChildren(...shown.map((i) => {
@@ -158,8 +215,10 @@ register('overview', {
     async function loadActivity(fresh) {
       const list = slot('activity')
       let items
-      try { items = await api.get('/api/activity') } catch (e) { if (!signal.aborted) list.replaceChildren(h('li', null, plain(e))); return }
-      list.replaceChildren(...items.map((a) => h('li', null, h('span', { class: 'muted activity-time' }, at(a.at)), h('span', { class: 'grow' }, a.text))))
+      try { items = await api.get('/api/activity') } catch (e) { list.removeAttribute('aria-busy'); if (!signal.aborted) list.replaceChildren(h('li', null, plain(e))); return }
+      list.removeAttribute('aria-busy')
+      // "<computer> backed up" is another computer's last backup, kept only to the hour.
+      list.replaceChildren(...items.map((a) => h('li', null, h('span', { class: 'muted activity-time' }, at(a.at, / backed up$/.test(a.text))), h('span', { class: 'grow' }, a.text))))
       if (!items.length) list.append(h('li', { class: 'muted' }, 'No activity yet.'))
       else if (fresh) list.firstChild.classList.add('slide')
     }
@@ -202,15 +261,27 @@ register('overview', {
       if (watching) return
       watching = true
       busy(true)
+      const mine = kind !== 'other', doing = kind === 'backup' ? 'Backing up' : 'Checking what a backup would copy'
+      if (mine) {
+        stage = ''
+        step('', doing)
+        slot('run').hidden = false
+      }
       if (kind === 'backup') {
         pushBtn.textContent = 'Backing up'
         progress = ''
         showRun()
-        say('Backing up')
+      }
+      const onProgress = (text) => {
+        const p = step(text, doing)
+        if (kind !== 'backup') return
+        progress = p
+        if (me) me.label.textContent = p
+        else showRun()
       }
       let st
       try {
-        st = await follow(id, { signal, onProgress: kind === 'backup' ? step : null })
+        st = await follow(id, { signal, onProgress: mine ? onProgress : null })
       } catch (e) {
         st = { ok: false, error: plain(e) }
       }
@@ -218,6 +289,7 @@ register('overview', {
       if (!st) return // the screen has gone; the job goes on, and the rail shows it
       pushBtn.textContent = 'Back up now'
       busy(false, clicked)
+      slot('run').hidden = true
       if (kind === 'backup') {
         progress = null
         showRun()
@@ -248,7 +320,7 @@ register('overview', {
     pushBtn.addEventListener('click', () => start(false))
     previewBtn.addEventListener('click', () => start(true))
     const v = await api.get('/api/summary')
-    showSummary(v)
+    showSummary(v, true)
     if (!v.problem) loadStorage(true)
     loadHealth()
     loadActivity(false)
