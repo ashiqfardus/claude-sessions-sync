@@ -590,13 +590,14 @@ type profileCopy struct {
 }
 
 // profileCopies is every machine's copy of each profile file, by the file's path
-// relative to the profile: names, sizes and times, no content.
+// relative to the profile: names, sizes and times, no content. A machine forgotten -
+// its manifest shard removed - is left out; its copies stay in the archive.
 func profileCopies(dest string) map[string][]profileCopy {
 	out := map[string][]profileCopy{}
 	machines, _ := os.ReadDir(filepath.Join(profileDir(dest), "machines"))
 	for _, m := range machines {
 		dir := filepath.Join(profileDir(dest), "machines", m.Name())
-		if !archive.IsRealDir(dir) {
+		if !archive.IsRealDir(dir) || archive.StatOrNil(filepath.Join(archive.ManifestDir(dest), m.Name()+".json")) == nil {
 			continue
 		}
 		for _, rel := range profileFiles(dir) {

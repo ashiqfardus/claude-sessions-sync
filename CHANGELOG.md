@@ -14,6 +14,10 @@ All notable changes to this project are documented here. This project follows
 - **Bring in downloaded memory files it did not need.** To tell a memory file that is
   new here from one deleted here, it read the archived copy even when this computer had
   never taken it. It now reads one only when the copy it took is the same size.
+- **Rules and skills never settled after Forget.** A forgotten computer's rules and
+  skills stayed in the comparison, so Settings kept saying a file differs between your
+  computers, and Compare listed it. A computer with no record in the archive is now
+  left out. Its copies are not deleted.
 - **From a folder instead: a mistyped folder gave only "That didn't work".** The panel
   now says "That folder doesn't exist on this computer."
 

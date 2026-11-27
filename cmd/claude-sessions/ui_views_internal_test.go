@@ -721,6 +721,30 @@ func TestSettingsAndProfileViews(t *testing.T) {
 	}
 }
 
+// E2E M4: a computer forgotten with machines --forget is out of the comparison, so the
+// copies of the computers left can agree; its own copies are not deleted.
+func TestProfileDiffsLeaveOutAForgottenComputer(t *testing.T) {
+	_, dest := queryFixture(t)
+	for machine, body := range map[string]string{"LAP-1": "same", "LAP-2": "same", "LAP-3": "an older one"} {
+		writeFile(t, filepath.Join(profileDir(dest), "machines", machine, "CLAUDE.md"), body)
+	}
+	if got := profileDiffs(dest); !reflect.DeepEqual(got, []string{"CLAUDE.md"}) {
+		t.Fatalf("fixture: diffs %v", got)
+	}
+	if err := archive.ForgetMachine(dest, "LAP-3"); err != nil {
+		t.Fatal(err)
+	}
+	if got := profileDiffs(dest); len(got) != 0 {
+		t.Errorf("diffs %v after LAP-3 was forgotten", got)
+	}
+	if copies := profileCopies(dest)["CLAUDE.md"]; len(copies) != 2 || slices.ContainsFunc(copies, func(c profileCopy) bool { return c.Machine == "LAP-3" }) {
+		t.Errorf("copies %+v", copies)
+	}
+	if archive.StatOrNil(filepath.Join(profileDir(dest), "machines", "LAP-3", "CLAUDE.md")) == nil {
+		t.Error("the forgotten computer's copy was deleted")
+	}
+}
+
 // idleHere gives this computer its own copy of qZipped, idle 200 days: only the zip's
 // index can show the archive holds it.
 func idleHere(t *testing.T, root string) {
