@@ -845,7 +845,9 @@ const autoOff = "Automatic backup is off. Nothing is backed up until you choose 
 // healthOf is queryHealth's items from doctor's checks.
 func healthOf(checks []check, logf func(string, ...any)) ([]healthItem, time.Duration) {
 	off := slices.ContainsFunc(checks, func(c check) bool { return c.Name == "session hook" && strings.HasPrefix(c.Detail, "no SessionEnd") }) &&
-		slices.ContainsFunc(checks, func(c check) bool { return c.Name == "sweep" && c.Level == levelWarn && c.Advice != "" }) // not set up, as plainChecks reads it
+		slices.ContainsFunc(checks, func(c check) bool { // not set up, as plainChecks reads it, or set up but broken
+			return c.Name == "sweep" && (c.Level == levelWarn && c.Advice != "" || c.Level == levelFail)
+		})
 	items, keep := make([]healthItem, 0, len(checks)), time.Minute
 	for _, c := range checks {
 		if plainChecks[c.Name] == nil {

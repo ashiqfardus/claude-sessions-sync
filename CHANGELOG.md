@@ -118,8 +118,9 @@ All notable changes to this project are documented here. This project follows
   never taken it. It now reads one only when the copy it took is the same size.
 - **With automatic backup off, Health and Settings said two things that did not fit.**
   "Only on the schedule" beside "the scheduled backup isn't set up". With neither set
-  up they now say one thing: "Automatic backup is off. Nothing is backed up until you
-  choose Back up now.", with Set up again.
+  up, or no hook and a scheduled backup that is set up but broken, they now say one
+  thing: "Automatic backup is off. Nothing is backed up until you choose Back up now.",
+  with Set up again.
 - **Right after Bring in, Health showed a red Problem.** Conversations just brought in
   from another computer were said not to be in the archive until the next backup. The
   check now counts one as archived when the archive holds it under the other computer's

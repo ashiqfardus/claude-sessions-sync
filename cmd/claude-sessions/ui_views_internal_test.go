@@ -1079,10 +1079,13 @@ func TestHealthSaysAutomaticBackupIsOff(t *testing.T) {
 		}
 		return out
 	}
-	if got, want := texts(hookOff, sweepOff), []string{"warn " + autoOff + " [Set up again]"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("both off: %q, want %q", got, want)
+	sweepBroken := check{"sweep", levelFail, "launchd: points at a gone program", "x. Re-run `claude-sessions install` to register it again."}
+	for _, sweep := range []check{sweepOff, sweepBroken} { // a broken schedule backs nothing up either
+		if got, want := texts(hookOff, sweep), []string{"warn " + autoOff + " [Set up again]"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("no hook, sweep %s: %q, want %q", sweep.Detail, got, want)
+		}
 	}
-	for _, c := range [][]check{{hookOff, sweepOn}, {hookOn, sweepOff}, {hookOff, sweepUnknown}} {
+	for _, c := range [][]check{{hookOff, sweepOn}, {hookOn, sweepOff}, {hookOff, sweepUnknown}, {hookOn, sweepBroken}} {
 		if got := texts(c...); len(got) != 2 || slices.ContainsFunc(got, func(s string) bool { return strings.Contains(s, autoOff) }) {
 			t.Errorf("%s / %s: %q", c[0].Detail, c[1].Detail, got)
 		}
