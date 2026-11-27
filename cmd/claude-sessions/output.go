@@ -43,16 +43,15 @@ var isTerminal = func(w io.Writer) bool {
 var heartbeatEvery = 12 * time.Second
 
 // progressEvery is the least time between two progress texts of one stage, its first
-// and its last aside: a script that reads stdout to its end before stderr would hang
-// once stderr's pipe is full - 4 KB on Windows - and a log of it would grow by a text
-// for every conversation.
+// and its last aside, for the panel, which reads them as they come.
 var progressEvery = 200 * time.Millisecond
 
 // heartbeat says how far import's or pull's read of the archive has got: on a drive
 // that downloads each file as it is opened, it reads for minutes without a line. On a
 // terminal it says so once every heartbeatEvery until stop; anywhere else - the panel's
-// job, a pipe - each stage is \r-ended progress text, at most every progressEvery,
-// which the panel shows as it comes and which no line or --json result holds.
+// job, a pipe - each stage is \r-ended progress text, which the panel shows as it comes
+// and which no line or --json result holds: to the panel at most every progressEvery,
+// to a pipe or a file only each stage's first text and its last count.
 type heartbeat struct {
 	mu      sync.Mutex
 	w       io.Writer // nil: not a terminal
@@ -63,6 +62,7 @@ type heartbeat struct {
 	n, of   int    // how many of what are read, of how many; of is 0 when not counted
 	wrote   time.Time
 	behind  bool // a step not written yet, for progressEvery
+	sparse  bool // a pipe or a file: a script reading stdout to its end first would hang once it is full (4 KB on Windows)
 	stopped bool
 	done    chan struct{}
 }
@@ -111,6 +111,7 @@ func startProgress(w io.Writer) *heartbeat {
 	h := &heartbeat{start: time.Now(), done: make(chan struct{})}
 	if w != io.Discard && !isTerminal(w) {
 		h.p = w
+		_, h.sparse = w.(*os.File) // the panel's job runs in this process, writing to its own writer
 	}
 	return h
 }
@@ -133,7 +134,7 @@ func (h *heartbeat) step() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.n++
-	if h.n == h.of || time.Since(h.wrote) >= progressEvery {
+	if h.n == h.of || !h.sparse && time.Since(h.wrote) >= progressEvery {
 		h.progress()
 	} else {
 		h.behind = true

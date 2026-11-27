@@ -149,15 +149,34 @@ func TestProgressIsThrottled(t *testing.T) {
 
 	// Once progressEvery has passed, a step is written.
 	buf.Reset()
-	hook(t, &progressEvery, 20*time.Millisecond)
 	h = startProgress(&buf)
 	h.reading("copying conversations", 3)
 	h.step()
-	time.Sleep(30 * time.Millisecond)
+	hook(t, &progressEvery, 0) // passed, without waiting on the clock
 	h.step()
 	h.stop()
 	if want := "copying conversations: 0/3\rcopying conversations: 2/3\r"; buf.String() != want {
 		t.Errorf("got %q, want %q", buf.String(), want)
+	}
+
+	// To a pipe or a file, however much time passes: each stage's first text and its
+	// last count, a few dozen bytes a stage, which no pipe fills with.
+	f, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	h = startProgress(f)
+	h.reading("reading conversations", 3657)
+	for i := 0; i < 3657; i++ {
+		h.step()
+	}
+	h.reading("reading work folders", 10)
+	h.step()
+	h.stop()
+	got, _ := os.ReadFile(f.Name())
+	if want := "reading conversations: 0/3657\rreading conversations: 3657/3657\rreading work folders: 0/10\rreading work folders: 1/10\r"; string(got) != want {
+		t.Errorf("to a file %q, want %q", got, want)
 	}
 
 	// On a terminal push's progress writes nothing: its own lines are what it shows.

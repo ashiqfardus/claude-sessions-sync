@@ -176,22 +176,8 @@ func runGolden(t *testing.T, e goldenEnv, args ...string) string {
 	}
 	n := func(s string) string { return golden.Normalize(s, e.roots) }
 	out := fmt.Sprintf("$ %s\nexit %d\n--- stdout\n%s--- stderr\n%s",
-		n(strings.Join(append([]string{"claude-sessions"}, full...), " ")), code, n(stdout.String()), steadyProgress(n(stderr.String())))
+		n(strings.Join(append([]string{"claude-sessions"}, full...), " ")), code, n(stdout.String()), n(stderr.String()))
 	return applyMasks(out, versionMasks)
-}
-
-// steadyProgress drops each progress text counted part way, "copying conversations:
-// 2/5\r": whether one is written depends on the time between steps (progressEvery).
-// A stage's first text and its full count are always written, and stay.
-func steadyProgress(s string) string {
-	return regexp.MustCompile(`[a-z][a-z ]*: \d+/\d+\r`).ReplaceAllStringFunc(s, func(text string) string {
-		var n, of int
-		fmt.Sscanf(text[strings.LastIndex(text, ": ")+2:], "%d/%d", &n, &of)
-		if n > 0 && n < of {
-			return ""
-		}
-		return text
-	})
 }
 
 func applyMasks(s string, masks []mask) string {

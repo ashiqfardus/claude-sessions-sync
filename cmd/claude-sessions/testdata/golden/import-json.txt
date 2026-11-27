@@ -41,4 +41,4 @@ exit 0
   }
 ]
 --- stderr
-reading work foldersreading conversations: 0/4
+reading work foldersreading conversations: 0/4reading conversations: 3/4

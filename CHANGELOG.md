@@ -49,9 +49,9 @@ All notable changes to this project are documented here. This project follows
   does; `--json` output, `--quiet` runs, the log and a terminal get none of it.
 - `import` and `pull` write how far they have got on stderr when it is not a terminal,
   as `clean` does; `--json` output is unchanged. A terminal still gets its line every
-  12 seconds. The text is written at most five times a second, with each stage's start
-  and its last count, so a script that reads stdout before stderr never finds stderr
-  full.
+  12 seconds. To a pipe or a file only each stage's start and its last count are
+  written, a few lines a run, so a script that reads stdout to its end before stderr
+  does not hang on a full stderr; the panel gets the count up to five times a second.
 - `clean --yes` names each copy it removes in `session-sync.log`, with what it freed,
   and each it keeps because the last check failed. From the panel too, which logged
   only a total.
