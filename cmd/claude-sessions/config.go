@@ -180,6 +180,31 @@ func configShow(w io.Writer, root string) (*configView, error) {
 	return v, nil
 }
 
+// archiveFolder is the folder set-destination makes the archive for chosen: chosen
+// itself when it is missing, empty or already an archive, and otherwise, or for the
+// home folder, a claude-sessions folder inside it, which reports inside. The archive's
+// folders and files would otherwise land among the user's own - in a sync app's root,
+// say. Only a destination being chosen is placed so; one saved before is never moved.
+func archiveFolder(chosen string) (dest string, inside bool) {
+	abs, err := filepath.Abs(archive.TrimSep(strings.TrimSpace(chosen)))
+	if err != nil {
+		return chosen, false
+	}
+	ents, err := os.ReadDir(abs)
+	if err != nil { // missing, or not a folder: PrepareDestination says which
+		return chosen, false
+	}
+	isDir := func(p string) bool { st, err := os.Stat(p); return err == nil && st.IsDir() }
+	litter := func(e os.DirEntry) bool {
+		return slices.Contains([]string{".DS_Store", ".localized", "desktop.ini", "Thumbs.db"}, e.Name())
+	}
+	if !samePath(abs, userHome()) &&
+		(isDir(archive.ProjectsDir(abs)) || isDir(archive.ManifestDir(abs)) || !slices.ContainsFunc(ents, func(e os.DirEntry) bool { return !litter(e) })) {
+		return chosen, false
+	}
+	return filepath.Join(abs, "claude-sessions"), true
+}
+
 // configAction runs every action but show, printing on w.
 func configAction(w io.Writer, root string, rest []string) (err error) {
 	action := rest[0]
@@ -188,12 +213,16 @@ func configAction(w io.Writer, root string, rest []string) (err error) {
 		if len(rest) < 2 {
 			return fmt.Errorf("usage: claude-sessions config set-destination <folder>")
 		}
-		abs, err := archive.PrepareDestination(root, expandHome(rest[1]))
+		dest, inside := archiveFolder(expandHome(rest[1]))
+		abs, err := archive.PrepareDestination(root, dest)
 		if err != nil {
 			return err
 		}
 		if err := archive.SaveConfig(root, archive.Config{Destination: abs}); err != nil {
 			return err
+		}
+		if inside {
+			fmt.Fprintf(w, "Using %s: a folder of its own inside the one you chose.\n", abs)
 		}
 		fmt.Fprintf(w, "Destination set to %s\n", abs)
 		fmt.Fprintf(w, "Saved in %s\n", archive.ConfigPath(root))

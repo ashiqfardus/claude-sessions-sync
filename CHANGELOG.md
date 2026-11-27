@@ -22,6 +22,12 @@ All notable changes to this project are documented here. This project follows
   from another computer were said not to be in the archive until the next backup. The
   check now counts one as archived when the archive holds it under the other computer's
   folder and it has not been continued here, as a backup does.
+- **The archive could be made in your home folder.** Choosing the home folder, or a
+  folder of other files such as a sync app's root, as the archive folder put the
+  archive's folders among your own. `config set-destination`, and Change folder in the
+  panel, now make a `claude-sessions` folder inside it and say so: "Using …: a folder of
+  its own inside the one you chose." An archive folder, an empty one and a new one are
+  taken as before, and a folder saved earlier is not moved.
 - **Rules and skills never settled after Forget.** A forgotten computer's rules and
   skills stayed in the comparison, so Settings kept saying a file differs between your
   computers, and Compare listed it. A computer with no record in the archive is now

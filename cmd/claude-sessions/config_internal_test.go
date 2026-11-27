@@ -2,8 +2,13 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
 )
 
 // From Git Bash, `config map-folder /Users/me/SQL ...` arrives as the Git install's
@@ -78,5 +83,57 @@ func TestUnkeepARemoteNotKeptSaysSo(t *testing.T) {
 		if err == nil || err.Error() != rm+" is not on the keep list" {
 			t.Errorf("unkeep %s: %v; want it is not on the keep list", rm, err)
 		}
+	}
+}
+
+// E2E M7: set-destination given the home folder, or a folder of other files - a sync
+// app's root - makes the archive a claude-sessions folder inside it, and says so. An
+// archive folder, an empty one and a new one are taken as they are, and a destination
+// saved before is never moved.
+func TestSetDestinationGivesTheArchiveAFolderOfItsOwn(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	writeFile(t, filepath.Join(home, "notes.txt"), "mine")
+	if err := os.MkdirAll(filepath.Join(home, "projects"), 0o755); err != nil { // a home the archive spilled into
+		t.Fatal(err)
+	}
+	drive := filepath.Join(home, "My Drive")
+	writeFile(t, filepath.Join(drive, "taxes.pdf"), "x")
+	held := filepath.Join(home, "held")
+	writeFile(t, filepath.Join(held, "manifest", "LAP-1.json"), "{}")
+	writeFile(t, filepath.Join(held, "README.txt"), "x")
+	empty := filepath.Join(home, "empty")
+	writeFile(t, filepath.Join(empty, ".DS_Store"), "")
+	for _, c := range []struct{ chosen, want string }{
+		{home, filepath.Join(home, "claude-sessions")},
+		{drive + string(filepath.Separator), filepath.Join(drive, "claude-sessions")},
+		{held, held},
+		{empty, empty},
+		{filepath.Join(home, "new"), filepath.Join(home, "new")},
+	} {
+		var out bytes.Buffer
+		if err := configAction(&out, root, []string{"set-destination", c.chosen}); err != nil {
+			t.Fatalf("%s: %v", c.chosen, err)
+		}
+		cfg, err := archive.LoadConfig(root)
+		if err != nil || cfg.Destination != c.want || !archive.IsRealDir(c.want) {
+			t.Errorf("%s: saved %q (%v), want %q, made", c.chosen, cfg.Destination, err, c.want)
+		}
+		using := "Using " + c.want + ": a folder of its own inside the one you chose.\n"
+		if said := strings.Contains(out.String(), using); said != (c.want != filepath.Clean(c.chosen)) {
+			t.Errorf("%s: said %v:\n%s", c.chosen, said, out.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "manifest")); err == nil {
+		t.Error("the archive was made in the home folder")
+	}
+
+	// Saved before, by an older version: used where it is.
+	if err := archive.SaveConfig(root, archive.Config{Destination: drive}); err != nil {
+		t.Fatal(err)
+	}
+	if dest, _, err := archive.ResolveDestination(root, ""); err != nil || dest != drive {
+		t.Errorf("a saved destination resolves to %q (%v)", dest, err)
 	}
 }
