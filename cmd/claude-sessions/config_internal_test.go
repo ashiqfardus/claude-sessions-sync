@@ -105,10 +105,27 @@ func TestSetDestinationGivesTheArchiveAFolderOfItsOwn(t *testing.T) {
 	writeFile(t, filepath.Join(held, "README.txt"), "x")
 	empty := filepath.Join(home, "empty")
 	writeFile(t, filepath.Join(empty, ".DS_Store"), "")
+	// A sync root with the user's own Projects folder, in either case: not an archive.
+	dropbox, syncRoot := filepath.Join(home, "Dropbox"), filepath.Join(home, "Sync")
+	writeFile(t, filepath.Join(dropbox, "Projects", "client-a", "plan.txt"), "x")
+	writeFile(t, filepath.Join(syncRoot, "projects", "site", "index.html"), "x")
+	// Archives part synced: what has come down so far marks them.
+	partial := filepath.Join(home, "partial")
+	writeFile(t, filepath.Join(partial, "INDEX.md"), "# Sessions")
+	writeFile(t, filepath.Join(partial, "html", "index.html"), "x")
+	buckets := filepath.Join(home, "buckets")
+	writeFile(t, filepath.Join(buckets, "projects", "-Users-you-dev-web-app", "memory", "MEMORY.md"), "x")
+	winBuckets := filepath.Join(home, "win-buckets")
+	writeFile(t, filepath.Join(winBuckets, "projects", "E--work-api", "x.jsonl"), "x")
 	for _, c := range []struct{ chosen, want string }{
 		{home, filepath.Join(home, "claude-sessions")},
 		{drive + string(filepath.Separator), filepath.Join(drive, "claude-sessions")},
+		{dropbox, filepath.Join(dropbox, "claude-sessions")},
+		{syncRoot, filepath.Join(syncRoot, "claude-sessions")},
 		{held, held},
+		{partial, partial},
+		{buckets, buckets},
+		{winBuckets, winBuckets},
 		{empty, empty},
 		{filepath.Join(home, "new"), filepath.Join(home, "new")},
 	} {

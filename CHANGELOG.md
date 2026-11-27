@@ -130,7 +130,13 @@ All notable changes to this project are documented here. This project follows
   archive's folders among your own. `config set-destination`, and Change folder in the
   panel, now make a `claude-sessions` folder inside it and say so: "Using …: a folder of
   its own inside the one you chose." An archive folder, an empty one and a new one are
-  taken as before, and a folder saved earlier is not moved.
+  taken as before, and a folder saved earlier is not moved. A folder is an archive by
+  what only an archive holds - `manifest/`, `index/`, `INDEX.md`, `projects.json`, or a
+  project folder under `projects/` - so your own Projects folder does not make one, and
+  an archive that has only partly synced still counts.
+  On a computer still on 0.7.5 or older, choose the `claude-sessions` folder itself:
+  those versions put the archive straight into the folder chosen, and a second archive
+  there would hide each computer's backups from the other.
 - **Rules and skills never settled after Forget.** A forgotten computer's rules and
   skills stayed in the comparison, so Settings kept saying a file differs between your
   computers, and Compare listed it. A computer with no record in the archive is now

@@ -194,15 +194,35 @@ func archiveFolder(chosen string) (dest string, inside bool) {
 	if err != nil { // missing, or not a folder: PrepareDestination says which
 		return chosen, false
 	}
-	isDir := func(p string) bool { st, err := os.Stat(p); return err == nil && st.IsDir() }
 	litter := func(e os.DirEntry) bool {
 		return slices.Contains([]string{".DS_Store", ".localized", "desktop.ini", "Thumbs.db"}, e.Name())
 	}
-	if !samePath(abs, userHome()) &&
-		(isDir(archive.ProjectsDir(abs)) || isDir(archive.ManifestDir(abs)) || !slices.ContainsFunc(ents, func(e os.DirEntry) bool { return !litter(e) })) {
+	if !samePath(abs, userHome()) && (slices.ContainsFunc(ents, archiveMark(abs)) || !slices.ContainsFunc(ents, func(e os.DirEntry) bool { return !litter(e) })) {
 		return chosen, false
 	}
 	return filepath.Join(abs, "claude-sessions"), true
+}
+
+// bucketName is the shape of a project folder's name in an archive: a path's slug.
+var bucketName = regexp.MustCompile(`^(-|[A-Za-z]--)[A-Za-z0-9-]*$`)
+
+// archiveMark reports whether an entry of dir is one only an archive holds, by its exact
+// name - on macOS and Windows a lookup of projects/ finds the user's own Projects - so
+// a folder part synced (INDEX.md and html/ so far) is one too: manifest/, index/,
+// INDEX.md, projects.json, or a projects/ holding a project folder.
+func archiveMark(dir string) func(os.DirEntry) bool {
+	return func(e os.DirEntry) bool {
+		switch e.Name() {
+		case "manifest", "index":
+			return e.IsDir()
+		case "INDEX.md", "projects.json":
+			return e.Type().IsRegular()
+		case "projects":
+			kids, _ := os.ReadDir(filepath.Join(dir, e.Name()))
+			return e.IsDir() && slices.ContainsFunc(kids, func(k os.DirEntry) bool { return k.IsDir() && bucketName.MatchString(k.Name()) })
+		}
+		return false
+	}
 }
 
 // configAction runs every action but show, printing on w.
