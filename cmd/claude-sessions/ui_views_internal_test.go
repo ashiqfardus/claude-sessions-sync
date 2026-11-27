@@ -1169,30 +1169,91 @@ func TestProfileReadyNeverWaits(t *testing.T) {
 	root, dest := queryFixture(t)
 	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-1", "CLAUDE.md"), "one")
 	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-2", "CLAUDE.md"), "three")
-	release := make(chan struct{})
+	started, release := make(chan struct{}, 8), make(chan struct{})
+	var runs atomic.Int32
 	hook(t, &compareCopies, func(c map[string][]profileCopy) []string {
+		runs.Add(1)
+		started <- struct{}{}
 		<-release
 		return diffsOf(c)
 	})
 	var p profileCache
 	done := make(chan struct{})
-	go func() { p.diffs(dest); close(done) }() // a comparison under way
-	time.Sleep(50 * time.Millisecond)
+	go func() { p.diffs(dest); close(done) }()
+	<-started // a comparison under way
 	start := time.Now()
 	if set := querySettings(root, false, time.Now(), &p); set.ProfileDiffs != -1 {
 		t.Errorf("while comparing, profileDiffs = %d, want -1", set.ProfileDiffs)
 	}
-	if list, ok := p.ready(dest); ok || list != nil {
-		t.Errorf("ready while comparing = %v, %v", list, ok)
+	for i := 0; i < 3; i++ {
+		if list, ok := p.ready(dest); ok || list != nil {
+			t.Errorf("ready while comparing = %v, %v", list, ok)
+		}
 	}
 	if d := time.Since(start); d > 2*time.Second {
 		t.Errorf("waited %v for a comparison under way", d)
 	}
+	if p.pending.Load() {
+		t.Error("ready started a second comparison behind the one running")
+	}
 	close(release)
-	<-done
+	<-done // the answer is kept before diffs returns
 	if set := querySettings(root, false, time.Now(), &p); set.ProfileDiffs != 1 {
 		t.Errorf("after comparing, profileDiffs = %d, want 1", set.ProfileDiffs)
 	}
+	if n := runs.Load(); n != 1 {
+		t.Errorf("compared %d times", n)
+	}
+
+	// Asked with nothing running, ready starts one comparison behind it, however often
+	// it is asked meanwhile.
+	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-2", "CLAUDE.md"), "one")
+	release = make(chan struct{})
+	for i := 0; i < 3; i++ {
+		if _, ok := p.ready(dest); ok {
+			t.Error("ready answered for copies since changed")
+		}
+		if i == 0 {
+			<-started // the background comparison is under way
+		}
+	}
+	close(release)
+	p.run.Lock() // held by the background comparison until its answer is kept
+	p.run.Unlock()
+	if list, ok := p.ready(dest); !ok || len(list) != 0 {
+		t.Errorf("ready after the background comparison = %v, %v", list, ok)
+	}
+	if n := runs.Load(); n != 2 {
+		t.Errorf("compared %d times, want 2", n)
+	}
+}
+
+// A cache check or a comparison of other copies holding the cache never reads to ready
+// as "comparing": the answer kept for the copies as they are is given at once.
+func TestProfileReadyAnswersWhileOtherCopiesAreCompared(t *testing.T) {
+	_, kept := queryFixture(t)
+	writeFile(t, filepath.Join(profileDir(kept), "machines", "LAP-1", "CLAUDE.md"), "one")
+	writeFile(t, filepath.Join(profileDir(kept), "machines", "LAP-2", "CLAUDE.md"), "three")
+	_, other := queryFixture(t)
+	writeFile(t, filepath.Join(profileDir(other), "machines", "LAP-1", "CLAUDE.md"), "one")
+	var p profileCache
+	if got := p.diffs(kept); !reflect.DeepEqual(got, []string{"CLAUDE.md"}) {
+		t.Fatalf("diffs %v", got)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	hook(t, &compareCopies, func(c map[string][]profileCopy) []string {
+		close(started)
+		<-release
+		return diffsOf(c)
+	})
+	done := make(chan struct{})
+	go func() { p.diffs(other); close(done) }()
+	<-started
+	if list, ok := p.ready(kept); !ok || !reflect.DeepEqual(list, []string{"CLAUDE.md"}) {
+		t.Errorf("ready during another comparison = %v, %v; want the answer kept", list, ok)
+	}
+	close(release)
+	<-done
 }
 
 // Settings marks a name this computer went by - its record carries this install's ID -

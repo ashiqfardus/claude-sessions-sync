@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
@@ -873,21 +874,38 @@ func healthOf(checks []check, logf func(string, ...any)) ([]healthItem, time.Dur
 // profileCache keeps profileDiffs' answer for the copies as they were: a load that finds
 // every copy's size and time unchanged reads no file.
 type profileCache struct {
-	mu   sync.Mutex
+	mu   sync.Mutex // guards key and list, held only to read or set them
 	key  string
 	list []string
+
+	run       sync.Mutex  // held across one comparison: callers meanwhile get its answer, not one each
+	comparing atomic.Bool // a comparison is running
+	pending   atomic.Bool // ready's background get has started and not yet returned
+}
+
+// cached is the list for key, when that is the one kept.
+func (c *profileCache) cached(key string) ([]string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.list, c.list != nil && c.key == key
 }
 
 // get is every copy and the files whose copies differ.
 func (c *profileCache) get(dest string) (map[string][]profileCopy, []string) {
 	copies := profileCopies(dest)
 	key := profileKey(copies)
-	c.mu.Lock() // held across the comparison: callers meanwhile get its answer, not one each
-	defer c.mu.Unlock()
-	if c.list == nil || c.key != key {
-		c.key, c.list = key, compareCopies(copies)
+	c.run.Lock()
+	defer c.run.Unlock()
+	if list, ok := c.cached(key); ok {
+		return copies, list
 	}
-	return copies, c.list
+	c.comparing.Store(true)
+	defer c.comparing.Store(false)
+	list := compareCopies(copies)
+	c.mu.Lock()
+	c.key, c.list = key, list
+	c.mu.Unlock()
+	return copies, list
 }
 
 // profileKey stands for every copy's size and time: an unchanged key needs no file read.
@@ -910,15 +928,16 @@ func profileKey(copies map[string][]profileCopy) string {
 // are now has run. Otherwise it gives false at once and starts that comparison in the
 // background: a screen never waits for it, and on a folder that downloads each file
 // when it is read the comparison can take minutes.
+//
+// One background get at a time, and none while a comparison runs: each walks the
+// copies first, and on such a folder that walk is slow too.
 func (c *profileCache) ready(dest string) ([]string, bool) {
-	key := profileKey(profileCopies(dest))
-	if !c.mu.TryLock() {
-		return nil, false // a comparison is running
-	}
-	list, ok := c.list, c.list != nil && c.key == key
-	c.mu.Unlock()
-	if !ok {
-		go c.get(dest)
+	list, ok := c.cached(profileKey(profileCopies(dest)))
+	if !ok && !c.comparing.Load() && c.pending.CompareAndSwap(false, true) {
+		go func() {
+			defer c.pending.Store(false)
+			c.get(dest)
+		}()
 	}
 	return list, ok
 }
