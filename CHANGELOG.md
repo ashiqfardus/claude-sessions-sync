@@ -87,8 +87,8 @@ All notable changes to this project are documented here. This project follows
   page counted as out of date, and the state saved afterwards held only that run's pages,
   so the other computers started over too. A state that cannot be read is read again a
   moment later; if it still cannot be, nothing is rendered that run and the log says why.
-  One that stays unreadable and untouched for 10 minutes is treated as broken, and every
-  page is rendered again by itself. Each computer now adds its pages to the
+  A page list that stays garbled across two runs on a computer is rebuilt by that
+  computer; one that cannot be read at all waits. Each computer now adds its pages to the
   state on disk when it saves, instead of writing over what another computer saved since.
 - **Back up now showed no progress, and a first backup showed nothing.** Overview now
   shows what the backup is doing above the cards, with a bar that fills when it reports

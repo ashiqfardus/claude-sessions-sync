@@ -92,9 +92,13 @@ func runRender(s streams, o renderOpts) (render.Result, error) {
 		Force:         o.Force,
 		Exclude:       patterns,
 		LocalProjects: claude.ProjectsDir(root),
+		BrokenNote:    renderBrokenPath(root),
 	})
 	if err != nil {
 		return render.Result{}, err
+	}
+	if res.Note != "" {
+		fmt.Fprintln(s.Err, "RENDER: "+res.Note)
 	}
 
 	if !o.Quiet {

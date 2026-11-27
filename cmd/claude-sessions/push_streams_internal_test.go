@@ -254,3 +254,33 @@ func TestPreviewListsEachFileItCounts(t *testing.T) {
 		t.Errorf("a backup of %d file(s) listed %v", res.Copied, listed)
 	}
 }
+
+// The render command and push's HTML step keep one note, on this computer, of a page
+// list that does not parse: found garbled by one, then the same by the other, every
+// page is rendered again and the log says why. A list that loads clears the note.
+func TestRenderAndPushShareTheGarbledNote(t *testing.T) {
+	claudeDir, dest := progressFixture(t)
+	if _, err := runPush(streams{io.Discard, io.Discard}, claudeDir, dest, pushOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dest, "html", ".render-state.json"), `{"version":5,"pa`)
+	if res, err := runRender(quietStreams(), renderOpts{ClaudeDir: claudeDir, ArchiveDir: dest}); err == nil || res.Rendered != 0 {
+		t.Fatalf("first sight: render = %+v, %v; want nothing rendered", res, err)
+	}
+	if _, err := os.Stat(renderBrokenPath(claudeDir)); err != nil {
+		t.Fatalf("render kept no note: %v", err)
+	}
+	var errs bytes.Buffer
+	if _, err := runPush(streams{io.Discard, &errs}, claudeDir, dest, pushOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errs.String(), "HTML: ") || !strings.Contains(errs.String(), "every page is rendered again") || !strings.Contains(errs.String(), "HTML: 3 rendered") {
+		t.Errorf("push did not render every page again, or did not say why:\n%s", errs.String())
+	}
+	if _, err := runRender(quietStreams(), renderOpts{ClaudeDir: claudeDir, ArchiveDir: dest}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(renderBrokenPath(claudeDir)); !os.IsNotExist(err) {
+		t.Errorf("a page list that loads left the note: %v", err)
+	}
+}

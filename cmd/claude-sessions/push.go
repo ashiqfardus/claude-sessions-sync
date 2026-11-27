@@ -591,7 +591,7 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 	// problem must never fail a sync that has already succeeded, so this is wrapped
 	// and only ever logged.
 	if !dryRun && !noHTML {
-		ropts := render.Options{Exclude: excludes, LocalProjects: claude.ProjectsDir(root), Progress: func(n, of int) {
+		ropts := render.Options{Exclude: excludes, LocalProjects: claude.ProjectsDir(root), BrokenNote: renderBrokenPath(root), Progress: func(n, of int) {
 			switch {
 			case n > 0:
 				hb.step()
@@ -602,7 +602,11 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 		if quiet {
 			ropts.Budget = quietRenderBudget
 		}
-		if r, err := render.Archive(dest, ropts); err != nil {
+		r, err := render.Archive(dest, ropts)
+		if r.Note != "" {
+			logf("HTML: %s", r.Note)
+		}
+		if err != nil {
 			logf("HTML step failed (transcripts are still archived): %v", err)
 		} else if r.Deferred > 0 {
 			logf("HTML: %d rendered, %d up to date, %d left for the next run", r.Rendered, r.UpToDate, r.Deferred)
@@ -1483,6 +1487,12 @@ type heldRecord struct {
 
 func heldPath(root string) string {
 	return filepath.Join(root, "session-sync-base", "held.json")
+}
+
+// renderBrokenPath is this computer's note of a page list that did not parse
+// (render.Options.BrokenNote).
+func renderBrokenPath(root string) string {
+	return filepath.Join(root, "session-sync-base", "render-broken")
 }
 
 // loadHeld reads the record. Missing or unreadable is empty: push then compares again.

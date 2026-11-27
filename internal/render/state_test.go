@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -113,26 +114,103 @@ func TestTwoWritersKeepEachOthersPages(t *testing.T) {
 	}
 }
 
-// A state that has stayed unreadable, untouched, for stateSettle is broken, not being
-// replaced: every page is rendered again and a readable state saved, with no one
-// having to run render --force.
-func TestLongBrokenStateRendersEveryPageAgain(t *testing.T) {
+// fastStateRetries makes loadState's retries quick.
+func fastStateRetries(t *testing.T) {
 	wait := stateWait
 	stateWait = time.Millisecond
 	t.Cleanup(func() { stateWait = wait })
+}
+
+// A state that cannot be read - a placeholder the sync client cannot fetch, a sharing
+// violation - is never taken for broken, however old its mtime: nothing is rendered,
+// run after run, and the other computers' entries stay. Its mtime is the writer's.
+func TestUnreadableStateNeverStartsOver(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 000 does not stop reads on Windows")
+	}
+	fastStateRetries(t)
 	dest := stateArchive(t)
-	state := statePath(filepath.Join(dest, "html"))
-	if err := os.WriteFile(state, []byte(`{"version":5,"pa`), 0o644); err != nil {
+	htmlDir := filepath.Join(dest, "html")
+	s, err := loadState(htmlDir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().Add(-stateSettle - time.Minute)
+	s.Pages["e--web/x"] = pageState{Size: 7, Prompt: "theirs"}
+	if err := writeState(htmlDir, s); err != nil {
+		t.Fatal(err)
+	}
+	state := statePath(htmlDir)
+	before := mustRead(t, state)
+	old := time.Now().Add(-24 * time.Hour)
 	if err := os.Chtimes(state, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if res, err := Archive(dest, Options{}); err != nil || res.Rendered == 0 {
-		t.Fatalf("render = %+v, %v; want every page rendered again", res, err)
+	if err := os.Chmod(state, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(state, 0o644) })
+	if _, err := os.ReadFile(state); err == nil {
+		t.Skip("chmod 000 does not stop reads here (root?)")
+	}
+	note := filepath.Join(t.TempDir(), "render-broken")
+	for run := 1; run <= 2; run++ {
+		res, err := Archive(dest, Options{BrokenNote: note})
+		if err == nil || !strings.Contains(err.Error(), "cannot be read") || res.Rendered != 0 {
+			t.Fatalf("run %d: render = %+v, %v; want nothing rendered, and why", run, res, err)
+		}
+	}
+	if _, err := os.Stat(note); err == nil {
+		t.Error("a read error was noted as garbled bytes")
+	}
+	if err := os.Chmod(state, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, state); !bytes.Equal(got, before) {
+		t.Errorf("the state was replaced: %s", got)
+	}
+}
+
+// Garbled bytes render nothing the first time this computer finds them; found again
+// on its next run, unchanged, they are broken for good and every page is rendered
+// again. Bytes garbled another way are a new first sight, and a state that loads
+// clears the note.
+func TestGarbledTwiceRendersEveryPageAgain(t *testing.T) {
+	fastStateRetries(t)
+	dest := stateArchive(t)
+	state := statePath(filepath.Join(dest, "html"))
+	note := filepath.Join(t.TempDir(), "base", "render-broken")
+	garble := func(b string) {
+		t.Helper()
+		if err := os.WriteFile(state, []byte(b), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nothing := func(when string) {
+		t.Helper()
+		res, err := Archive(dest, Options{BrokenNote: note})
+		if err == nil || !strings.Contains(err.Error(), "next run") || res.Rendered != 0 || res.Note != "" {
+			t.Fatalf("%s: render = %+v, %v; want nothing rendered, and why", when, res, err)
+		}
+	}
+
+	garble(`{"version":5,"pa`)
+	nothing("first sight")
+	garble(`{"version":5,"pages":{"e--`)
+	nothing("garbled another way")
+	res, err := Archive(dest, Options{BrokenNote: note})
+	if err != nil || res.Rendered != 2 || !strings.Contains(res.Note, "every page is rendered again") {
+		t.Fatalf("the same bytes again: render = %+v, %v; want every page rendered, and a note why", res, err)
 	}
 	if _, err := loadState(filepath.Join(dest, "html")); err != nil {
 		t.Errorf("the state saved after cannot be read: %v", err)
+	}
+	if _, err := os.Stat(note); err != nil {
+		t.Fatalf("the note went before a state loaded: %v", err)
+	}
+	if res, err := Archive(dest, Options{BrokenNote: note}); err != nil || res.UpToDate != 2 {
+		t.Fatalf("after: render = %+v, %v", res, err)
+	}
+	if _, err := os.Stat(note); !os.IsNotExist(err) {
+		t.Errorf("a state that loads left the note: %v", err)
 	}
 }

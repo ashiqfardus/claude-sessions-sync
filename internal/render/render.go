@@ -6,6 +6,8 @@
 package render
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,6 +66,11 @@ type Options struct {
 	// Progress, when set, is called with (0, of) before the first conversation, of being
 	// how many the pass takes up, then with (n, of) as it takes up the nth.
 	Progress func(n, of int)
+
+	// BrokenNote, when set, is a file on this computer - never in the archive - noting
+	// the state that did not parse on its last run. The same broken bytes on the next
+	// run are broken for good, and every page is rendered again. "" never starts over.
+	BrokenNote string
 }
 
 // Result reports what a render pass did.
@@ -76,6 +83,7 @@ type Result struct {
 	Unpublished int // pages removed because a project is now excluded
 	Skipped     int // transcript lines that did not parse
 	OutputDir   string
+	Note        string `json:",omitempty"` // a plain line for the log, when every page was rendered again
 }
 
 // stateSaveEvery is how often progress is saved during a long render, so a run
@@ -131,11 +139,27 @@ func Archive(dest string, opts Options) (Result, error) {
 	// of this size. Comparing timestamps alone missed an append inside the tolerance
 	// window, and a renderer fix - such as redaction - never reached pages that were
 	// already published.
+	//
+	// A state that cannot be read, or not yet parsed, renders nothing: read as empty,
+	// every page would count as stale, and the state saved after would hold this run's
+	// pages alone - every computer would start over. A read error mends itself once
+	// reads work; only bytes this computer found garbled last run too start over.
 	prev, err := loadState(res.OutputDir)
-	if err != nil && !opts.Force && !settledBroken(statePath(res.OutputDir)) {
-		// Read as empty, every page would count as stale, and the state saved after would
-		// hold this run's pages alone: every computer would start over.
-		return res, fmt.Errorf("%s cannot be read (%v): no page is rendered this run; if it stays so for %v, every page is rendered again", statePath(res.OutputDir), err, stateSettle)
+	var garbled *garbledState
+	switch {
+	case err == nil:
+		if opts.BrokenNote != "" {
+			_ = os.Remove(opts.BrokenNote)
+		}
+	case opts.Force:
+	case !errors.As(err, &garbled):
+		return res, fmt.Errorf("%s cannot be read (%v): no page is rendered this run", statePath(res.OutputDir), err)
+	case opts.BrokenNote == "":
+		return res, fmt.Errorf("%s does not parse (%v): no page is rendered this run; `claude-sessions render --force` renders every page again", statePath(res.OutputDir), err)
+	case !garbledAgain(opts.BrokenNote, garbled.raw):
+		return res, fmt.Errorf("%s does not parse (%v): no page is rendered this run; if it is the same on this computer's next run, every page is rendered again", statePath(res.OutputDir), err)
+	default:
+		res.Note = fmt.Sprintf("%s was garbled the same way on this computer's last run: every page is rendered again", statePath(res.OutputDir))
 	}
 	next := renderState{Version: templateVersion, Pages: map[string]pageState{}}
 	lastSave := time.Now()
@@ -525,21 +549,32 @@ var (
 	stateWait  = 500 * time.Millisecond
 )
 
-// stateSettle is how long a state that cannot be read must have gone unchanged before
-// it counts as broken, not as a file a sync client is still replacing.
-var stateSettle = 10 * time.Minute
+// garbledState is a state whose bytes were read but do not parse.
+type garbledState struct {
+	raw []byte
+	err error
+}
 
-// settledBroken reports whether the state at path, which cannot be read, has gone
-// unchanged for stateSettle: then no computer is mid-write and nothing will mend it,
-// so every page is rendered again and the state saved anew - otherwise no page would
-// ever be rendered again without someone running render --force.
-func settledBroken(path string) bool {
-	st, err := os.Stat(path)
-	return err == nil && time.Since(st.ModTime()) >= stateSettle
+func (g *garbledState) Error() string { return g.err.Error() }
+
+// garbledAgain reports whether note says raw, a state that does not parse, was the
+// state this computer found on its last run too: then no sync client is mid-replace
+// and nothing will mend it, so every page is rendered again - otherwise no page would
+// be rendered again without someone running render --force. Otherwise raw is noted
+// for the next run. The note is this computer's own: a file's mtime is the writer's,
+// set by the sync client, and says nothing of how long the bytes have been broken.
+func garbledAgain(note string, raw []byte) bool {
+	sum := sha256.Sum256(raw)
+	h := hex.EncodeToString(sum[:])
+	if b, err := os.ReadFile(note); err == nil && string(b) == h {
+		return true
+	}
+	_ = archive.WriteFileAtomic(note, []byte(h), 0o644)
+	return false
 }
 
 // loadState reads the state: an empty one when there is none, an error when there is
-// one that cannot be read or parsed.
+// one that cannot be read, and a *garbledState when it was read but does not parse.
 func loadState(htmlDir string) (renderState, error) {
 	var err error
 	for try := 0; try < stateTries; try++ {
@@ -555,6 +590,7 @@ func loadState(htmlDir string) (renderState, error) {
 			if err = json.Unmarshal(raw, &s); err == nil {
 				return s, nil
 			}
+			err = &garbledState{raw, err}
 		}
 	}
 	return renderState{}, err
