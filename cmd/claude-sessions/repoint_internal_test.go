@@ -2,12 +2,16 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/claude"
 	"github.com/ashiqfardus/claude-sessions-sync/internal/rewrite"
@@ -104,7 +108,7 @@ func TestRepointMovesFiledMark(t *testing.T) {
 	_ = os.Chtimes(p, at, at)
 	imported := loadImported(root, true) // a first run: marks p
 	before := imported.offset(p)
-	res := repointLocal(root, []rewrite.Move{{From: "/old", To: "/a/much/longer/new"}}, time.Now(), false, imported)
+	res := repointLocal(root, []rewrite.Move{{From: "/old", To: "/a/much/longer/new"}}, time.Now(), false, imported, startProgress(io.Discard))
 	st, _ := os.Stat(p)
 	if res.Rewritten != 1 || imported.offset(p) != st.Size() || st.Size() <= before {
 		t.Fatalf("rewritten %d, mark %d, size %d (was %d)", res.Rewritten, imported.offset(p), st.Size(), before)
@@ -238,7 +242,7 @@ func TestRecordFoldedLookup(t *testing.T) {
 	p := writeTranscript(t, root, "11111111-1111-1111-1111-111111111111", `{"cwd":"/old/x"}`+"\n")
 	at := time.Now().Add(-2 * time.Hour)
 	_ = os.Chtimes(p, at, at)
-	if res := repointLocal(root, []rewrite.Move{{From: "/old", To: "/new"}}, time.Now(), false, nil); res.Rewritten != 1 {
+	if res := repointLocal(root, []rewrite.Move{{From: "/old", To: "/new"}}, time.Now(), false, nil, startProgress(io.Discard)); res.Rewritten != 1 {
 		t.Errorf("repoint with no record: %+v", res)
 	}
 }
@@ -261,5 +265,57 @@ func TestSafeBucketName(t *testing.T) {
 		if s := claude.Slug(p); !safeBucketName(s) {
 			t.Errorf("Slug(%q) = %q refused", p, s)
 		}
+	}
+}
+
+// The quick pass over each line changes no answer of pointing: a line it passes over
+// is one that no find matches as strings.ToLower lower-cases it. It relies on A-Z, İ
+// and the Kelvin sign being the only runes that lower-case to ASCII.
+func TestPointingQuickPassKeepsTheAnswer(t *testing.T) {
+	for r := rune(utf8.RuneSelf); r <= unicode.MaxRune; r++ {
+		if l := unicode.ToLower(r); l < utf8.RuneSelf && r != '\u0130' && r != '\u212a' {
+			t.Fatalf("%U lower-cases to ASCII %q: the quick pass would miss it", r, l)
+		}
+	}
+	moves := []rewrite.Move{{From: `C:\Users\other\SQL`, To: "/Users/me/SQL"}, {From: "/Users/other/web-app", To: "/Users/me/web-app"}}
+	rules := rewrite.RulesForMoves(moves)
+	finds := make([]string, len(rules))
+	for i, r := range rules {
+		finds[i] = strings.ToLower(r.Find)
+	}
+	quick := findsOf(finds)
+	if quick == nil {
+		t.Fatal("ASCII finds have no quick pass")
+	}
+	dir := t.TempDir()
+	for i, line := range []string{
+		`{"cwd":"C:\\Users\\other\\SQL\\x"}`,       // json-escaped
+		`{"cwd":"c:\\USERS\\Other\\sql"}`,          // any case
+		`{"text":"see /users/OTHER/web-app/a.go"}`, // forward slash
+		`{"text":"/c/Users/other/SQL"}`,            // Git Bash
+		`{"text":"C--Users-other-SQL"}`,            // its bucket's name
+		"{\"text\":\"/USERS/OTHER/WEB-APP \u2014 \u00e9t\u00e9\"}",
+		"{\"text\":\"/users/other/web-app\u0130\"}", // İ: matched in full
+		"{\"text\":\"/users/other/web-\u212aapp\"}", // the Kelvin sign
+		"{\"text\":\"/u\u017fers/other/web-app\"}",  // ſ: no find holds it, as before
+		`{"cwd":"C:\\Users\\me\\SQL"}`,              // this machine's own
+		`{"cwd":"/users/other/web-application"}`,    // a longer name: no whole path
+		`{"text":"other web-app SQL"}`,
+		"",
+	} {
+		p := filepath.Join(dir, fmt.Sprintf("%d.jsonl", i))
+		writeFile(t, p, `{"type":"user"}`+"\n"+line+"\n"+`{"type":"assistant"}`)
+		if got, want := pointing(p, rules, finds, quick), pointing(p, rules, finds, nil); got != want {
+			t.Errorf("%q: pointing %v with the quick pass, %v without", line, got, want)
+		}
+	}
+	if !pointing(filepath.Join(dir, "1.jsonl"), rules, finds, quick) || pointing(filepath.Join(dir, "9.jsonl"), rules, finds, quick) {
+		t.Error("fixture: the cases do not both point and not")
+	}
+	if quick.may(`{"cwd":"C:\\Users\\me\\SQL","text":"other web-app"}`, new([]byte)) {
+		t.Error("the quick pass matches in full a line that names no moved folder")
+	}
+	if findsOf([]string{"/users/\u00e9t\u00e9/x"}) != nil {
+		t.Error("a find that is not ASCII has a quick pass")
 	}
 }

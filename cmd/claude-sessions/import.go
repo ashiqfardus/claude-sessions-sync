@@ -257,8 +257,10 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	if len(workRes.Notes)+len(remapNotes) > 0 || len(workRes.Placed) > 0 {
 		fmt.Fprintln(s.Out)
 	}
-	if hb.on() { // only then is each bucket listed for the count
-		hb.reading("conversations", conversationCount(dest, buckets))
+	var before []int // only then is each bucket listed for the count
+	if hb.on() {
+		before = conversationCount(dest, buckets)
+		hb.reading("conversations", before[len(buckets)])
 	}
 	// placedHere is whether dir is a folder here once the work folders are placed. A dry
 	// run places none, so a folder a placed file would make counts too: a real run makes
@@ -393,7 +395,8 @@ func runImport(s streams, o importOpts) (importResult, error) {
 		defer warmZips(filing)() // warmed now, waited for on return
 	}
 
-	for _, bucket := range buckets {
+	for i, bucket := range buckets {
+		counted(hb, before, i) // the bucket before, filed or passed over
 		// Named like a file kept beside a project - imported.log - its memory base would
 		// take that file's path.
 		if !safeBucketName(bucket) {
@@ -526,14 +529,15 @@ func runImport(s streams, o importOpts) (importResult, error) {
 			fmt.Fprintf(s.Out, "    ! continued here and elsewhere - %s (resume either)\n", d)
 		}
 	}
-	hb.stop()
+	counted(hb, before, len(buckets))
 	rows = append(rows, workRows(workRes.ByMachine)...)
 
 	// Conversations already here are rewritten only when asked: that edits the user's
 	// own files (spec §7a). Work-folder moves only, never project moves.
 	var rp repointResult
+	pointingHere := 0
 	if o.Repoint {
-		rp = repointLocal(root, workMoves, time.Now(), o.DryRun, imported)
+		rp = repointLocal(root, workMoves, time.Now(), o.DryRun, imported, hb)
 		if rp.Err != nil {
 			return importResult{}, rp.Err
 		}
@@ -542,7 +546,10 @@ func runImport(s streams, o importOpts) (importResult, error) {
 				rp.Notes = append(rp.Notes, fmt.Sprintf("  x restored work record: %v", err))
 			}
 		}
+	} else if len(workMoves) > 0 && s.Out != io.Discard { // it reads every conversation here, for a line of text alone
+		pointingHere = countPointing(root, workMoves, hb)
 	}
+	hb.stop()
 	imported.finish(s.Err)
 
 	profile := restoreProfile(root, dest, o.DryRun, o.UpdateProfile, !o.NoPlugins, !o.NoProfile)
@@ -580,14 +587,10 @@ func runImport(s streams, o importOpts) (importResult, error) {
 		for _, n := range rp.Notes {
 			fmt.Fprintln(s.Out, n)
 		}
-	} else if len(workMoves) > 0 && s.Out != io.Discard { // it reads every conversation here, for a line of text alone
-		n := countPointing(root, workMoves)
-		switch {
-		case n > 0 && o.DryRun: // nothing is written yet: the state the import would leave
-			fmt.Fprintf(s.Out, "after this import, %d conversation(s) would still point at other machines' work folders; run claude-sessions import --repoint then\n", n)
-		case n > 0:
-			fmt.Fprintf(s.Out, "%d conversation(s) here still point at other machines' work folders: run claude-sessions import --repoint\n", n)
-		}
+	} else if pointingHere > 0 && o.DryRun { // nothing is written yet: the state the import would leave
+		fmt.Fprintf(s.Out, "after this import, %d conversation(s) would still point at other machines' work folders; run claude-sessions import --repoint then\n", pointingHere)
+	} else if pointingHere > 0 {
+		fmt.Fprintf(s.Out, "%d conversation(s) here still point at other machines' work folders: run claude-sessions import --repoint\n", pointingHere)
 	}
 	printProfile(s.Out, profile, o.DryRun)
 	if !o.Update && sameLayout+filed > 0 {
@@ -694,29 +697,40 @@ func newestCwd(dir string) string {
 }
 
 // conversationCount is how many conversations restoreInto takes up in these archived
-// buckets: each loose transcript, and each zip with none beside it.
-func conversationCount(dest string, buckets []string) int {
-	n := 0
+// buckets before each one, and last in all of them: each loose transcript, and each
+// zip with none beside it.
+func conversationCount(dest string, buckets []string) []int {
+	before := make([]int, 1, len(buckets)+1)
 	for _, b := range buckets {
-		if !safeBucketName(b) {
-			continue
-		}
-		dir := filepath.Join(archive.ProjectsDir(dest), b)
-		loose := map[string]bool{}
-		ents, _ := os.ReadDir(dir)
-		for _, e := range ents {
-			if e.Type().IsRegular() && isTranscriptName(e.Name()) {
-				n++
-				loose[strings.ToLower(strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())))] = true
+		n := before[len(before)-1]
+		if safeBucketName(b) {
+			dir := filepath.Join(archive.ProjectsDir(dest), b)
+			loose := map[string]bool{}
+			ents, _ := os.ReadDir(dir)
+			for _, e := range ents {
+				if e.Type().IsRegular() && isTranscriptName(e.Name()) {
+					n++
+					loose[strings.ToLower(strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())))] = true
+				}
+			}
+			for id := range convzip.Find(dir) {
+				if !loose[id] {
+					n++
+				}
 			}
 		}
-		for id := range convzip.Find(dir) {
-			if !loose[id] {
-				n++
-			}
-		}
+		before = append(before, n)
 	}
-	return n
+	return before
+}
+
+// counted counts hb's conversations on to those of the buckets before bucket i: one
+// not found, or passed over for any reason, takes none up, and the count has to end
+// at its total. before is conversationCount's, nil when nothing is counted.
+func counted(hb *heartbeat, before []int, i int) {
+	if before != nil {
+		hb.upTo(before[i])
+	}
 }
 
 func hasTranscripts(dir string) bool {
@@ -856,8 +870,10 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 	var rows []importRow
 	hb := startHeartbeat(s.Err) // as import's
 	defer hb.stop()
+	var before []int
 	if hb.on() {
-		hb.reading("conversations", conversationCount(dest, archivedBuckets))
+		before = conversationCount(dest, archivedBuckets)
+		hb.reading("conversations", before[len(archivedBuckets)])
 	}
 	if !o.DryRun { // every bucket with a transcript is filed: their zips are warmed together
 		var filing []string
@@ -869,7 +885,8 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 		defer warmZips(filing)() // warmed now, waited for on return
 	}
 
-	for _, name := range archivedBuckets {
+	for i, name := range archivedBuckets {
+		counted(hb, before, i)
 		if !safeBucketName(name) { // as in import
 			fmt.Fprintf(s.Out, "! %s: %s\n", printable(name), notBucket)
 			rows = append(rows, importRow{Bucket: printable(name), Note: notBucket, Machine: manifest[name].Owner()})
@@ -921,6 +938,7 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 		row.Filed, row.Skipped, row.Updated, row.Note = res.Copied, res.Skipped, res.Updated, resultNote(res)
 		rows = append(rows, row)
 	}
+	counted(hb, before, len(archivedBuckets))
 	imported.finish(s.Err)
 
 	profile := restoreProfile(root, dest, o.DryRun, o.UpdateProfile, !o.NoPlugins, true)

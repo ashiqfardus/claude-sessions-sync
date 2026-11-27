@@ -18,4 +18,8 @@ Sessions already here are never replaced; --update refreshes ones that continued
 For anything not placed, say where it lives here once, then run import again:
   claude-sessions config map <bucket> '<local folder>'
 --- stderr
-reading work foldersreading conversations: 0/4reading conversations: 3/4
+reading work folders
+reading conversations: 0/4
+reading conversations: 4/4
+checking file paths in conversations: 0/3
+checking file paths in conversations: 3/3

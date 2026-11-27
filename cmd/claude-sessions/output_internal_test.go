@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -160,7 +161,8 @@ func TestProgressIsThrottled(t *testing.T) {
 	}
 
 	// To a pipe or a file, however much time passes: each stage's first text and its
-	// last count, a few dozen bytes a stage, which no pipe fills with.
+	// last count, a few dozen bytes a stage, which no pipe fills with, each a line: a
+	// script that reads stderr with stdout found the next line glued on after a \r.
 	f, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +177,7 @@ func TestProgressIsThrottled(t *testing.T) {
 	h.step()
 	h.stop()
 	got, _ := os.ReadFile(f.Name())
-	if want := "reading conversations: 0/3657\rreading conversations: 3657/3657\rreading work folders: 0/10\rreading work folders: 1/10\r"; string(got) != want {
+	if want := "reading conversations: 0/3657\nreading conversations: 3657/3657\nreading work folders: 0/10\nreading work folders: 1/10\n"; string(got) != want {
 		t.Errorf("to a file %q, want %q", got, want)
 	}
 
@@ -187,6 +189,32 @@ func TestProgressIsThrottled(t *testing.T) {
 	h.step()
 	h.stop()
 	if buf.Len() != 0 || h.on() {
+		t.Errorf("on a terminal: %q", buf.String())
+	}
+}
+
+// A stage that reads no archive is named in full, on a terminal too: import's "reading "
+// is for its reads of the archive alone.
+func TestHeartbeatCheckingStage(t *testing.T) {
+	var buf bytes.Buffer
+	hook(t, &progressEvery, time.Hour)
+	h := startHeartbeat(&buf)
+	h.checking("checking file paths in conversations", 2)
+	h.step()
+	h.step()
+	h.stop()
+	if want := "checking file paths in conversations: 0/2\rchecking file paths in conversations: 2/2\r"; buf.String() != want {
+		t.Errorf("got %q, want %q", buf.String(), want)
+	}
+
+	// A terminal's line, said without the ticker that says it every heartbeatEvery.
+	buf.Reset()
+	h = &heartbeat{w: &buf, start: time.Now(), done: make(chan struct{})}
+	h.checking("checking file paths in conversations", 3)
+	h.step()
+	h.say()
+	h.stop()
+	if !regexp.MustCompile(`^still checking file paths in conversations: 1 of 3 \(\d+s\)\n$`).MatchString(buf.String()) {
 		t.Errorf("on a terminal: %q", buf.String())
 	}
 }

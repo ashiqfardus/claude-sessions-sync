@@ -57,6 +57,19 @@ All notable changes to this project are documented here. This project follows
   only a total.
 
 ### Fixed
+- **Bring in's preview went quiet for minutes after reading the conversations.** Before it
+  said how many conversations here would still name other computers' work folders, it
+  read every conversation on this computer without a word: two and a half minutes on one
+  with a few thousand. It now says how far it has got, as `checking file paths in
+  conversations: 120/3800`, and looks for all the folders in one pass over each line
+  instead of one pass for each, about fifteen times faster, with the same count.
+- **Bring in's count of conversations stopped short**, at `reading conversations:
+  230/246`, when some projects were not found here. Their conversations count too, so it
+  ends at 246/246.
+- **Progress written to a pipe or a file ran into the next line.** Each text ended with a
+  carriage return, so with stdout and stderr captured together the next line was glued on
+  (`reading conversations: 0/246+ -Users-…`). There each is now a line of its own; the
+  panel and a terminal show progress as before.
 - **Back up now showed no progress, and a first backup showed nothing.** Overview now
   shows what the backup is doing above the cards, with a bar that fills when it reports
   a count, and the computers card says this computer's first backup is running.

@@ -341,3 +341,35 @@ func TestImportDryRunOpensNoConversation(t *testing.T) {
 		}
 	}
 }
+
+// A project not found here, or named by no recorded path, takes no conversation up but
+// counts: the count ends at its total. To a file each text is a line of its own, so
+// what is captured with it is never glued on.
+func TestImportProgressCountsProjectsPassedOver(t *testing.T) {
+	claudeDir, dest, search := heartbeatArchive(t, 2)
+	line := `{"type":"user","message":{"role":"user","content":"hi"}}` + "\n"
+	for i, bucket := range []string{"-x-missing", "-y-unrecorded"} {
+		for j := 0; j < 2; j++ {
+			writeFile(t, filepath.Join(archive.ProjectsDir(dest), bucket, fmt.Sprintf("2222222%d-2222-2222-2222-%012d", i, j)+".jsonl"), line)
+		}
+	}
+	shard, _ := json.Marshal(map[string]any{"schemaVersion": 1, "machine": "LAP-3",
+		"projects": map[string]any{"-x-missing": map[string]string{"path": "/x/missing", "leaf": "missing"}}})
+	writeFile(t, filepath.Join(dest, "manifest", "LAP-3.json"), string(shard))
+	f, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var out bytes.Buffer
+	if _, err := runImport(streams{&out, f}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1, DryRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(f.Name())
+	if !strings.Contains(string(got), "reading conversations: 0/6\nreading conversations: 6/6\n") || strings.Contains(string(got), "\r") {
+		t.Errorf("progress %q, want it to end at 6/6, a line each", got)
+	}
+	if !strings.Contains(out.String(), "- -x-missing:") || !strings.Contains(out.String(), "- -y-unrecorded:") {
+		t.Errorf("fixture: the two projects were not passed over:\n%s", out.String())
+	}
+}
