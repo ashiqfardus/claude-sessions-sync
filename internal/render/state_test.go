@@ -47,7 +47,7 @@ func TestUnparsableStateRendersNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := Archive(dest, Options{})
-	if err == nil || !strings.Contains(err.Error(), "render --force") || res.Rendered != 0 {
+	if err == nil || !strings.Contains(err.Error(), "no page is rendered this run") || res.Rendered != 0 {
 		t.Fatalf("render = %+v, %v; want nothing rendered, and why", res, err)
 	}
 	if got := mustRead(t, state); !bytes.Equal(got, garbled) {
@@ -110,5 +110,29 @@ func TestTwoWritersKeepEachOthersPages(t *testing.T) {
 	}
 	if s, _ := loadState(htmlDir); s.Version != templateVersion || len(s.Pages) != 2 {
 		t.Errorf("an older template's pages were kept: %+v", s)
+	}
+}
+
+// A state that has stayed unreadable, untouched, for stateSettle is broken, not being
+// replaced: every page is rendered again and a readable state saved, with no one
+// having to run render --force.
+func TestLongBrokenStateRendersEveryPageAgain(t *testing.T) {
+	wait := stateWait
+	stateWait = time.Millisecond
+	t.Cleanup(func() { stateWait = wait })
+	dest := stateArchive(t)
+	state := statePath(filepath.Join(dest, "html"))
+	if err := os.WriteFile(state, []byte(`{"version":5,"pa`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-stateSettle - time.Minute)
+	if err := os.Chtimes(state, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := Archive(dest, Options{}); err != nil || res.Rendered == 0 {
+		t.Fatalf("render = %+v, %v; want every page rendered again", res, err)
+	}
+	if _, err := loadState(filepath.Join(dest, "html")); err != nil {
+		t.Errorf("the state saved after cannot be read: %v", err)
 	}
 }

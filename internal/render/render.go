@@ -132,10 +132,10 @@ func Archive(dest string, opts Options) (Result, error) {
 	// window, and a renderer fix - such as redaction - never reached pages that were
 	// already published.
 	prev, err := loadState(res.OutputDir)
-	if err != nil && !opts.Force {
+	if err != nil && !opts.Force && !settledBroken(statePath(res.OutputDir)) {
 		// Read as empty, every page would count as stale, and the state saved after would
 		// hold this run's pages alone: every computer would start over.
-		return res, fmt.Errorf("%s cannot be read (%v): no page is rendered until it can be; `claude-sessions render --force` renders them all again", statePath(res.OutputDir), err)
+		return res, fmt.Errorf("%s cannot be read (%v): no page is rendered this run; if it stays so for %v, every page is rendered again", statePath(res.OutputDir), err, stateSettle)
 	}
 	next := renderState{Version: templateVersion, Pages: map[string]pageState{}}
 	lastSave := time.Now()
@@ -524,6 +524,19 @@ var (
 	stateTries = 3
 	stateWait  = 500 * time.Millisecond
 )
+
+// stateSettle is how long a state that cannot be read must have gone unchanged before
+// it counts as broken, not as a file a sync client is still replacing.
+var stateSettle = 10 * time.Minute
+
+// settledBroken reports whether the state at path, which cannot be read, has gone
+// unchanged for stateSettle: then no computer is mid-write and nothing will mend it,
+// so every page is rendered again and the state saved anew - otherwise no page would
+// ever be rendered again without someone running render --force.
+func settledBroken(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && time.Since(st.ModTime()) >= stateSettle
+}
 
 // loadState reads the state: an empty one when there is none, an error when there is
 // one that cannot be read or parsed.
