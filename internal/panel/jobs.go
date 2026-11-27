@@ -307,7 +307,12 @@ func (r *Runner) ServeEvents(w http.ResponseWriter, req *http.Request) {
 	}
 	lineN, _ := strconv.Atoi(req.Header.Get("Last-Event-ID"))
 	j.mu.Lock()
-	progN := j.progN // progress before the connection is history, not replayed
+	// Progress before the connection is history, except the latest of a job still
+	// running: a screen opened mid-job shows where it is now, not nothing until the next.
+	progN := j.progN
+	if j.running && progN > 0 && len(j.progress) > 0 {
+		progN--
+	}
 	j.mu.Unlock()
 
 	rc := http.NewResponseController(w)

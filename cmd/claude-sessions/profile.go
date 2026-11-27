@@ -24,6 +24,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ashiqfardus/claude-sessions-sync/internal/archive"
@@ -638,6 +639,25 @@ func forgotten(dest, machine string) bool {
 // diffsOf is the files whose copies differ, sorted. Copies of different sizes differ
 // unread; copies of one size are compared by a hash read in a stream, never held whole.
 func diffsOf(copies map[string][]profileCopy) []string {
+	// The copies to hash are read 8 at a time: on a folder that downloads each file when
+	// it is read, hundreds of skill files one after another took minutes.
+	var read []string
+	for _, cs := range copies {
+		if len(cs) > 1 && !slices.ContainsFunc(cs, func(c profileCopy) bool { return c.Size != cs[0].Size }) {
+			for _, c := range cs {
+				read = append(read, c.path)
+			}
+		}
+	}
+	var mu sync.Mutex
+	hashes := make(map[string]string, len(read))
+	archive.Warm(read, func(p string) {
+		if h, ok := fileHash(p); ok {
+			mu.Lock()
+			hashes[p] = h
+			mu.Unlock()
+		}
+	})()
 	out := []string{}
 	for rel, cs := range copies {
 		if len(cs) < 2 {
@@ -649,7 +669,7 @@ func diffsOf(copies map[string][]profileCopy) []string {
 			if differ {
 				break
 			}
-			if h, ok := fileHash(c.path); !ok { // unreadable: compared with no copy
+			if h, ok := hashes[c.path]; !ok { // unreadable: compared with no copy
 				continue
 			} else if first == "" {
 				first = h

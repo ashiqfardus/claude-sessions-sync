@@ -613,3 +613,30 @@ func TestJobSummaryHasNoLog(t *testing.T) {
 		t.Error("Summary says running after the job ended")
 	}
 }
+
+// A screen that opens while a job runs is shown where it is now: the latest progress
+// text first, not the ones before it, and not nothing until the next one.
+func TestRunnerSendsTheLatestProgressToALateViewer(t *testing.T) {
+	r, _ := newJobRunner()
+	srv := httptest.NewServer(http.HandlerFunc(r.ServeEvents))
+	defer srv.Close()
+	written, release := make(chan struct{}), make(chan struct{})
+	j, err := r.Start("push", "Back up now", func(log io.Writer) (any, error) {
+		io.WriteString(log, "copying conversations: 1/3\rcopying conversations: 2/3\r")
+		close(written)
+		<-release
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-written
+	br := subscribeJob(t, srv, j, "")
+	if e := readJobEvent(t, br); e.Event != "progress" || e.Data != `"copying conversations: 2/3"` {
+		t.Fatalf("first event %v, want the latest progress", e)
+	}
+	close(release)
+	if got := readJobEvents(t, br); len(got) != 1 || got[0].Event != "done" {
+		t.Fatalf("then %v, want only done", got)
+	}
+}

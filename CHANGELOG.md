@@ -57,6 +57,12 @@ All notable changes to this project are documented here. This project follows
   only a total.
 
 ### Fixed
+- **Settings stayed blank on a computer whose archive folder downloads files only when
+  they're opened.** The page waited for every computer's rules and skills to be compared,
+  which read each skill file one after another. Settings now shows at once and says it is
+  still comparing them; the comparison reads eight files at a time.
+- **Coming back to Overview during a backup showed no count until the next one.** The
+  page now picks up the backup's latest stage and count straight away.
 - **Back up now showed no progress, and a first backup showed nothing.** Overview now
   shows what the backup is doing above the cards, with a bar that fills when it reports
   a count, and the computers card says this computer's first backup is running.

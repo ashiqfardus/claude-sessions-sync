@@ -704,7 +704,9 @@ func TestSettingsAndProfileViews(t *testing.T) {
 	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-1", "CLAUDE.md"), "one")
 	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-2", "CLAUDE.md"), "the other")
 	os.Chtimes(filepath.Join(profileDir(dest), "machines", "LAP-1", "CLAUDE.md"), old, old)
-	set := querySettings(root, true, time.Now(), &profileCache{})
+	profiles := &profileCache{}
+	profiles.diffs(dest) // compared already: a fresh cache answers -1 while it compares (TestProfileReadyNeverWaits)
+	set := querySettings(root, true, time.Now(), profiles)
 	if set.Archive == nil || set.Config == nil || set.Config.InUse != dest || len(set.WorkFolders) != 1 || set.ProfileDiffs != 1 ||
 		!set.FromShortcut || set.Version != version || set.LogPath != filepath.Join(root, "session-sync.log") ||
 		set.Pages.Pages != 1 || set.Pages.Transcripts == 0 || len(set.Computers) != 3 || set.Sweep.Mechanism == "" {
@@ -1157,5 +1159,38 @@ func TestHealthZipsSaysWhenThisComputersSettingsCannotBeRead(t *testing.T) {
 	writeFile(t, filepath.Join(archive.ManifestDir(dest), "LAP-9.json"), "{")
 	if it := plainCheck(zipCheck(root, dest)); !strings.Contains(it.Text, "every computer's record") {
 		t.Errorf("an unreadable manifest gave %+v", it)
+	}
+}
+
+// Settings and Health never wait for the rules-and-skills comparison: while it runs
+// (minutes on a folder that downloads each file as it is read) they give "still
+// comparing" at once, and the answer once it is in.
+func TestProfileReadyNeverWaits(t *testing.T) {
+	root, dest := queryFixture(t)
+	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-1", "CLAUDE.md"), "one")
+	writeFile(t, filepath.Join(profileDir(dest), "machines", "LAP-2", "CLAUDE.md"), "three")
+	release := make(chan struct{})
+	hook(t, &compareCopies, func(c map[string][]profileCopy) []string {
+		<-release
+		return diffsOf(c)
+	})
+	var p profileCache
+	done := make(chan struct{})
+	go func() { p.diffs(dest); close(done) }() // a comparison under way
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	if set := querySettings(root, false, time.Now(), &p); set.ProfileDiffs != -1 {
+		t.Errorf("while comparing, profileDiffs = %d, want -1", set.ProfileDiffs)
+	}
+	if list, ok := p.ready(dest); ok || list != nil {
+		t.Errorf("ready while comparing = %v, %v", list, ok)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("waited %v for a comparison under way", d)
+	}
+	close(release)
+	<-done
+	if set := querySettings(root, false, time.Now(), &p); set.ProfileDiffs != 1 {
+		t.Errorf("after comparing, profileDiffs = %d, want 1", set.ProfileDiffs)
 	}
 }

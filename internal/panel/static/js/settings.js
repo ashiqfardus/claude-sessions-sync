@@ -121,7 +121,7 @@ register('settings', {
     const everyHint = slot('every-hint')
     let pendingEvery = null // a Scheduled backup choice not yet set up, kept across reloads
     const every = combo(slot('every'), { options: [], value: 30, onChange: (n) => { pendingEvery = n; hintEvery() } })
-    let v, cfg, me = '', home = '', sep = '/', log = null, diffs = [], profileRead = false, projects = [], shownCard = card, healthN = 0
+    let v, cfg, me = '', home = '', sep = '/', log = null, diffs = [], profileState = 'comparing', projects = [], shownCard = card, healthN = 0
     const tilde = (p) => (home && (p === home || p.startsWith(home + sep)) ? '~' + p.slice(home.length) : p)
 
     // A control running its job is aria-disabled, not disabled, so it keeps the focus;
@@ -134,10 +134,13 @@ register('settings', {
     }, { capture: true, signal })
 
     async function load() {
-      const [settings, lines, profile, proj, folders] = await Promise.all([
+      // Rules and skills come on their own: comparing every computer's copies can take
+      // minutes on a folder that downloads files as they are read, and the rest of the
+      // page does not wait for it.
+      const profile = api.get('/api/profile').catch(() => null) // {problem} with no archive (Ruling P56)
+      const [settings, lines, proj, folders] = await Promise.all([
         api.get('/api/settings'),
         api.get('/api/log').catch(() => null),
-        api.get('/api/profile').catch(() => null), // {problem} with no archive (Ruling P56)
         api.get('/api/projects').catch(() => null), // the archive's projects, for Add a project and Readable pages
         home ? null : api.get('/api/folders').catch(() => null), // the home folder, to show paths with ~
       ])
@@ -148,14 +151,20 @@ register('settings', {
       cfg = v.config || {}
       me = (state && state.machine) || ''
       log = Array.isArray(lines) ? lines : null
-      profileRead = Array.isArray(profile)
-      diffs = profileRead ? profile : []
+      profileState = 'comparing'
+      diffs = []
       projects = Array.isArray(proj) ? proj : []
       if (folders && folders.path) {
         home = folders.path
         sep = home.includes('\\') ? '\\' : '/'
       }
       paint()
+      profile.then((p) => {
+        if (signal.aborted || v !== settings) return // left, or a newer load has painted
+        profileState = Array.isArray(p) ? 'read' : 'failed'
+        diffs = Array.isArray(p) ? p : []
+        paintProfile()
+      })
     }
 
     // reload reads the page again after an action. Focus then goes to focus (an element,
@@ -185,6 +194,25 @@ register('settings', {
         if (at.length) return at
       }
       return []
+    }
+
+    // paintProfile shows how the computers' rules and skills compare: comparing (the
+    // page asked, and /api/settings had no answer yet), the files that differ, or why not.
+    function paintProfile() {
+      const read = profileState === 'read'
+      const k = read ? diffs.length : v.profileDiffs
+      const line = slot('profile-line')
+      line.classList.toggle('comparing', profileState === 'comparing' && k < 0)
+      line.textContent = k < 0 ? (profileState === 'failed' ? "The rules and skills on your computers can't be compared right now." : 'Comparing the rules and skills on your computers…')
+        : k ? `${plural(k, 'file')} ${k === 1 ? 'differs' : 'differ'} between your computers. Each keeps its own until you choose.`
+          : 'Your computers have the same rules and skills.'
+      const newer = (d) => (!d.newest ? 'copies differ' : same(d.newest, me) ? 'newer here' : 'newer on ' + d.newest)
+      slot('profile').replaceChildren(...diffs.slice(0, 3).map((d) => h('li', null, code(d.file), ', ', newer(d))),
+        ...(diffs.length > 3 ? [h('li', null, `and ${number(diffs.length - 3)} more`)] : []),
+        ...(k > 0 && profileState === 'failed' ? [h('li', null, "The files can't be listed right now.")] : []))
+      slot('profile').hidden = !slot('profile').children.length
+      slot('compare').disabled = !read || !diffs.length // Compare lists what /api/profile gave
+      slot('take-newer').disabled = !(k > 0)
     }
 
     function paint() {
@@ -238,16 +266,7 @@ register('settings', {
       every.value = shown
       hintEvery()
 
-      const k = v.profileDiffs || 0
-      slot('profile-line').textContent = k ? `${plural(k, 'file')} ${k === 1 ? 'differs' : 'differ'} between your computers. Each keeps its own until you choose.`
-        : 'Your computers have the same rules and skills.'
-      const newer = (d) => (!d.newest ? 'copies differ' : same(d.newest, me) ? 'newer here' : 'newer on ' + d.newest)
-      slot('profile').replaceChildren(...diffs.slice(0, 3).map((d) => h('li', null, code(d.file), ', ', newer(d))),
-        ...(diffs.length > 3 ? [h('li', null, `and ${number(diffs.length - 3)} more`)] : []),
-        ...(k && !profileRead ? [h('li', null, "The files can't be listed right now.")] : []))
-      slot('profile').hidden = !slot('profile').children.length
-      slot('compare').disabled = !profileRead || !diffs.length // Compare lists what /api/profile gave
-      slot('take-newer').disabled = !k
+      paintProfile()
 
       // Provider wording only when the provider is known (Ruling P25).
       const where = v.archive && v.archive.provider ? `in ${v.archive.provider}, on your phone too` : 'in your sync folder'

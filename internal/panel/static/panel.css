@@ -404,6 +404,8 @@ button.health-sum:focus-visible{outline-offset:-3px} /* inside the card, whose c
 .space-cell{gap:10px;flex-wrap:nowrap}
 .space-bar{flex:1 1 auto;height:6px}
 .space-bar>span{background:var(--accent)}
+.comparing{color:var(--muted)}
+.comparing::before{content:"";display:inline-block;width:10px;height:10px;margin-right:8px;vertical-align:-1px;border-radius:50%;border:2px solid var(--accent);border-right-color:transparent;animation:spin 700ms linear infinite} /* Settings: rules and skills still being compared */
 .space-bar.no-bar{visibility:hidden} /* the row of all the other projects: its total would dwarf the bars */
 .space-size{flex:0 0 52px;text-align:right}
 /* -- Storage, 0.7.6 (lane N): each way to free space has its icon and, when the page knows it, what it frees. */

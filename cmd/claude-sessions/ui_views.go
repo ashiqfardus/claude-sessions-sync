@@ -834,7 +834,7 @@ func (f *flight[T]) drop() {
 // answering, so that reloads do not leave a blocked read each. It reads no archived
 // conversation and writes no test file to the archive.
 func queryHealth(root string, logf func(string, ...any), profiles *profileCache) ([]healthItem, time.Duration) {
-	rep, _ := runDoctor(quietStreams(), doctorOpts{ClaudeDir: root, NoProbe: true, Light: true, ProfileDiffs: profiles.diffs})
+	rep, _ := runDoctor(quietStreams(), doctorOpts{ClaudeDir: root, NoProbe: true, Light: true, ProfileDiffs: profiles.diffsIfReady})
 	return healthOf(rep.Checks, logf)
 }
 
@@ -878,6 +878,17 @@ type profileCache struct {
 // get is every copy and the files whose copies differ.
 func (c *profileCache) get(dest string) (map[string][]profileCopy, []string) {
 	copies := profileCopies(dest)
+	key := profileKey(copies)
+	c.mu.Lock() // held across the comparison: callers meanwhile get its answer, not one each
+	defer c.mu.Unlock()
+	if c.list == nil || c.key != key {
+		c.key, c.list = key, compareCopies(copies)
+	}
+	return copies, c.list
+}
+
+// profileKey stands for every copy's size and time: an unchanged key needs no file read.
+func profileKey(copies map[string][]profileCopy) string {
 	files := make([]string, 0, len(copies))
 	for rel := range copies {
 		files = append(files, rel)
@@ -889,13 +900,24 @@ func (c *profileCache) get(dest string) (map[string][]profileCopy, []string) {
 			fmt.Fprintf(h, "%q %q %d %d\n", rel, cp.path, cp.Size, cp.ModTime.UnixNano())
 		}
 	}
-	key := string(h.Sum(nil))
-	c.mu.Lock() // held across the comparison: callers meanwhile get its answer, not one each
-	defer c.mu.Unlock()
-	if c.list == nil || c.key != key {
-		c.key, c.list = key, compareCopies(copies)
+	return string(h.Sum(nil))
+}
+
+// ready is the files whose copies differ when the comparison for the copies as they
+// are now has run. Otherwise it gives false at once and starts that comparison in the
+// background: a screen never waits for it, and on a folder that downloads each file
+// when it is read the comparison can take minutes.
+func (c *profileCache) ready(dest string) ([]string, bool) {
+	key := profileKey(profileCopies(dest))
+	if !c.mu.TryLock() {
+		return nil, false // a comparison is running
 	}
-	return copies, c.list
+	list, ok := c.list, c.list != nil && c.key == key
+	c.mu.Unlock()
+	if !ok {
+		go c.get(dest)
+	}
+	return list, ok
 }
 
 // compareCopies is diffsOf; a test counts its runs.
@@ -903,6 +925,13 @@ var compareCopies = diffsOf
 
 func (c *profileCache) diffs(dest string) []string {
 	_, list := c.get(dest)
+	return list
+}
+
+// diffsIfReady is ready's list, nil until the comparison has run: Health says nothing
+// about rules and skills meanwhile, rather than wait.
+func (c *profileCache) diffsIfReady(dest string) []string {
+	list, _ := c.ready(dest)
 	return list
 }
 
@@ -1201,7 +1230,7 @@ type settingsView struct {
 		Transcripts int  `json:"transcripts"`
 		Stale       bool `json:"stale"`
 	} `json:"pages"`
-	ProfileDiffs int `json:"profileDiffs"`
+	ProfileDiffs int `json:"profileDiffs"` // -1 while the comparison runs
 	Sweep        struct {
 		Installed bool   `json:"installed"`
 		Mechanism string `json:"mechanism"`
@@ -1255,7 +1284,10 @@ func querySettings(root string, fromShortcut bool, now time.Time, profiles *prof
 	})
 	manifest, _ := archive.MergeShards(dest, shards)
 	v.Pages.Pages, v.Pages.Transcripts, v.Pages.Stale = renderState(dest, manifest, archive.RenderExcludes(root, dest, nil, false))
-	v.ProfileDiffs = len(profiles.diffs(dest))
+	v.ProfileDiffs = -1 // still comparing: the page shows the list once /api/profile has it
+	if list, ok := profiles.ready(dest); ok {
+		v.ProfileDiffs = len(list)
+	}
 	return v
 }
 
