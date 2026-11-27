@@ -5,6 +5,21 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **Bring in sat on "Looking for your projects…" for minutes.** On an archive folder
+  that downloads each file only when it is opened, the preview read the other
+  computers' work folders one file at a time, each a download, and said nothing while
+  it did. It now downloads up to eight at once, and the page says how far it has got,
+  as in `reading work folders: 40/200`, then `reading conversations: 120/3657`.
+- **Bring in downloaded memory files it did not need.** To tell a memory file that is
+  new here from one deleted here, it read the archived copy even when this computer had
+  never taken it. It now reads one only when the copy it took is the same size.
+
+### Changed
+- `import` and `pull` write how far they have got on stderr when it is not a terminal,
+  as `clean` does; `--json` output is unchanged. A terminal still gets its line every
+  12 seconds.
+
 ## [0.7.5] - 2026-11-27
 
 ### Fixed

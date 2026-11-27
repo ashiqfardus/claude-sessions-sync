@@ -239,8 +239,7 @@ func runImport(s streams, o importOpts) (importResult, error) {
 	var workRes workRestoreResult
 	var remapNotes []string
 	if !o.NoWork {
-		hb.reading("work folders", 0)
-		workMoves, workRes = restoreWork(root, dest, shards, wcfg, o.DryRun, o.Update, false)
+		workMoves, workRes = restoreWork(root, dest, shards, wcfg, o.DryRun, o.Update, false, hb)
 		// A folder placed elsewhere since an earlier import repoints from where it was, until
 		// a --repoint has moved every conversation off it (spec §7a).
 		var remaps []rewrite.Move
@@ -837,6 +836,11 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 	var pulled, updated, already, memory int
 	var forked, failed, notes []string
 	var rows []importRow
+	hb := startHeartbeat(s.Err) // as import's
+	defer hb.stop()
+	if hb.on() {
+		hb.reading("conversations", conversationCount(dest, archivedBuckets))
+	}
 
 	for _, name := range archivedBuckets {
 		if !safeBucketName(name) { // as in import
@@ -869,7 +873,7 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 		res, err := restoreInto(root, srcDir, "", "", nil, restoreOpts{
 			DryRun: o.DryRun, Update: o.Update, Bucket: targetName,
 			Owner: manifest[name].Owner(), OwnerOf: writers, Forks: filepath.Join(dest, "forks", name), Archive: dest,
-			FormerNames: formerNames(dest), Imported: imported,
+			FormerNames: formerNames(dest), Imported: imported, Progress: hb.step,
 		})
 		if errors.Is(err, errRecord) {
 			return nil, err // never file what cannot be recorded
@@ -897,8 +901,9 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 	var workRes workRestoreResult
 	if cfg, err := archive.LoadConfig(root); err == nil && !o.NoWork {
 		shards, _, _ := archive.ReadShards(dest)
-		_, workRes = restoreWork(root, dest, shards, cfg, o.DryRun, o.Update, true)
+		_, workRes = restoreWork(root, dest, shards, cfg, o.DryRun, o.Update, true, hb)
 	}
+	hb.stop()
 	rows = append(rows, workRows(workRes.ByMachine)...)
 
 	fmt.Fprintf(s.Out, "\n%s %d transcript(s) and %d memory file(s), %d already present.\n",

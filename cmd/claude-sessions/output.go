@@ -42,12 +42,15 @@ var isTerminal = func(w io.Writer) bool {
 // heartbeatEvery is how often a long read says how far it has got.
 var heartbeatEvery = 12 * time.Second
 
-// heartbeat says on a terminal, once every heartbeatEvery until stop, how far import's
-// read of the archive has got: on a drive that downloads each file as it is opened,
-// it reads for minutes without a line. Anywhere else it writes nothing.
+// heartbeat says how far import's or pull's read of the archive has got: on a drive
+// that downloads each file as it is opened, it reads for minutes without a line. On a
+// terminal it says so once every heartbeatEvery until stop; anywhere else - the panel's
+// job, a pipe - each step is \r-ended progress text, which the panel shows as it comes
+// and which no line or --json result holds.
 type heartbeat struct {
 	mu      sync.Mutex
 	w       io.Writer // nil: not a terminal
+	p       io.Writer // the progress text's; nil on a terminal or for none
 	start   time.Time
 	what    string // what is being read
 	n, of   int    // how many of what are read, of how many; of is 0 when not counted
@@ -58,6 +61,9 @@ type heartbeat struct {
 func startHeartbeat(w io.Writer) *heartbeat {
 	h := &heartbeat{start: time.Now(), done: make(chan struct{})}
 	if !isTerminal(w) {
+		if w != io.Discard {
+			h.p = w
+		}
 		return h
 	}
 	h.w = w
@@ -93,13 +99,14 @@ func (h *heartbeat) say() {
 }
 
 // on reports whether the heartbeat writes anywhere.
-func (h *heartbeat) on() bool { return h.w != nil }
+func (h *heartbeat) on() bool { return h.w != nil || h.p != nil }
 
 // reading starts a stage: of things named what, or of 0 when they are not counted.
 func (h *heartbeat) reading(what string, of int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.what, h.n, h.of = what, 0, of
+	h.progress()
 }
 
 // step counts one more thing read.
@@ -107,6 +114,20 @@ func (h *heartbeat) step() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.n++
+	h.progress()
+}
+
+// progress writes the stage as clean's counter reads, "reading conversations: 3/40",
+// ended by \r. Under h.mu.
+func (h *heartbeat) progress() {
+	if h.p == nil || h.stopped {
+		return
+	}
+	text := "reading " + h.what
+	if h.of > 0 {
+		text += fmt.Sprintf(": %d/%d", h.n, h.of)
+	}
+	fmt.Fprint(h.p, text+"\r")
 }
 
 // stop ends the heartbeat: once it returns, nothing more is written. Again is a no-op.

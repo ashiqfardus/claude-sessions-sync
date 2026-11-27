@@ -196,8 +196,8 @@ func waitForText(t *testing.T, w *syncBuffer, want string) {
 	}
 }
 
-// Not on a terminal - a pipe, a file, the panel's buffer - import prints no heartbeat,
-// so scripted output and the goldens stay as they were.
+// Not on a terminal - a pipe, a file, the panel's buffer - import prints no heartbeat
+// line: its progress there is \r-ended text, which the panel shows in place.
 func TestHeartbeatOnlyOnATerminal(t *testing.T) {
 	f, err := os.Create(filepath.Join(t.TempDir(), "stderr.txt"))
 	if err != nil {

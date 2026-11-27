@@ -994,7 +994,7 @@ func restoreMemory(root, srcDir, dstDir, source string, dryRun, update, own bool
 		}
 		// A file this machine deleted after taking it is not brought back, as long as
 		// the archived copy is still the one it took.
-		if archive.StatOrNil(dst) == nil && (sameContent(src, baseFile) || held.Files[strings.ToLower(e.Name())]) {
+		if archive.StatOrNil(dst) == nil && (held.Files[strings.ToLower(e.Name())] || sameContent(src, baseFile)) {
 			continue
 		}
 		if !shouldRestore(srcInfo, dst, update) {
@@ -1021,7 +1021,13 @@ func restoreMemory(root, srcDir, dstDir, source string, dryRun, update, own bool
 	return n
 }
 
+// sameContent reports whether a and b hold the same bytes. Neither is read when one is
+// missing or their sizes differ: on a drive that downloads each file as it is opened,
+// that read was a download for an answer the sizes already gave.
 func sameContent(a, b string) bool {
+	if sa, sb := archive.StatOrNil(a), archive.StatOrNil(b); sa == nil || sb == nil || sa.Size() != sb.Size() {
+		return false
+	}
 	x, err1 := os.ReadFile(a)
 	y, err2 := os.ReadFile(b)
 	return err1 == nil && err2 == nil && bytes.Equal(x, y)
