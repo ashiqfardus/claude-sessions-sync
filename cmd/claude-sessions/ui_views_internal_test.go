@@ -1060,6 +1060,35 @@ func TestSweepSentencesMatchSettings(t *testing.T) {
 	}
 }
 
+// E2E M2: with neither the hook at a session's end nor the scheduled backup set up,
+// Health, and Settings' line built from it, say one thing: automatic backup is off.
+// With one of them set up, each keeps its own sentence.
+func TestHealthSaysAutomaticBackupIsOff(t *testing.T) {
+	hookOff := check{"session hook", levelWarn, "no SessionEnd hook installed", "Sessions are only archived by the periodic sweep, so the most recent one can be missed."}
+	hookOn := check{"session hook", levelOK, "claude-sessions push --quiet", ""}
+	sweepOff := check{"sweep", levelWarn, "launchd: not loaded", "A session killed abruptly will not be archived until the next manual push."}
+	sweepOn := check{"sweep", levelOK, "launchd: loaded", ""}
+	sweepUnknown := check{"sweep", levelWarn, "exec: \"launchctl\": executable file not found in $PATH", ""}
+	texts := func(cs ...check) []string {
+		items, _ := healthOf(cs, t.Logf)
+		var out []string
+		for _, it := range items {
+			if it.Name == "session hook" || it.Name == "sweep" {
+				out = append(out, it.Level+" "+it.Text+" ["+it.FixLabel+"]")
+			}
+		}
+		return out
+	}
+	if got, want := texts(hookOff, sweepOff), []string{"warn " + autoOff + " [Set up again]"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("both off: %q, want %q", got, want)
+	}
+	for _, c := range [][]check{{hookOff, sweepOn}, {hookOn, sweepOff}, {hookOff, sweepUnknown}} {
+		if got := texts(c...); len(got) != 2 || slices.ContainsFunc(got, func(s string) bool { return strings.Contains(s, autoOff) }) {
+			t.Errorf("%s / %s: %q", c[0].Detail, c[1].Detail, got)
+		}
+	}
+}
+
 // Minor m4: one of a thing takes the singular.
 func TestPlainWordsSingular(t *testing.T) {
 	for _, c := range []struct {

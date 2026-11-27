@@ -14,6 +14,10 @@ All notable changes to this project are documented here. This project follows
 - **Bring in downloaded memory files it did not need.** To tell a memory file that is
   new here from one deleted here, it read the archived copy even when this computer had
   never taken it. It now reads one only when the copy it took is the same size.
+- **With automatic backup off, Health and Settings said two things that did not fit.**
+  "Only on the schedule" beside "the scheduled backup isn't set up". With neither set
+  up they now say one thing: "Automatic backup is off. Nothing is backed up until you
+  choose Back up now.", with Set up again.
 - **Rules and skills never settled after Forget.** A forgotten computer's rules and
   skills stayed in the comparison, so Settings kept saying a file differs between your
   computers, and Compare listed it. A computer with no record in the archive is now
