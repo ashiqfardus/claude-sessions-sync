@@ -31,6 +31,7 @@ const SLOW_WAIT = "If your archive folder downloads files only when they're open
 const SLOW_AFTER = 10000
 const LOOKING = 'Looking for your projects…'
 const STALE = 'Options changed: preview again.'
+const NOTHING = 'Nothing new to bring in.'
 const EMPTY = 'Nothing to bring in yet. Once your other computer backs up to this archive, its projects and folders show here.'
 // Every path the panel sends is a full one, or starts with ~ (Ruling P59).
 const FULL = /^(~([\\/]|$)|\/|[A-Za-z]:[\\/]|\\\\)/
@@ -146,7 +147,7 @@ register('import', {
     }
 
     function row(r) {
-      const isWork = r.kind === 'work', missing = !isWork && MISSING.includes(r.matchedBy)
+      const isWork = r.kind === 'work', missing = !isWork && MISSING.includes(r.matchedBy), several = r.matchedBy === 'ambiguous'
       const from = r.recordedPath || r.bucket || ''
       const n = (r.filed || 0) + (r.updated || 0) + (r.skipped || 0)
       const sub = [r.machine, isWork ? 'work folder' : n ? count(n, 'conversation') : ''].filter(Boolean).join(', ')
@@ -155,8 +156,8 @@ register('import', {
       const mappable = isWork ? !!r.recordedPath : !!r.matchedBy && r.matchedBy !== 'bucket name'
       return h('tr', { class: missing ? 'warn-row' : null },
         h('td', null, h('code', null, from), sub && h('span', { class: 'muted small block' }, sub)),
-        missing ? h('td', { class: 'not-found' }, 'Not found on this computer') : h('td', null, to ? h('code', null, to) : '—'),
-        h('td', { class: missing ? 'not-found-why' : null }, missing ? 'Skipped until you choose a folder' : whyOf(r)),
+        missing ? h('td', { class: 'not-found' }, several ? 'Two or more folders here match' : 'Not found on this computer') : h('td', null, to ? h('code', null, to) : '—'),
+        h('td', { class: missing ? 'not-found-why' : null }, missing ? (several ? 'Skipped until you choose one' : 'Skipped until you choose a folder') : whyOf(r)),
         h('td', { class: 'r' }, mappable && h('button', {
           type: 'button', class: missing ? 'btn sm dark' : 'btn sm', 'data-key': key(r), disabled: busy,
           'aria-label': (missing ? 'Choose folder: ' : 'Change: ') + from, onclick: () => change(r),
@@ -259,7 +260,9 @@ register('import', {
       if (kind.startsWith('restore')) return restored(st, kind === 'restore-preview')
 
       const rows = Array.isArray(st.result) ? st.result : []
-      const n = sum(rows, brought), w = rows.filter((r) => r.kind === 'work').length
+      // A work folder counts only when something in it is filed or updated, as Activity counts it:
+      // one placed again unchanged is no news.
+      const n = sum(rows, brought), w = rows.filter((r) => r.kind === 'work' && (r.filed || 0) + (r.updated || 0) > 0).length
       if (!st.ok) {
         // A failure says what was done before it (Ruling P44), and the rows shown stay.
         if (kind === 'preview' && !shown.length) {
@@ -274,15 +277,16 @@ register('import', {
         // A project not found here may be inside a work folder this brings in: import
         // matches it only once the folder is in place, so the run can bring in more.
         const later = w && rows.some((r) => r.kind !== 'work' && MISSING.includes(r.matchedBy))
-        previewText = rows.length ? `Would bring in ${later ? 'at least ' : ''}${what(n, w)}.` + unchanged(sum(rows, (r) => r.skipped || 0)) : ''
+        previewText = rows.length ? (n || w ? `Would bring in ${later ? 'at least ' : ''}${what(n, w)}.` : NOTHING) + unchanged(sum(rows, (r) => r.skipped || 0)) : ''
         if (body) previewed = { name: action, body, total: n }
         gate()
         return show(result, !body || fresh() ? previewText : STALE)
       }
-      const skipped = rows.filter((r) => r.kind !== 'work' && MISSING.includes(r.matchedBy)).length
-      show(result, (skipped ? `Done. ${count(skipped, 'project')} ${skipped === 1 ? 'was' : 'were'} skipped until you choose a folder.`
-        : 'Done. Everything is filed under your projects here.') + (previewed && !fresh() ? ' ' + STALE : ''))
-      toast('Brought in ' + what(n, w), { action: { label: 'See them', run: () => { location.hash = '#/conversations' } } })
+      const skipped = rows.filter((r) => r.kind !== 'work' && MISSING.includes(r.matchedBy)).length, none = !n && !w
+      show(result, (none ? NOTHING : 'Done.') + (skipped ? ` ${count(skipped, 'project')} ${skipped === 1 ? 'was' : 'were'} skipped until you choose a folder.`
+        : none ? '' : ' Everything is filed under your projects here.') + (previewed && !fresh() ? ' ' + STALE : ''))
+      if (none) toast(NOTHING)
+      else toast('Brought in ' + what(n, w), { action: { label: 'See them', run: () => { location.hash = '#/conversations' } } })
     }
 
     function restored(st, dryRun) {

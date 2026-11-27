@@ -37,6 +37,16 @@ All notable changes to this project are documented here. This project follows
 - **A dialog taller than the window scrolls**, so its title and buttons stay in reach.
 
 ### Fixed
+- **Bring in said "1 work folder" on every run.** A work folder counts only when something
+  in it is filed or updated, as in Activity, and with nothing to bring in the preview and
+  the run both say "Nothing new to bring in".
+- **Bring in called a project that two folders here match "Not found on this computer".**
+  It now says two or more folders here match; Choose folder picks one.
+- **Renaming this computer left its old name listed as another computer.** After a rename
+  the panel offers to forget the old name. Forget asks first, and the old name's
+  conversations stay in the archive.
+- **Settings showed another computer's last backup as an exact time.** The archive keeps
+  it only to the hour, so it now says "Today, about 07:00".
 - **A long path under "Where the other computers' folders go here" widened the page on a
   phone.** It wraps.
 
