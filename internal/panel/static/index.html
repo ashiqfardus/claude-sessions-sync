@@ -17,22 +17,29 @@
       <span class="mark" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18v4H3z"></path><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"></path><path d="M10 12h4"></path></svg></span>
       <span class="brand-text"><span class="brand-name">claude-sessions</span><span class="brand-sub" data-slot="machine"></span></span>
     </div>
-    <div class="nav">
-      <a href="#/overview" aria-label="Overview"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"></rect><rect x="14" y="3" width="7" height="5" rx="1.5"></rect><rect x="14" y="12" width="7" height="9" rx="1.5"></rect><rect x="3" y="16" width="7" height="5" rx="1.5"></rect></svg><span class="label">Overview</span></a>
-      <a href="#/conversations" aria-label="Conversations"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z"></path></svg><span class="label">Conversations</span></a>
-      <a href="#/storage" aria-label="Storage"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="8" ry="2.5"></ellipse><path d="M4 5.5v13c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-13"></path><path d="M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5"></path></svg><span class="label">Storage</span></a>
-      <a href="#/settings" aria-label="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10"></path><path d="M18 6h2"></path><path d="M4 12h4"></path><path d="M12 12h8"></path><path d="M4 18h12"></path><circle cx="16" cy="6" r="2"></circle><circle cx="10" cy="12" r="2"></circle><circle cx="18" cy="18" r="2"></circle></svg><span class="label">Settings</span></a>
+    <button type="button" class="menu-btn" aria-expanded="false" aria-controls="rail-menu" data-slot="menu"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"></path><path d="M4 12h16"></path><path d="M4 17h16"></path></svg>Menu</button>
+    <div class="rail-menu" id="rail-menu">
+      <div class="nav">
+        <a href="#/overview" aria-label="Overview"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"></rect><rect x="14" y="3" width="7" height="5" rx="1.5"></rect><rect x="14" y="12" width="7" height="9" rx="1.5"></rect><rect x="3" y="16" width="7" height="5" rx="1.5"></rect></svg><span class="label">Overview</span></a>
+        <a href="#/conversations" aria-label="Conversations"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z"></path></svg><span class="label">Conversations</span></a>
+        <a href="#/storage" aria-label="Storage"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="8" ry="2.5"></ellipse><path d="M4 5.5v13c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-13"></path><path d="M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5"></path></svg><span class="label">Storage</span></a>
+        <a href="#/settings" aria-label="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10"></path><path d="M18 6h2"></path><path d="M4 12h4"></path><path d="M12 12h8"></path><path d="M4 18h12"></path><circle cx="16" cy="6" r="2"></circle><circle cx="10" cy="12" r="2"></circle><circle cx="18" cy="18" r="2"></circle></svg><span class="label">Settings</span></a>
+        <a href="#/commands" aria-label="Commands"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M7 9l3 3-3 3"></path><path d="M13 15h4"></path></svg><span class="label">Commands</span></a>
+      </div>
+      <div class="rail-foot"><span class="dot" aria-hidden="true" data-slot="dot"></span><span class="label" data-slot="foot"></span></div>
     </div>
-    <div class="rail-foot"><span class="dot" aria-hidden="true" data-slot="dot"></span><span class="label" data-slot="foot"></span></div>
   </nav>
   <div role="separator" aria-orientation="vertical" aria-controls="rail" aria-label="Resize sidebar" aria-valuemin="64" aria-valuemax="320" aria-valuenow="200" tabindex="0" title="Drag to resize. Double-click to fold to icons." class="grip"><span></span></div>
-  <main id="main" class="main" tabindex="-1"></main>
+  <div class="content">
+    <div class="working" aria-hidden="true" hidden><span></span></div>
+    <main id="main" class="main" tabindex="-1"></main>
+  </div>
 </div>
 <div id="toasts" role="status"></div>
 <div id="dialogs"></div>
 
 <template id="t-overview">
-  <header class="head rise">
+  <header class="head">
     <h1 tabindex="-1">Overview</h1>
     <div class="row">
       <span class="muted small" data-slot="last"></span>
@@ -41,7 +48,7 @@
     </div>
   </header>
 
-  <section aria-labelledby="sync-h" class="section rise stagger-1">
+  <section aria-labelledby="sync-h" class="section">
     <h2 id="sync-h">Your computers and the archive</h2>
     <div class="split gap-16">
       <div class="archive flex-1" data-slot="archive">
@@ -57,12 +64,12 @@
   </section>
 
   <div class="cols">
-    <section aria-labelledby="health-h" class="section rise stagger-2">
+    <section aria-labelledby="health-h" class="section">
       <h2 id="health-h">Health</h2>
       <ul class="panel rows" data-slot="health"><li class="muted">Checking…</li></ul>
     </section>
 
-    <div class="stack gap-28 rise stagger-3">
+    <div class="stack gap-28">
       <section aria-labelledby="storage-h" class="section">
         <h2 id="storage-h">Storage</h2>
         <div class="panel pad stack">
@@ -454,7 +461,6 @@
 
 <template id="t-commands">
   <header class="stack gap-8">
-    <a href="#/settings" class="back">Back to Settings</a>
     <h1 tabindex="-1">Every command, and where it is in the panel</h1>
     <p class="lead">Everything the terminal can do, the panel can do too. The panel runs the same commands, so the two always agree. Only shell tab-completion stays terminal-only, because it changes your shell, not your backups.</p>
   </header>

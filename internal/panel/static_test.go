@@ -322,6 +322,47 @@ func TestScreensRegister(t *testing.T) {
 	}
 }
 
+// Every screen is in the rail's menu: by its own link, or by the link of its section
+// (app.js's SECTION), which must be a rail link itself. Each link is named for the
+// folded rail, with an icon in the rail's style; the phone's Menu button opens them.
+func TestRailListsEveryScreen(t *testing.T) {
+	files := staticFiles(t)
+	app, shell := files["static/js/app.js"], files["static/index.html"]
+	m := regexp.MustCompile(`SCREENS\s*=\s*\[([^\]]*)\]`).FindStringSubmatch(app)
+	sec := regexp.MustCompile(`SECTION\s*=\s*\{([^}]*)\}`).FindStringSubmatch(app)
+	nav := regexp.MustCompile(`(?s)<nav id="rail".*?</nav>`).FindString(shell)
+	if m == nil || sec == nil || nav == "" {
+		t.Fatal("app.js has no SCREENS or SECTION, or index.html no rail")
+	}
+	links := map[string]bool{}
+	for _, a := range regexp.MustCompile(`<a href="#/([a-z]+)"[^>]*>(.*?)</a>`).FindAllStringSubmatch(nav, -1) {
+		links[a[1]] = true
+		if !strings.Contains(a[0], `aria-label="`) || !strings.Contains(a[2], `viewBox="0 0 24 24"`) || !strings.Contains(a[2], `stroke-width="1.8"`) {
+			t.Errorf("rail link #/%s lacks its aria-label or its 24-grid, 1.8-stroke icon", a[1])
+		}
+	}
+	section := map[string]string{}
+	for _, p := range regexp.MustCompile(`(\w+):\s*'([a-z]+)'`).FindAllStringSubmatch(sec[1], -1) {
+		section[p[1]] = p[2]
+	}
+	for _, q := range regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(m[1], -1) {
+		name := q[1]
+		if to, ok := section[name]; ok {
+			if !links[to] {
+				t.Errorf("screen %s marks section %s, which has no rail link", name, to)
+			}
+		} else if !links[name] {
+			t.Errorf("screen %s has no rail link and no section", name)
+		}
+	}
+	if !links["commands"] {
+		t.Error("Commands is not in the rail")
+	}
+	if !strings.Contains(nav, `aria-controls="rail-menu"`) || !strings.Contains(nav, `id="rail-menu"`) || !strings.Contains(nav, `aria-expanded="false"`) {
+		t.Error("the rail lacks the phone's Menu button controlling #rail-menu")
+	}
+}
+
 // The sidebar's values (Ruling P11) agree across rail.js, the separator's ARIA range
 // and the stylesheet's first width.
 func TestRailMatchesTheSeparator(t *testing.T) {

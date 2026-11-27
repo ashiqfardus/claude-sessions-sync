@@ -13,11 +13,12 @@ const SVG_NS = 'http://www.w3.org/2000/svg'
 // router first imports it. Each has a <template id="t-<screen>"> in index.html.
 const SCREENS = ['overview', 'conversations', 'storage', 'delete', 'import', 'settings', 'commands']
 // Screens without a rail link of their own mark their section's link, as the mockups do.
-const SECTION = { delete: 'storage', import: 'overview', commands: 'settings' }
+const SECTION = { delete: 'storage', import: 'overview' }
 
 const token = document.querySelector('meta[name="cs-token"]').content
 const app = document.querySelector('.app')
 const main = document.getElementById('main')
+const strip = document.querySelector('.working') // across the content area while a job runs
 const nav = document.getElementById('rail')
 const dialogs = document.getElementById('dialogs')
 
@@ -147,23 +148,86 @@ function query(params) {
 
 const inflight = new Map()
 
+// get is api.get without the busy button: the rail's own polling uses it.
+function get(path, params) {
+  const url = path + query(params)
+  if (!inflight.has(url)) {
+    if (path === '/api/summary') summaryAt = Date.now()
+    inflight.set(url, call(url).then((v) => { if (path === '/api/summary') lastBackup(v); return v })
+      .finally(() => inflight.delete(url)))
+  }
+  return inflight.get(url)
+}
+
+// --- Busy buttons ------------------------------------------------------------------
+
+// Work a click starts shows on the button clicked: aria-busy, and panel.css's spinning
+// ring in it, until that work ends; then a check for DONE ms when an action in it
+// succeeded. A screen's request (api.get or api.run) within AFTER ms of the click, or of
+// the end of earlier work it started, is its work: so a reload after an action, or the
+// next job of a list, keeps the button busy too.
+// shortcut: work that starts later than AFTER shows only in the strip and the rail foot.
+const AFTER = 2000, DONE = 900
+let pressed = null // {el, at, ok, failed}: the button the last click reached, and how its work went
+const holds = new WeakMap() // how many pieces of work each busy button waits for
+const checks = new WeakMap() // each button's timer that takes its check away
+const jobs = new Map() // a started job's id -> {free, at}, until its end is seen
+document.addEventListener('click', (e) => {
+  const b = e.target instanceof Element && e.target.closest('button')
+  pressed = b ? { el: b, at: Date.now() } : null
+}, true) // capture: before any screen's handler starts the work
+
+// hold marks the pressed button busy and gives free(ok), which ends this piece of work:
+// ok is true for an action that succeeded, false for a failure, undefined for a read.
+function hold() {
+  const p = pressed, el = p && p.el
+  if (!el || !el.isConnected || Date.now() - p.at > AFTER) return () => {}
+  holds.set(el, (holds.get(el) || 0) + 1)
+  el.removeAttribute('data-done')
+  el.setAttribute('aria-busy', 'true')
+  let on = true
+  return (ok) => {
+    if (!on) return
+    on = false
+    if (ok === false) p.failed = true
+    else if (ok) p.ok = true
+    const n = holds.get(el) - 1
+    holds.set(el, n)
+    if (n) return
+    el.removeAttribute('aria-busy')
+    if (pressed && pressed.el === el) pressed.at = Date.now()
+    if (!p.ok || p.failed) return // a failure says the rest in its own words
+    el.setAttribute('data-done', '')
+    clearTimeout(checks.get(el))
+    checks.set(el, setTimeout(() => el.removeAttribute('data-done'), DONE))
+  }
+}
+
+// ended frees the button of a job whose end was seen; ok as for hold.
+function ended(id, ok) {
+  const j = jobs.get(id)
+  if (j) { jobs.delete(id); j.free(ok) }
+}
+
 export const api = {
   // get('/api/summary', {page: 2}) gives the decoded JSON. Two callers asking for the
   // same URL at once share one request; every summary also updates the rail foot.
   get(path, params) {
-    const url = path + query(params)
-    if (!inflight.has(url)) {
-      if (path === '/api/summary') summaryAt = Date.now()
-      inflight.set(url, call(url).then((v) => { if (path === '/api/summary') lastBackup(v); return v })
-        .finally(() => inflight.delete(url)))
-    }
-    return inflight.get(url)
+    const p = get(path, params), free = hold()
+    p.then(() => free(), () => free(false))
+    return p
   },
   // run('push', {dryRun: true}) starts an action and gives {id}; with {wait: true} it
-  // gives the job's final State. A running job answers 409 with a plain error.
+  // gives the job's final State. A running job answers 409 with a plain error. The
+  // button clicked stays busy until the job ends: follow's done, the wait settling, or
+  // poll finding it no longer running.
   run: (name, body, { wait } = {}) => {
+    const free = hold()
     if (wait) setTimeout(poll, 500) // the request is held until the job ends; show it in the rail meanwhile
-    return post('/api/run/' + encodeURIComponent(name) + (wait ? '?wait=1' : ''), body).finally(() => { poll() })
+    return post('/api/run/' + encodeURIComponent(name) + (wait ? '?wait=1' : ''), body)
+      .then((v) => { if (!wait && v && v.id) jobs.set(v.id, { free, at: Date.now() }); else free(!!(v && v.ok)); return v },
+        (e) => { free(false); throw e })
+      .finally(() => { poll() })
   },
 }
 
@@ -187,15 +251,16 @@ export function follow(id, { onLine, onProgress, signal } = {}) {
     es.addEventListener('done', (e) => {
       es.close() // otherwise it reconnects every few seconds (Ruling P20)
       end()
-      poll()
       const d = parse(e.data)
+      ended(id, !!(d && d.ok))
+      poll()
       if (d && typeof d === 'object') resolve({ id, ...d, lines })
       else reject(fail(GENERIC))
     })
     es.onerror = () => {
       // CLOSED: the server refused the stream (an unknown job). Otherwise the browser is
       // reconnecting; a heartbeat tells a dropped stream from a stopped panel.
-      if (es.readyState === EventSource.CLOSED) { end(); return reject(fail(GENERIC, 404)) }
+      if (es.readyState === EventSource.CLOSED) { end(); ended(id, false); return reject(fail(GENERIC, 404)) }
       beat().then((alive) => { if (!alive) { es.close(); end(); reject(fail(GENERIC, 0)) } })
     }
   })
@@ -237,6 +302,8 @@ const openDialogs = new Set() // each open dialog's cancel, so navigation can cl
 export function modal(title, cancelValue, build) {
   return new Promise((resolve) => {
     const opener = document.activeElement
+    // The button that opened it: the click that closes it hands the work it starts back to that button.
+    const origin = opener instanceof HTMLButtonElement ? opener : pressed && pressed.el
     const id = 'dlg-' + ++dialogN
     const box = h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': id }, h('h2', { id }, title))
     const scrim = h('div', { class: 'scrim' }, box)
@@ -252,6 +319,7 @@ export function modal(title, cancelValue, build) {
       closed = true
       openDialogs.delete(cancel)
       document.removeEventListener('keydown', onKey)
+      if (pressed && box.contains(pressed.el)) pressed = origin ? { el: origin, at: pressed.at } : null
       scrim.remove()
       if (!dead) (dialogs.lastElementChild || app).inert = false
       if (opener && opener.isConnected && opener.focus) opener.focus()
@@ -379,28 +447,44 @@ async function show(force, first) {
 
   const s = current = screens[name] || { mount() { throw fail(GENERIC) } }
   const unhide = isolate(h1)
-  const line = h('p', { class: 'muted', role: 'status' })
+  // Until the first view: a skeleton of rows, and "Loading…" for screen readers.
+  const said = h('span', { class: 'sr' })
+  const line = h('div', { class: 'skel-view stack gap-16', role: 'status' }, said,
+    h('span', { class: 'skel tall w-30', 'aria-hidden': 'true' }),
+    h('ul', { class: 'panel rows skel-rows', 'aria-hidden': 'true' }, [75, 60, 45, 60].map((w) => h('li', null, h('span', { class: 'skel w-' + w })))))
   let top = h1
   while (top.parentElement !== main) top = top.parentElement
   top.after(line)
-  setTimeout(() => { line.textContent = 'Loading…' }) // filled after it is in the page, so it is announced
+  rise([top])
+  setTimeout(() => { said.textContent = 'Loading…' }) // filled after it is in the page, so it is announced
   const retry = () => show(true)
   mounted = new AbortController()
+  const instead = (el) => { line.replaceWith(el); rise([el]) }
   try {
     const view = await s.mount(main, new URLSearchParams(q || ''), mounted.signal)
     if (n !== navN) return
-    if (view && view.problem) line.replaceWith(noArchive(view.problem, retry))
-    else { line.remove(); unhide() }
+    if (view && view.problem) instead(noArchive(view.problem, retry))
+    else { line.remove(); rise(unhide()) }
   } catch (e) {
     if (n !== navN) return
     if (!e || !e.plain) console.error(e)
-    line.replaceWith(h('div', { class: 'panel pad stack', role: 'alert' }, h('p', null, e && e.plain ? e.message : GENERIC),
+    instead(h('div', { class: 'panel pad stack', role: 'alert' }, h('p', null, e && e.plain ? e.message : GENERIC),
       h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: retry }, 'Try again'))))
   }
 }
 
+// rise brings a screen's blocks into view as it opens: a 6 px rise and a fade, each 40 ms
+// after the one before, the fifth and later together. Only on opening, never on updates.
+function rise(els) {
+  if (reducedMotion) return
+  els.filter((el) => el.getClientRects().length).forEach((el, i) => el.animate(
+    [{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }],
+    { duration: 200, easing: 'cubic-bezier(.23,1,.32,1)', delay: Math.min(i, 4) * 40, fill: 'backwards' }))
+}
+
 // isolate hides everything in main but the h1 (and Back links), through style so it
-// never fights a screen's own `hidden`; it gives the function that shows them again.
+// never fights a screen's own `hidden`; it gives the function that shows them again,
+// which gives them.
 function isolate(h1) {
   const hid = []
   for (let n = h1; n !== main; n = n.parentElement) {
@@ -408,8 +492,20 @@ function isolate(h1) {
       if (s !== n && !s.classList.contains('back') && s.style.display !== 'none') { s.style.display = 'none'; hid.push(s) }
     }
   }
-  return () => { for (const s of hid) s.style.display = '' }
+  return () => { for (const s of hid) s.style.display = ''; return hid }
 }
+
+// Tables marked .cards are one card per row on a phone (panel.css), each cell labelled by
+// its column: the header's words go into every cell's data-label, as rows come and go. A
+// header that is only for screen readers (an Actions column) labels nothing.
+new MutationObserver(() => {
+  for (const t of main.querySelectorAll('table.cards')) {
+    const names = [...t.querySelectorAll('thead th')].map((th) => (th.querySelector('.sr') ? '' : th.textContent.trim()))
+    for (const tr of t.querySelectorAll('tbody tr')) {
+      [...tr.cells].forEach((td, i) => { if (names[i] && td.colSpan === 1) td.dataset.label = names[i] })
+    }
+  }
+}).observe(main, { childList: true, subtree: true })
 
 // --- Heartbeat, stopped notice, rail foot ------------------------------------------
 
@@ -447,20 +543,23 @@ async function poll() {
   if (dead) return
   const asked = Date.now()
   let st
-  try { st = await api.get('/api/state') } catch { return }
+  try { st = await get('/api/state') } catch { return }
   if (!st) return
   nav.querySelector('[data-slot="machine"]').textContent = st.machine || ''
   const job = st.job && st.job.running ? st.job : null
   const foot = nav.querySelector('[data-slot="foot"]')
   nav.querySelector('[data-slot="dot"]').classList.toggle('live', !!job)
+  // A job that had started when this poll asked, and is not running now, has ended.
+  for (const [id, j] of jobs) if (j.at <= asked && (!job || job.id !== id)) ended(id)
+  strip.hidden = !job
   if (job) {
-    foot.textContent = 'Running: ' + job.label // a state, not the button's words
+    foot.textContent = strip.firstElementChild.textContent = 'Running: ' + job.label // a state, not the button's words
     pollTimer = setTimeout(poll, 5000)
   } else if (busy !== false) {
     // The first poll, or a job just ended: the last backup again, read afresh unless a
     // screen has asked for the summary since this poll began.
     if (footText) foot.textContent = footText
-    if (summaryAt < asked) api.get('/api/summary').catch(() => { /* the foot keeps its text */ })
+    if (summaryAt < asked) get('/api/summary').catch(() => { /* the foot keeps its text */ })
   }
   busy = !!job
 }

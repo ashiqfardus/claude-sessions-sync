@@ -1,15 +1,20 @@
 // The resizable sidebar (Main.dc.html; Ruling P11): the separator drags between MIN
-// and MAX, folds to icons below SNAP, and the width is remembered. Below 760 px the
-// stylesheet turns the rail into a top bar and hides the separator.
+// and MAX, folds to icons below SNAP, and the width is remembered. From 761 to 1023 px
+// it starts folded to icons. Up to 760 px the stylesheet turns the rail into a top bar,
+// hides the separator, and its Menu button opens the links and the rail foot beneath it.
 const RAIL = 200, MIN = 64, MAX = 320, SNAP = 140, STEP = 16
 const KEY = 'cs.railWidth'
 const clamp = (w) => Math.max(MIN, Math.min(MAX, Math.round(w)))
 const snap = (w) => (w < SNAP ? MIN : w)
 const phone = matchMedia('(max-width: 760px)') // the stylesheet's top-bar breakpoint
+const tablet = matchMedia('(min-width: 761px) and (max-width: 1023px)')
+
+function saved() {
+  try { return snap(clamp(Number(localStorage.getItem(KEY)) || RAIL)) } catch { return RAIL } // storage off: the default
+}
 
 export function rail(nav, grip) {
-  let w = RAIL, drag = null
-  try { w = snap(clamp(Number(localStorage.getItem(KEY)) || RAIL)) } catch { /* storage off: the default */ }
+  let w = tablet.matches ? MIN : saved(), drag = null
 
   const set = (n, save) => {
     w = n
@@ -20,7 +25,8 @@ export function rail(nav, grip) {
   }
   const toggle = () => set(w < SNAP ? RAIL : MIN, true)
   set(w)
-  phone.addEventListener('change', () => set(w))
+  phone.addEventListener('change', () => { open(false); set(w) })
+  tablet.addEventListener('change', () => set(tablet.matches ? MIN : saved()))
 
   grip.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return
@@ -55,4 +61,17 @@ export function rail(nav, grip) {
     }
   })
   grip.addEventListener('dblclick', toggle)
+
+  // The phone's menu: a disclosure. A link, Escape, or a click outside closes it.
+  const menu = nav.querySelector('[data-slot="menu"]')
+  function open(on) {
+    nav.classList.toggle('open', on)
+    menu.setAttribute('aria-expanded', String(on))
+  }
+  menu.addEventListener('click', () => open(!nav.classList.contains('open')))
+  nav.addEventListener('click', (e) => { if (e.target.closest('a')) open(false) })
+  document.addEventListener('click', (e) => { if (!nav.contains(e.target)) open(false) })
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && nav.classList.contains('open')) { open(false); menu.focus() }
+  })
 }

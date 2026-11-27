@@ -26,6 +26,9 @@ const FILED = /^[+=] .*: (\d+) filed, \d+ already present(?:, (\d+) updated)?$/
 // doctor's streamingAdvice names sync apps; the page says it without them (Ruling P25).
 const SLOW = '! Your archive folder downloads files only'
 const SLOW_TEXT = "Your archive folder downloads files only when they're opened, so this can take a while."
+// Said under a preview that has given no progress for SLOW_AFTER ms; doctor's line, when it comes, says it for sure.
+const SLOW_WAIT = "If your archive folder downloads files only when they're opened, this can take a few minutes."
+const SLOW_AFTER = 10000
 const LOOKING = 'Looking for your projects…'
 const STALE = 'Options changed: preview again.'
 const EMPTY = 'Nothing to bring in yet. Once your other computer backs up to this archive, its projects and folders show here.'
@@ -194,10 +197,19 @@ register('import', {
       if (kind !== 'other') remember(id + ' ' + kind)
       const bringing = kind === 'bring', of = bringing && previewed ? previewed.total : 0
       const counted = bringing && action !== 'pull' && of > 0
-      let done = 0, step = -1
+      let done = 0, step = -1, slow = 0
+      const unslow = () => { clearTimeout(slow); slow = 0 }
       if (kind === 'preview') {
         if (!shown.length) message(LOOKING)
         show(result, LOOKING)
+        // Beside the line, the bar with no end: a preview can't count what it has yet to find.
+        bar.hidden = false
+        bar.setAttribute('aria-label', LOOKING)
+        bar.removeAttribute('aria-valuenow')
+        bar.firstElementChild.style.width = '100%'
+        slow = setTimeout(() => {
+          for (const line of shown.length ? [result] : [result, rowsEl.querySelector('td')]) line.append(h('span', { class: 'block small' }, SLOW_WAIT))
+        }, SLOW_AFTER)
       }
       if (kind.startsWith('restore')) show(restoreResult, kind === 'restore' ? 'Filing them here…' : 'Checking the files…')
       // The bar and its line follow every project; the live region hears quarters only.
@@ -213,26 +225,36 @@ register('import', {
       }
       if (bringing) {
         bringBtn.textContent = 'Bringing in'
+        bar.setAttribute('aria-label', 'Bringing in work')
         progress()
       }
       const onLine = (line) => {
-        if (kind === 'preview' && line.startsWith(SLOW)) show(result, SLOW_TEXT)
+        if (kind === 'preview' && line.startsWith(SLOW)) { unslow(); show(result, SLOW_TEXT) }
         const m = counted && FILED.exec(line)
         if (m) { done += Number(m[1]) + Number(m[2] || 0); progress() }
       }
-      const onProgress = (text) => result.replaceChildren(LOOKING + ' ' + text)
+      // Progress shows in the line and, while it has no rows, the table: not announced, only
+      // seen. A count in it ("reading work folders: 40/200") fills the bar; otherwise it has no end.
+      const onProgress = (text) => {
+        unslow()
+        result.replaceChildren(LOOKING + ' ' + text)
+        if (!shown.length) message(LOOKING + ' ' + text)
+        const m = /(\d+)\s*\/\s*(\d+)/.exec(text), pct = m && Number(m[2]) ? Math.min(100, Math.round((Number(m[1]) / Number(m[2])) * 100)) : null
+        bar.firstElementChild.style.width = (pct == null ? 100 : pct) + '%'
+        if (pct == null) bar.removeAttribute('aria-valuenow')
+        else bar.setAttribute('aria-valuenow', pct)
+      }
       let st
       try {
         st = await follow(id, { signal, onLine, onProgress: kind === 'preview' ? onProgress : null })
       } catch (e) {
         st = { ok: false, error: plain(e) }
       }
+      unslow()
       if (!st) return // the screen has gone; the job goes on, and the rail shows it
       remember('')
-      if (bringing) {
-        bringBtn.textContent = 'Bring in'
-        bar.hidden = true
-      }
+      if (bringing) bringBtn.textContent = 'Bring in'
+      bar.hidden = true
       if (kind === 'preview') previewed = null // set again below when this one succeeded
       setBusy(false, clicked)
       if (kind === 'other') return begin()

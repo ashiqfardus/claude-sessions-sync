@@ -1,4 +1,4 @@
-:root{--ground:#EDF0EE;--rail:#E2E7E4;--surface:#FFFFFF;--surface-2:#F6F8F7;--ink:#16201C;--muted:#52605B;--line:#D9DFDC;--line-soft:#E8ECEA;--line-strong:#C3CCC8;--accent:#0E6650;--accent-ink:#0A4D3C;--accent-soft:#DCEDE5;--amber:#8A5200;--amber-ink:#5C3A00;--amber-soft:#FBF1DF;--red:#A3241B;--red-ink:#5E1712;--red-soft:#FBEAE7;--ease:cubic-bezier(.2,.8,.2,1)}
+:root{--ground:#EDF0EE;--rail:#E2E7E4;--surface:#FFFFFF;--surface-2:#F6F8F7;--ink:#16201C;--muted:#52605B;--line:#D9DFDC;--line-soft:#E8ECEA;--line-strong:#C3CCC8;--accent:#0E6650;--accent-ink:#0A4D3C;--accent-soft:#DCEDE5;--amber:#8A5200;--amber-ink:#5C3A00;--amber-soft:#FBF1DF;--red:#A3241B;--red-ink:#5E1712;--red-soft:#FBEAE7;--ease:cubic-bezier(.2,.8,.2,1);--ease-out:cubic-bezier(.23,1,.32,1);--ease-in-out:cubic-bezier(.77,0,.175,1);--t-press:120ms;--t-fast:180ms;--t-base:240ms}
 *,*::before,*::after{box-sizing:border-box}
 body{margin:0;background:var(--ground);color:var(--ink);font:13px/1.5 'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}
 a{color:var(--accent);text-underline-offset:2px}a:hover{color:var(--accent-ink)}
@@ -19,8 +19,9 @@ code,.mono{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px}
 .brand-name{font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:500;white-space:nowrap}
 .brand-sub{font-size:11.5px;color:var(--muted);white-space:nowrap}
 .nav{display:flex;flex-direction:column;gap:2px}
-.nav a{display:flex;align-items:center;gap:10px;min-height:36px;padding:0 10px;border-radius:8px;color:var(--ink);text-decoration:none;white-space:nowrap;transition:background .15s,color .15s}
-.nav a:hover{background:rgba(22,32,28,.06)}
+.nav a{display:flex;align-items:center;gap:10px;min-height:36px;padding:0 10px;border-radius:8px;color:var(--ink);text-decoration:none;white-space:nowrap;transition:background .15s,color .15s,transform var(--t-press) var(--ease-out)}
+@media (hover:hover) and (pointer:fine){.nav a:hover{background:rgba(22,32,28,.06)}}
+.nav a:active{transform:scale(.97)}
 .nav a[aria-current=page]{background:var(--surface);color:var(--accent-ink);font-weight:600;box-shadow:inset 0 0 0 1px var(--line)}
 .nav svg{flex:none}
 .rail-foot{margin-top:auto;display:flex;align-items:center;gap:8px;padding:0 8px;font-size:12px;color:var(--muted);white-space:nowrap}
@@ -32,7 +33,8 @@ code,.mono{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px}
 .grip span{width:2px;background:var(--line);transition:background .15s}
 .grip:hover span,.grip:focus-visible span,.grip.on span{background:var(--accent)}
 
-.main{flex:1 1 0;min-width:0;padding:28px 36px 56px;display:flex;flex-direction:column;gap:28px;container:main/inline-size} /* no cap: every screen takes the full width */
+.content{flex:1 1 0;min-width:0} /* main and the working strip above it */
+.main{padding:28px 36px 56px;display:flex;flex-direction:column;gap:28px;container:main/inline-size} /* no cap: every screen takes the full width */
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:24px 28px;align-items:start}
 .cols>*{min-width:0}
 .pager{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
@@ -41,7 +43,7 @@ code,.mono{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px}
 .pager .gap{min-width:24px;text-align:center;color:var(--muted)}
 .head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
 .back{font-weight:500;font-size:12.5px;text-decoration:none}
-h1{margin:0;font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.01em}
+h1{margin:0;font-size:clamp(19px,2px + 4.5vw,22px);line-height:1.25;font-weight:600;letter-spacing:-.01em}
 h1[tabindex="-1"]:focus,h2[tabindex="-1"]:focus{outline:none} /* the router (and a screen, after its control is gone) moves focus here for screen readers; a heading is not a control, so no ring */
 h2{margin:0;font-size:15px;line-height:1.35;font-weight:600}
 h3{margin:0;font-size:13.5px;font-weight:600}
@@ -60,21 +62,18 @@ p{margin:0}
 .rows>li:first-child{border-top:0}
 .grow{flex:1 1 280px;min-width:0}
 
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:34px;padding:0 13px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface);font-weight:500;text-decoration:none;color:var(--ink);cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s,color .15s,transform .1s}
-.btn:hover{background:var(--surface-2);color:var(--ink)}
-.btn:active{transform:scale(.98)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:34px;padding:0 13px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface);font-weight:500;text-decoration:none;color:var(--ink);cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s,color .15s,transform var(--t-press) var(--ease-out);--busy:var(--accent)}
+@media (hover:hover) and (pointer:fine){.btn:hover{background:var(--surface-2);color:var(--ink)}}
+.btn:active{transform:scale(.97)}
 .btn:disabled{cursor:not-allowed;opacity:.55;transform:none}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn.primary:hover{background:var(--accent-ink);border-color:var(--accent-ink)}
+@media (hover:hover) and (pointer:fine){.btn.primary:hover{background:var(--accent-ink);border-color:var(--accent-ink)}.btn.dark:hover{background:#2A3632}.btn.danger:hover{background:#861C15}.btn.on-dark:hover{background:rgba(255,255,255,.08)}tbody tr:hover{background:var(--surface-2)}}
 .btn.dark{background:var(--ink);border-color:var(--ink);color:#fff}
-.btn.dark:hover{background:#2A3632}
 .btn.danger{background:var(--red);border-color:var(--red);color:#fff}
-.btn.danger:hover{background:#861C15}
 .btn.quiet-danger{color:var(--red);border-color:#E9C6C1}
 .btn.ghost{border-color:transparent;background:transparent}
 .btn.sm{min-height:28px;padding:0 10px;font-size:12px}
 .btn.on-dark{background:transparent;border-color:#5E7A71;color:#EEF2F0}
-.btn.on-dark:hover{background:rgba(255,255,255,.08)}
 
 .badge{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;font-size:11.5px;font-weight:500;background:var(--line-soft);white-space:nowrap}
 .badge.green{background:var(--accent-soft);color:var(--accent-ink)}
@@ -89,7 +88,6 @@ table{width:100%;border-collapse:collapse}
 th{text-align:left;font-weight:500;font-size:12px;color:var(--muted);padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
 td{padding:10px 12px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
 tbody tr{transition:background .12s}
-tbody tr:hover{background:var(--surface-2)}
 tbody tr.sel{background:#EAF4EF}
 tbody tr:last-child td{border-bottom:0}
 th:first-child,td:first-child{padding-left:18px}th:last-child,td:last-child{padding-right:18px}
@@ -135,13 +133,13 @@ details[open]>summary svg{transform:rotate(90deg)}
 .toast{position:fixed;left:50%;bottom:24px;z-index:60;display:flex;align-items:center;gap:14px;padding:10px 12px 10px 16px;border-radius:10px;background:var(--ink);color:#EEF2F0;box-shadow:0 12px 32px rgba(22,32,28,.28);animation:toast .28s var(--ease) both;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 32px)}
 .toast a,.toast button{color:#9FD3C0}
 .scrim{position:fixed;inset:0;z-index:50;background:rgba(22,32,28,.42);display:grid;place-items:center;padding:16px;animation:fade .18s ease both}
-.dialog{width:min(440px,100%);background:var(--surface);border-radius:14px;padding:22px;display:flex;flex-direction:column;gap:14px;box-shadow:0 24px 60px rgba(22,32,28,.3);animation:pop .2s var(--ease) both}
+.dialog{width:min(440px,100%);background:var(--surface);border-radius:14px;padding:22px;display:flex;flex-direction:column;gap:14px;box-shadow:0 24px 60px rgba(22,32,28,.3);animation:pop 200ms var(--ease-out) both}
 
 @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @keyframes grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 @keyframes stripes{to{background-position:17px 0}}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(14,102,80,.45)}50%{box-shadow:0 0 0 5px rgba(14,102,80,0)}}
-@keyframes pop{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes pop{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
 @keyframes slide{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
 @keyframes toast{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
 @keyframes fade{from{opacity:0}to{opacity:1}}
@@ -149,13 +147,19 @@ details[open]>summary svg{transform:rotate(90deg)}
 
 @media (max-width:760px){
   .app{flex-direction:column}
-  .rail{width:auto!important;flex-direction:row;align-items:center;gap:12px;padding:8px 10px;overflow-x:auto}
+  .rail{width:auto!important;position:relative;flex-direction:row;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px 8px 14px;overflow:visible}
   .rail .label{display:inline!important}
-  .rail .brand-text,.rail-foot,.grip{display:none!important}
-  .nav{flex-direction:row;flex-wrap:wrap;min-width:0} /* wraps beside the mark, so every link stays in view */
+  .rail .brand-sub,.grip{display:none!important}
+  .menu-btn{display:inline-flex}
+  /* The phone's menu: every screen, Commands too, and what runs, under the top bar. */
+  .rail-menu{display:none}
+  .rail.open .rail-menu{display:flex;flex-direction:column;gap:12px;position:absolute;top:100%;left:0;right:0;z-index:40;padding:6px 10px 14px;background:var(--rail);border-bottom:1px solid var(--line);box-shadow:0 16px 32px rgba(22,32,28,.14);animation:menu-in var(--t-fast) var(--ease-out) both}
+  .rail .rail-foot{padding:4px 10px 0}
   .main{padding:20px 16px 40px;gap:22px}
+  body{font-size:15px}
+  .input,.input.mono{font-size:16px} /* under 16px, iOS zooms the page on focus */
 }
-@media (pointer:coarse){.btn,.input{min-height:44px}.nav a{min-height:44px}}
+@media (pointer:coarse){.btn,.input,.menu-btn{min-height:44px}.nav a{min-height:44px}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 
 /* Fonts: IBM Plex, IBM's own Latin1 subsets, under the SIL OFL 1.1 (fonts/OFL.txt; sources in fonts/SOURCE.txt) */
@@ -348,3 +352,69 @@ p.status{white-space:normal}
 .folder-browser{display:flex;flex-direction:column;gap:2px;margin:0;padding:4px;list-style:none;max-height:240px;overflow-y:auto;border:1px solid var(--line);border-radius:10px}
 .folder-browser .btn{width:100%;justify-content:flex-start;border-color:transparent;background:transparent;white-space:normal;text-align:left;overflow-wrap:anywhere;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px}
 .folder-browser .btn:hover{background:var(--surface-2)}
+
+/* The phone's Menu button (shown by the 760px query above). */
+.menu-btn{align-items:center;gap:8px;min-height:36px;padding:0 12px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);font-weight:500;cursor:pointer;transition:transform var(--t-press) var(--ease-out)}
+.menu-btn:active{transform:scale(.97)}
+.menu-btn[aria-expanded=true]{background:var(--ink);border-color:var(--ink);color:#fff}
+@media (min-width:761px){.menu-btn{display:none}.rail-menu{display:contents}} /* the menu's contents are the rail's own column */
+@keyframes menu-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+
+/* Work in progress.
+   A button whose work runs: app.js sets aria-busy until the job ends. It keeps its width; its label dims
+   behind a 14px ring that spins in --busy, and on success the ring becomes a check for 900ms (data-done).
+   Both appear after 100ms, so quick work does not flicker. */
+.btn[aria-busy=true]{cursor:progress}
+.btn[aria-busy=true],.btn[data-done]{position:relative;opacity:1;-webkit-text-fill-color:transparent;text-shadow:0 0 1.5px color-mix(in srgb,currentColor 35%,transparent);transition:-webkit-text-fill-color var(--t-fast) var(--ease-out) 100ms,text-shadow var(--t-fast) var(--ease-out) 100ms,transform var(--t-press) var(--ease-out)}
+.btn[aria-busy=true]>svg,.btn[data-done]>svg{opacity:.4}
+.btn[aria-busy=true]::after{content:'';position:absolute;top:50%;left:50%;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid var(--busy);border-right-color:transparent;animation:fade var(--t-fast) var(--ease-out) 100ms both,spin 700ms linear infinite}
+.btn[data-done]:not([aria-busy=true])::after{content:'';position:absolute;top:50%;left:50%;width:11px;height:6px;margin:-5px 0 0 -5.5px;border:solid var(--busy);border-width:0 0 2px 2px;transform:rotate(-45deg);animation:check-in var(--t-fast) var(--ease-out) both}
+.btn.primary,.btn.dark,.btn.danger{--busy:#fff}
+.btn.on-dark{--busy:#9FD3C0}
+@keyframes check-in{from{opacity:0;transform:rotate(-45deg) scale(.6)}to{opacity:1;transform:rotate(-45deg)}}
+
+/* While any job runs: a thin bar across the top of the content area, however far it is scrolled. */
+.working{position:sticky;top:0;z-index:20;height:3px;margin-bottom:-3px;overflow:hidden;background:rgba(14,102,80,.14);animation:fade var(--t-base) var(--ease-out) both}
+.working::before{content:'';position:absolute;top:0;bottom:0;left:0;width:40%;border-radius:999px;background:var(--accent);animation:sweep 1.4s linear infinite}
+.working>span{display:none}
+@keyframes sweep{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
+
+/* Skeletons: the shape of what loads, with a light sweeping across. */
+.skel{display:block;position:relative;overflow:hidden;height:12px;border-radius:6px;background:var(--line-soft)}
+.skel::after{content:'';position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.7),transparent);animation:sweep-skel 1.2s linear infinite}
+.skel.tall{height:20px}
+.skel.w-30{width:30%}.skel.w-45{width:45%}.skel.w-60{width:60%}.skel.w-75{width:75%}
+.skel-view{animation:fade var(--t-fast) var(--ease-out) 150ms both} /* a quick load never shows it */
+.skel-rows>li{padding:16px 18px}
+@keyframes sweep-skel{to{transform:translateX(100%)}}
+
+/* Tables marked .cards become one card per row on a phone: each cell labelled by its column
+   (app.js copies the header into data-label), the first cell as the title, buttons full width. */
+@media (max-width:760px){
+  table.cards{min-width:0}
+  table.cards thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  table.cards,table.cards tbody,table.cards tr{display:block}
+  table.cards tr{padding:12px 16px;border-top:1px solid var(--line-soft)}
+  table.cards tbody tr:first-child{border-top:0}
+  table.cards td{display:grid;grid-template-columns:minmax(84px,32%) minmax(0,1fr);gap:2px 12px;align-items:baseline;padding:3px 0;border:0;text-align:left;white-space:normal;overflow-wrap:anywhere}
+  table.cards td[data-label]::before{content:attr(data-label);color:var(--muted);font-size:12px}
+  table.cards td:not([data-label]),table.cards td:first-child{display:block}
+  table.cards td:first-child{padding-bottom:6px;font-weight:500}
+  table.cards td:first-child::before{display:none}
+  table.cards td:has(>.btn){display:flex;gap:8px;padding-top:8px}
+  table.cards td:has(>.btn)::before{display:none}
+  table.cards td>.btn{flex:1 1 0}
+}
+
+/* Reduced motion: nothing moves or loops. The busy button says Working… instead of spinning, the bar is a
+   still band that says what runs (accent-ink on accent-soft is 8:1), and skeletons hold still. */
+@media (prefers-reduced-motion:reduce){
+  .btn[aria-busy=true]{text-shadow:none}
+  .btn[aria-busy=true]::after{content:'Working…';inset:0;width:auto;height:auto;margin:0;border:0;border-radius:0;display:grid;place-items:center;font-size:11.5px;white-space:nowrap;-webkit-text-fill-color:currentColor;color:inherit}
+  .btn[data-done]{text-shadow:none}
+  .working{height:20px;margin-bottom:-20px;padding:0 36px;background:var(--accent-soft);border-bottom:3px solid var(--accent);color:var(--accent-ink);font-size:11.5px;line-height:17px;white-space:nowrap;text-overflow:ellipsis}
+  .working::before{display:none}
+  .working>span{display:inline}
+  .skel::after{display:none}
+}
+@media (prefers-reduced-motion:reduce) and (max-width:760px){.working{padding:0 16px}}

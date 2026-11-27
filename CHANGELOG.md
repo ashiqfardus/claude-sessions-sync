@@ -5,6 +5,23 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **The panel shows that it is working.** A button you click keeps its place and spins
+  until the work it started ends, then shows a check for a moment when it succeeded. While
+  any job runs, a thin bar moves across the top of the page, however far you have
+  scrolled. With reduced motion turned on, the button says "Working…" and the bar is a
+  still line that says what is running.
+- **Bring in no longer looks stuck while it looks for your projects.** A bar runs beside
+  "Looking for your projects…", a count fills it as the search reports one, and after 10
+  seconds with no news it says that an archive folder that downloads files only when
+  they're opened can take a few minutes.
+- **Commands is in the menu.** The page of every command and where it is in the panel has
+  its own link in the sidebar, after Settings.
+- **The panel fits phones and tablets.** On a phone the sidebar is a top bar with a Menu
+  button that opens every page and what is running. On a tablet the sidebar starts folded
+  to icons. Text and fields are larger on a phone, and a page that is still loading shows
+  the shape of what is coming instead of a bare "Loading…".
+
 ## [0.7.5] - 2026-11-27
 
 ### Fixed
