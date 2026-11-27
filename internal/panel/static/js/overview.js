@@ -163,18 +163,30 @@ register('overview', {
       if (me) {
         me.label = whenCell(me.cell, me.c, progress)
         me.dot.classList.toggle('live', progress != null)
-        return
+        return mirror()
       }
       const list = slot('computers'), none = list.querySelector('.none-yet')
       if (none) none.hidden = progress != null
       if (progress == null) { if (firstRun) firstRun.row.remove(); firstRun = null; return }
-      if (firstRun) { firstRun.label.textContent = progress || 'Backing up'; return }
+      if (firstRun) { firstRun.label.textContent = progress || 'Backing up'; return mirror() }
       const label = h('span', { class: 'muted block' }, progress || 'Backing up')
       firstRun = { label, row: h('li', null,
         h('span', { class: 'grow computer-name' }, h('strong', null, h('span', { class: 'dot live', 'aria-hidden': 'true' }), 'This computer'),
           h('span', { class: 'muted small' }, 'Its first backup is running')),
         h('span', { class: 'small num computer-when' }, label, h('span', { class: 'progress computer-progress', 'aria-hidden': 'true' }, h('span')))) }
       list.prepend(firstRun.row)
+      mirror()
+    }
+    // mirror fills the row's bar as the bar above the cards is filled: by a count when
+    // there is one, otherwise both stripe.
+    function mirror() {
+      const bar = slot('run-bar'), n = bar.getAttribute('aria-valuenow')
+      for (const p of slot('computers').querySelectorAll('.computer-progress')) {
+        if (n == null) { p.removeAttribute('aria-valuenow'); p.style.removeProperty('--p') } else {
+          p.setAttribute('aria-valuenow', n)
+          p.style.setProperty('--p', bar.style.getPropertyValue('--p'))
+        }
+      }
     }
     // say speaks in the screen's one live region: the start, each new stage, the end.
     const say = (text) => { slot('say').textContent = text }
@@ -341,8 +353,7 @@ register('overview', {
         const p = step(text, doing)
         if (kind !== 'backup') return
         progress = p
-        if (me) me.label.textContent = p
-        else showRun()
+        if (me) { me.label.textContent = p; mirror() } else showRun()
       }
       let st
       try {

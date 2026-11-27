@@ -83,7 +83,9 @@ register('storage', {
         : plural(count, 'conversation') + (here === count ? ', still on this computer' : here ? `, ${number(here)} still on this computer` : ''))
       slot('restore-link').hidden = !count
 
-      const top = Math.max(1, ...v.projects.map((p) => p.bytes))
+      // Bars compare the named projects; the row of all the others (key "") gets none, or
+      // its total would dwarf them.
+      const top = Math.max(1, ...v.projects.filter((p) => p.key).map((p) => p.bytes))
       slot('projects').closest('.table-box').hidden = !v.projects.length
       slot('no-projects').hidden = !!v.projects.length
       slot('projects').replaceChildren(...v.projects.map((p, i) => {
@@ -93,7 +95,7 @@ register('storage', {
         return h('tr', null,
           h('td', null, p.key ? h('a', { href: '#/conversations?project=' + encodeURIComponent(p.key) }, p.name) : p.name),
           h('td', { class: 'r' }, number(p.conversations)),
-          h('td', null, h('span', { class: 'row space-cell' }, h('span', { class: 'bar space-bar' }, fill), h('span', { class: 'space-size' }, sized(p.bytes)))))
+          h('td', null, h('span', { class: 'row space-cell' }, p.key ? h('span', { class: 'bar space-bar' }, fill) : h('span', { class: 'bar space-bar no-bar', 'aria-hidden': 'true' }), h('span', { class: 'space-size' }, sized(p.bytes)))))
       }))
     }
 

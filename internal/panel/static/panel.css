@@ -400,6 +400,7 @@ button.health-sum:focus-visible{outline-offset:-3px} /* inside the card, whose c
 .space-cell{gap:10px;flex-wrap:nowrap}
 .space-bar{flex:1 1 auto;height:6px}
 .space-bar>span{background:var(--accent)}
+.space-bar.no-bar{visibility:hidden} /* the row of all the other projects: its total would dwarf the bars */
 .space-size{flex:0 0 52px;text-align:right}
 /* -- Storage, 0.7.6 (lane N): each way to free space has its icon and, when the page knows it, what it frees. */
 .rows>.way{display:grid;grid-template-columns:36px minmax(0,1fr);gap:16px;align-items:start}
@@ -546,7 +547,7 @@ button.health-sum:focus-visible{outline-offset:-3px} /* inside the card, whose c
    behind a 14px ring that spins in --busy, and on success the ring becomes a check for 900ms (data-done).
    Both appear after 100ms, so quick work does not flicker. */
 .btn[aria-busy=true]{cursor:progress}
-.btn[aria-busy=true],.btn[data-done]{position:relative;opacity:1;-webkit-text-fill-color:transparent;text-shadow:0 0 1.5px color-mix(in srgb,currentColor 35%,transparent);transition:-webkit-text-fill-color var(--t-fast) var(--ease-out) 100ms,text-shadow var(--t-fast) var(--ease-out) 100ms,transform var(--t-press) var(--ease-out)}
+.btn[aria-busy=true],.btn[data-done]{position:relative;opacity:1;-webkit-text-fill-color:transparent;text-shadow:none;transition:-webkit-text-fill-color var(--t-fast) var(--ease-out) 100ms,text-shadow var(--t-fast) var(--ease-out) 100ms,transform var(--t-press) var(--ease-out)}
 .btn[aria-busy=true]>svg,.btn[data-done]>svg{opacity:.4}
 .btn[aria-busy=true]::after{content:'';position:absolute;top:50%;left:50%;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid var(--busy);border-right-color:transparent;animation:fade var(--t-fast) var(--ease-out) 100ms both,spin 700ms linear infinite}
 .btn[data-done]:not([aria-busy=true])::after{content:'';position:absolute;top:50%;left:50%;width:11px;height:6px;margin:-5px 0 0 -5.5px;border:solid var(--busy);border-width:0 0 2px 2px;transform:rotate(-45deg);animation:check-in var(--t-fast) var(--ease-out) both}
