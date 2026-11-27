@@ -1050,7 +1050,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 	}
 	// The packs the loop below reads, listed first for the count, by the checks it makes
 	// before it reads a folder's.
-	packed := 0
+	var packed []string
 	for _, name := range names {
 		s := shards[name]
 		for _, wf := range s.WorkFolders {
@@ -1059,11 +1059,20 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 				continue
 			}
 			if target, err := work.Place(work.Source{Machine: s.Machine, Home: s.Home, Path: wf.Path, Origin: wf.Origin}, l); err == nil && !excludedHere(target) {
-				packed += len(packsIn(dir))
+				packed = append(packed, packsIn(dir)...)
 			}
 		}
 	}
-	hb.reading("work folders", packed)
+	hb.reading("work folders", len(packed))
+	// Each pack's index is read below, one by one: on a drive that downloads each file as
+	// it is opened, they download side by side first. A dry run writes nothing, so that
+	// list is exactly what it reads, and every pack of it is warmed at once. A real run
+	// warms a folder's as it reaches it: where a later folder goes may depend on what an
+	// earlier one wrote.
+	waitAll := func() {}
+	if dryRun {
+		waitAll = warm(packed, func(p string) { _, _ = work.ReadPackIndex(p) })
+	}
 	for _, name := range names {
 		s := shards[name]
 		if !other(s) {
@@ -1244,9 +1253,10 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			// files do, from a private temp folder.
 			lost := map[string]bool{}
 			packs := packsIn(dir)
-			// Each pack's index is read below, one by one: on a drive that downloads each file
-			// as it is opened, they download side by side first.
-			wait := warm(packs, func(p string) { _, _ = work.ReadPackIndex(p) })
+			wait := func() {} // a dry run's are warmed above
+			if !dryRun {
+				wait = warm(packs, func(p string) { _, _ = work.ReadPackIndex(p) })
+			}
 			for _, pack := range packs {
 				hb.step()
 				u, _ := packOf(filepath.Base(pack))
@@ -1342,6 +1352,7 @@ func restoreWork(root, dest string, shards map[string]archive.Shard, cfg archive
 			s.Machine, where, n.Filed, would("filed"), n.Kept, n.Beside, n.Refused, n.Excluded, size))
 		res.Notes = append(res.Notes, notes...)
 	}
+	waitAll()
 	if !dryRun {
 		if err := held.Save(heldWorkPath(root)); err != nil {
 			res.Notes = append(res.Notes, fmt.Sprintf("  x restored work record: %v", err))

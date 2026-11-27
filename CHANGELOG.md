@@ -18,7 +18,8 @@ All notable changes to this project are documented here. This project follows
 - **Bring in sat on "Looking for your projects…" for minutes.** On an archive folder
   that downloads each file only when it is opened, the preview read the other
   computers' work folders one file at a time, each a download, and said nothing while
-  it did. It now downloads up to eight at once, and the page says how far it has got,
+  it did. It now downloads up to eight at once, however few each work folder holds,
+  and the page says how far it has got,
   as in `reading work folders: 40/200`, then `reading conversations: 120/3657`.
 - **Bring in read compressed conversations one at a time.** Before filing anything, a
   real Bring in reads the index of each compressed conversation it files; on a folder

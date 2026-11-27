@@ -25,6 +25,13 @@ import (
 // unit, which LAP-2 excludes. An import on LAP-2 reads notes' packs and never old's.
 func packedArchive(t *testing.T, n int) (claudeDir, dest, search string) {
 	t.Helper()
+	return packedArchiveIn(t, []string{"notes"}, n)
+}
+
+// packedArchiveIn is packedArchive with the work folders named in folders, each packed
+// in n units, in place of notes.
+func packedArchiveIn(t *testing.T, folders []string, n int) (claudeDir, dest, search string) {
+	t.Helper()
 	t.Setenv("CLAUDE_SESSIONS_MACHINE", "LAP-2")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -57,13 +64,17 @@ func packedArchive(t *testing.T, n int) (claudeDir, dest, search string) {
 			t.Fatal(err)
 		}
 	}
-	for i := 0; i < n; i++ {
-		pack(homeA+"/notes", fmt.Sprintf("u%02d", i))
+	var wfs []archive.WorkFolder
+	for _, f := range folders {
+		for i := 0; i < n; i++ {
+			pack(homeA+"/"+f, fmt.Sprintf("u%02d", i))
+		}
+		wfs = append(wfs, archive.WorkFolder{Path: homeA + "/" + f})
 	}
 	pack(homeA+"/old", "u00")
 	shard, _ := json.Marshal(archive.Shard{SchemaVersion: 1, Machine: "LAP-1", Home: homeA,
 		Projects:    map[string]archive.Project{claude.Slug(proj): {Path: proj, Leaf: "web-app"}},
-		WorkFolders: []archive.WorkFolder{{Path: homeA + "/notes"}, {Path: homeA + "/old"}}})
+		WorkFolders: append(wfs, archive.WorkFolder{Path: homeA + "/old"})})
 	writeFile(t, filepath.Join(archive.ManifestDir(dest), "LAP-1.json"), string(shard))
 	if err := archive.SaveConfig(claudeDir, archive.Config{Destination: dest, WorkExclude: []string{filepath.Join(home, "old")}}); err != nil {
 		t.Fatal(err)
@@ -283,5 +294,47 @@ func TestImportWarmsEachZipIndexItReads(t *testing.T) {
 	hook(t, &warm, func([]string, func(string)) func() { return func() {} }) // as before warming
 	if before := run(); got != before {
 		t.Errorf("warming changed what was filed:\n%s\nwithout it:\n%s", got, before)
+	}
+}
+
+// A dry run whose packs sit one to a work folder still reads them eight at once: it
+// warms every pack it reads before the first folder, not a folder's at a time. Each
+// pack it reads is warmed once, and the output is as with no warming.
+func TestImportDryRunWarmsPacksAcrossFolders(t *testing.T) {
+	var folders []string
+	for i := 0; i < 12; i++ {
+		folders = append(folders, fmt.Sprintf("n%02d", i))
+	}
+	claudeDir, dest, search := packedArchiveIn(t, folders, 1)
+	var mu sync.Mutex
+	var read []string
+	realExtract := extractPack
+	hook(t, &extractPack, func(p string, mk func() (string, error), skip func(string, int64, time.Time) bool) ([]work.PackFile, []string, error) {
+		mu.Lock()
+		read = append(read, p)
+		mu.Unlock()
+		return realExtract(p, mk, skip)
+	})
+	run := func() string {
+		var out bytes.Buffer
+		if _, err := runImport(streams{&out, io.Discard}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1, DryRun: true}); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	warmed, most := slowWarm(t, 2*time.Second)
+	got := run()
+	if most() != 8 {
+		t.Errorf("%d pack(s) read at once at most, want 8", most())
+	}
+	w := warmed()
+	sort.Strings(w)
+	sort.Strings(read)
+	if len(read) != len(folders) || strings.Join(w, "\n") != strings.Join(read, "\n") {
+		t.Errorf("warmed:\n%s\nwant each pack read, once:\n%s", strings.Join(w, "\n"), strings.Join(read, "\n"))
+	}
+	hook(t, &warm, func([]string, func(string)) func() { return func() {} })
+	if before := run(); got != before {
+		t.Errorf("warming changed the output:\n%s\nwithout it:\n%s", got, before)
 	}
 }
