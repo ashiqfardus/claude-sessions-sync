@@ -163,6 +163,10 @@ func TestKeyWorksOnce(t *testing.T) {
 	if w.Code != http.StatusOK || w.Header().Get("Location") != "" || !strings.Contains(w.Body.String(), refreshToShell) {
 		t.Fatalf("first use: %d %q, want 200 with a page refreshing to /", w.Code, w.Body.String())
 	}
+	// The page names its icon: otherwise the browser asks for /favicon.ico, a 404 in the console.
+	if !strings.Contains(w.Body.String(), `<link rel="icon" href="/static/favicon.svg">`) {
+		t.Errorf("the key page names no icon: %q", w.Body.String())
+	}
 	if strings.Contains(strings.ToLower(w.Body.String()), "<script") {
 		t.Errorf("the key page has a script: %q", w.Body.String())
 	}

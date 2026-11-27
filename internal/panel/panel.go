@@ -165,7 +165,7 @@ func (s *Server) useKey(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, keyPage)
 }
 
-const keyPage = "<!doctype html>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"refresh\" content=\"0;url=/\">\n<title>claude-sessions panel</title>\n<p><a href=\"/\">Open the claude-sessions panel</a></p>\n"
+const keyPage = "<!doctype html>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"refresh\" content=\"0;url=/\">\n<title>claude-sessions panel</title>\n<link rel=\"icon\" href=\"/static/favicon.svg\">\n<p><a href=\"/\">Open the claude-sessions panel</a></p>\n"
 
 // page is the shell, with the per-run token for the page's POSTs.
 func (s *Server) page(w http.ResponseWriter, r *http.Request) {
