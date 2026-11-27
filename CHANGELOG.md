@@ -19,6 +19,9 @@ All notable changes to this project are documented here. This project follows
 - `import` and `pull` write how far they have got on stderr when it is not a terminal,
   as `clean` does; `--json` output is unchanged. A terminal still gets its line every
   12 seconds.
+- `clean --yes` names each copy it removes in `session-sync.log`, with what it freed,
+  and each it keeps because the last check failed. From the panel too, which logged
+  only a total.
 
 ## [0.7.5] - 2026-11-27
 
