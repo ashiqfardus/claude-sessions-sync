@@ -220,35 +220,55 @@ func slowWarm(t *testing.T, hold time.Duration) (warmed func() []string, most fu
 		func() int { mu.Lock(); defer mu.Unlock(); return top }
 }
 
-// zippedConvArchive is packedArchive's archive with no work packs to file and n more
-// conversations of web-app, every one of them zipped.
-func zippedConvArchive(t *testing.T, n int) (claudeDir, dest, search string) {
+// zippedConvArchive is packedArchive's archive with no work packs to file and, beside
+// web-app, projects more projects here at search, each with per conversations that
+// have a folder: every conversation zipped.
+func zippedConvArchive(t *testing.T, projects, per int) (claudeDir, dest, search string) {
 	t.Helper()
 	claudeDir, dest, search = packedArchive(t, 0)
-	proj := filepath.Join(search, "web-app")
-	dir := filepath.Join(archive.ProjectsDir(dest), claude.Slug(proj))
-	cwd, _ := json.Marshal(proj)
-	ids := []string{"11111111-1111-1111-1111-111111111111"}
-	for i := 0; i < n; i++ {
-		id := fmt.Sprintf("%08d-2222-2222-2222-222222222222", i)
-		writeFile(t, filepath.Join(dir, id+".jsonl"),
-			`{"type":"user","cwd":`+string(cwd)+`,"sessionId":"`+id+`","message":{"role":"user","content":"hi"}}`+"\n")
-		writeFile(t, filepath.Join(dir, id, "tool-results", "r.txt"), "out\n")
-		ids = append(ids, id)
+	shardPath := filepath.Join(archive.ManifestDir(dest), "LAP-1.json")
+	var shard archive.Shard
+	if raw, err := os.ReadFile(shardPath); err != nil || json.Unmarshal(raw, &shard) != nil {
+		t.Fatalf("fixture shard: %v", err)
 	}
-	for _, id := range ids {
-		if _, err := convzip.Zip(dir, id); err != nil {
-			t.Fatal(err)
+	zipAll := func(dir string) {
+		ents, _ := os.ReadDir(dir)
+		for _, e := range ents {
+			if id, ok := strings.CutSuffix(e.Name(), ".jsonl"); ok {
+				if _, err := convzip.Zip(dir, id); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 	}
+	zipAll(filepath.Join(archive.ProjectsDir(dest), claude.Slug(filepath.Join(search, "web-app"))))
+	for p := 0; p < projects; p++ {
+		proj := filepath.Join(search, fmt.Sprintf("app%02d", p))
+		if err := os.MkdirAll(proj, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Join(archive.ProjectsDir(dest), claude.Slug(proj))
+		cwd, _ := json.Marshal(proj)
+		for i := 0; i < per; i++ {
+			id := fmt.Sprintf("%08d-2222-2222-2222-%012d", p, i)
+			writeFile(t, filepath.Join(dir, id+".jsonl"),
+				`{"type":"user","cwd":`+string(cwd)+`,"sessionId":"`+id+`","message":{"role":"user","content":"hi"}}`+"\n")
+			writeFile(t, filepath.Join(dir, id, "tool-results", "r.txt"), "out\n")
+		}
+		zipAll(dir)
+		shard.Projects[claude.Slug(proj)] = archive.Project{Path: proj, Leaf: filepath.Base(proj)}
+	}
+	raw, _ := json.Marshal(shard)
+	writeFile(t, shardPath, string(raw))
 	return claudeDir, dest, search
 }
 
-// A real Bring in reads each zipped conversation's index to journal its folder's files
-// before any lands. Those indexes are read first, side by side, eight at once: each
-// zip it reads, once, and no other. What it files is what it filed with no warming.
+// A real Bring in, or pull, reads each zipped conversation's index to journal its
+// folder's files before any lands. Those indexes are read first, side by side, eight
+// at once across every project it files - here two to a project: each zip it reads,
+// once, and no other. What it files is what it filed with no warming.
 func TestImportWarmsEachZipIndexItReads(t *testing.T) {
-	const n = 11
+	const projects, per = 6, 2
 	var mu sync.Mutex
 	var read []string
 	realIndex := readZipIndex
@@ -258,42 +278,51 @@ func TestImportWarmsEachZipIndexItReads(t *testing.T) {
 		mu.Unlock()
 		return realIndex(p)
 	})
-	run := func() string {
-		t.Helper()
-		claudeDir, dest, search := zippedConvArchive(t, n)
-		var out bytes.Buffer
-		if _, err := runImport(streams{&out, io.Discard}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1}); err != nil {
-			t.Fatal(err)
+	for _, name := range []string{"import", "pull"} {
+		run := func() string {
+			t.Helper()
+			claudeDir, dest, search := zippedConvArchive(t, projects, per)
+			var out bytes.Buffer
+			var err error
+			if name == "import" {
+				_, err = runImport(streams{&out, io.Discard}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1})
+			} else {
+				_, err = runPull(streams{&out, io.Discard}, pullOpts{ClaudeDir: claudeDir, ArchiveDir: dest})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			filed, _ := filepath.Glob(filepath.Join(claudeDir, "projects", "*", "*", "tool-results", "r.txt"))
+			root := filepath.Dir(claudeDir)
+			said := strings.NewReplacer(root, "<ROOT>", claude.Slug(root), "<ROOT>", os.Getenv("HOME"), "<HOME>").Replace(out.String())
+			return said + fmt.Sprintf("\n%d folders filed", len(filed))
 		}
-		filed, _ := filepath.Glob(filepath.Join(claudeDir, "projects", "*", "*", "tool-results", "r.txt"))
-		root := filepath.Dir(claudeDir)
-		said := strings.NewReplacer(root, "<ROOT>", claude.Slug(root), "<ROOT>", os.Getenv("HOME"), "<HOME>").Replace(out.String())
-		return said + fmt.Sprintf("\n%d folders filed", len(filed))
-	}
 
-	warmed, most := slowWarm(t, 5*time.Second)
-	got := run()
-	var zips []string
-	for _, p := range warmed() {
-		if strings.HasSuffix(p, convzip.Suffix) {
-			zips = append(zips, p)
+		read = nil
+		warmed, most := slowWarm(t, 2*time.Second)
+		got := run()
+		var zips []string
+		for _, p := range warmed() {
+			if strings.HasSuffix(p, convzip.Suffix) {
+				zips = append(zips, p)
+			}
 		}
-	}
-	sort.Strings(zips)
-	sort.Strings(read)
-	if len(read) != n+1 || strings.Join(zips, "\n") != strings.Join(read, "\n") {
-		t.Errorf("warmed:\n%s\nwant each zip read, once:\n%s", strings.Join(zips, "\n"), strings.Join(read, "\n"))
-	}
-	if most() != 8 {
-		t.Errorf("%d zip(s) read at once at most, want 8", most())
-	}
-	if !strings.Contains(got, fmt.Sprintf("\n%d folders filed", n)) {
-		t.Errorf("fixture: the folders were not filed:\n%s", got)
-	}
+		sort.Strings(zips)
+		sort.Strings(read)
+		if len(read) != projects*per+1 || strings.Join(zips, "\n") != strings.Join(read, "\n") {
+			t.Errorf("%s warmed:\n%s\nwant each zip read, once:\n%s", name, strings.Join(zips, "\n"), strings.Join(read, "\n"))
+		}
+		if most() != 8 {
+			t.Errorf("%s: %d zip(s) read at once at most, want 8", name, most())
+		}
+		if !strings.Contains(got, fmt.Sprintf("\n%d folders filed", projects*per)) {
+			t.Errorf("fixture: %s filed not every folder:\n%s", name, got)
+		}
 
-	hook(t, &warm, func([]string, func(string)) func() { return func() {} }) // as before warming
-	if before := run(); got != before {
-		t.Errorf("warming changed what was filed:\n%s\nwithout it:\n%s", got, before)
+		hook(t, &warm, func([]string, func(string)) func() { return func() {} }) // as before warming
+		if before := run(); got != before {
+			t.Errorf("%s: warming changed what was filed:\n%s\nwithout it:\n%s", name, got, before)
+		}
 	}
 }
 

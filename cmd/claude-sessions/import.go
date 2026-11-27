@@ -375,6 +375,24 @@ func runImport(s streams, o importOpts) (importResult, error) {
 		fmt.Fprintf(s.Out, "%s %s: %s\n", marker, row.Bucket, row.Note)
 	}
 
+	// The buckets the loop files from, by the checks it makes first: their zips are
+	// warmed together, not a project's at a time.
+	if !o.DryRun {
+		var filing []string
+		for _, bucket := range buckets {
+			p, known := manifest[bucket]
+			_, mapped := cfg.Mapped(bucket)
+			archived := filepath.Join(archive.ProjectsDir(dest), bucket)
+			if !safeBucketName(bucket) || !known && !mapped || !hasTranscripts(archived) {
+				continue
+			}
+			if m := resolve(bucket, p); m.How != mappedMissing && m.How != identity.NotFound && m.How != identity.Ambiguous {
+				filing = append(filing, archived)
+			}
+		}
+		defer warmZips(filing)() // warmed now, waited for on return
+	}
+
 	for _, bucket := range buckets {
 		// Named like a file kept beside a project - imported.log - its memory base would
 		// take that file's path.
@@ -840,6 +858,15 @@ func runPull(s streams, o pullOpts) ([]importRow, error) {
 	defer hb.stop()
 	if hb.on() {
 		hb.reading("conversations", conversationCount(dest, archivedBuckets))
+	}
+	if !o.DryRun { // every bucket with a transcript is filed: their zips are warmed together
+		var filing []string
+		for _, name := range archivedBuckets {
+			if dir := filepath.Join(archive.ProjectsDir(dest), name); safeBucketName(name) && hasTranscripts(dir) {
+				filing = append(filing, dir)
+			}
+		}
+		defer warmZips(filing)() // warmed now, waited for on return
 	}
 
 	for _, name := range archivedBuckets {

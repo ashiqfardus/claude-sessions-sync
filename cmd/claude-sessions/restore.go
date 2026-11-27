@@ -128,6 +128,9 @@ func runRestore(s streams, o restoreCmdOpts) (restoreResult, error) {
 	// Recorded as import records, archive or not: push reads folders only from lines
 	// added here.
 	imported := loadImported(root, !o.DryRun)
+	if !o.DryRun {
+		defer warmZips([]string{o.Source})() // warmed now, waited for on return
+	}
 	res, err := restoreInto(root, o.Source, o.ProjectPath, o.RewriteFrom, nil,
 		restoreOpts{BareName: o.BareName, DryRun: o.DryRun, Update: o.Update, Imported: imported})
 	imported.finish(s.Err)
@@ -284,16 +287,7 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 	// them counted as filed in whole. Each session's files are listed once, here. A dry
 	// run files none of them, so it lists no folder and opens no zip for them: on a
 	// drive that downloads each file as it is opened, that was most of its time.
-	if !opts.DryRun {
-		// Each zip's index is read below, one by one: on a drive that downloads each file
-		// as it is opened, they download side by side first.
-		var zipped []string
-		for _, c := range convs {
-			if c.zip != "" {
-				zipped = append(zipped, c.zip)
-			}
-		}
-		wait := warm(zipped, func(p string) { _, _ = convzip.Entries(p) })
+	if !opts.DryRun { // the zips read here are warmed by the caller: warmZips
 		var landing []string
 		for _, c := range convs {
 			if dst := filepath.Join(res.Bucket, c.name); archive.StatOrNil(dst) == nil {
@@ -306,7 +300,6 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 				}
 			}
 		}
-		wait()
 		if err := opts.Imported.pend(landing...); err != nil {
 			return res, err
 		}
@@ -493,6 +486,26 @@ func restoreInto(root, source, projectPath, rewriteFrom string, extra []rewrite.
 		return res, fmt.Errorf("no transcript could be filed: %s", res.Failed[0])
 	}
 	return res, nil
+}
+
+// warmZips reads first, side by side, the zip indexes a real restoreInto of each of dirs
+// reads one by one: every zipped conversation's, in its order. On a drive that downloads
+// each file as it is opened they download together, eight at a time across every
+// project, not a project's at a time. Call the result before returning.
+func warmZips(dirs []string) (wait func()) {
+	var zips []string
+	for _, d := range dirs {
+		found := convzip.Find(d)
+		ids := make([]string, 0, len(found))
+		for id := range found {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			zips = append(zips, found[id])
+		}
+	}
+	return warm(zips, func(p string) { _, _ = convzip.Entries(p) })
 }
 
 // isTranscriptName reports whether a file at the top of a bucket is named as a

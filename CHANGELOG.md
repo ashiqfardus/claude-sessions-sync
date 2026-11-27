@@ -112,7 +112,8 @@ All notable changes to this project are documented here. This project follows
 - **Bring in read compressed conversations one at a time.** Before filing anything, a
   real Bring in reads the index of each compressed conversation it files; on a folder
   that downloads each file when it is opened, each was a download of its own. Up to
-  eight now download at once, as work folders do.
+  eight now download at once, across every project it files, in `import`, `pull` and
+  `restore`.
 - **Bring in downloaded memory files it did not need.** To tell a memory file that is
   new here from one deleted here, it read the archived copy even when this computer had
   never taken it. It now reads one only when the copy it took is the same size.
