@@ -71,7 +71,15 @@ export function rail(nav, grip) {
     menu.setAttribute('aria-expanded', String(on))
   }
   menu.addEventListener('click', () => open(!nav.classList.contains('open')))
-  nav.addEventListener('click', (e) => { if (e.target.closest('a')) open(false) })
+  nav.addEventListener('click', (e) => {
+    const a = e.target.closest('a')
+    if (!a || !nav.classList.contains('open')) return
+    open(false)
+    // The page already shown: the router stays, and the link just hidden had the focus.
+    if (a.getAttribute('href') === location.hash) (document.querySelector('#main h1') || menu).focus()
+  })
+  // Tab past the last link: the menu closes, so focus never goes under it.
+  nav.addEventListener('focusout', (e) => { if (nav.classList.contains('open') && !nav.contains(e.relatedTarget)) open(false) })
   document.addEventListener('click', (e) => { if (!nav.contains(e.target)) open(false) })
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && nav.classList.contains('open')) { open(false); menu.focus() }
