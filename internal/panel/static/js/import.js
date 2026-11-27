@@ -206,7 +206,6 @@ register('import', {
         bar.hidden = false
         bar.setAttribute('aria-label', LOOKING)
         bar.removeAttribute('aria-valuenow')
-        bar.firstElementChild.style.width = '100%'
         slow = setTimeout(() => {
           for (const line of shown.length ? [result] : [result, rowsEl.querySelector('td')]) line.append(h('span', { class: 'block small' }, SLOW_WAIT))
         }, SLOW_AFTER)
@@ -216,7 +215,7 @@ register('import', {
       const progress = () => {
         const pct = counted ? Math.min(100, Math.round((done / of) * 100)) : 100
         bar.hidden = false
-        bar.firstElementChild.style.width = pct + '%'
+        bar.style.setProperty('--p', pct / 100) // panel.css fills the bar to it while aria-valuenow is set
         if (counted) bar.setAttribute('aria-valuenow', pct)
         else bar.removeAttribute('aria-valuenow')
         const text = counted ? `${number(Math.min(done, of))} of ${count(of, 'conversation')}` : 'Bringing in…'
@@ -240,9 +239,8 @@ register('import', {
         result.replaceChildren(LOOKING + ' ' + text)
         if (!shown.length) message(LOOKING + ' ' + text)
         const m = /(\d+)\s*\/\s*(\d+)/.exec(text), pct = m && Number(m[2]) ? Math.min(100, Math.round((Number(m[1]) / Number(m[2])) * 100)) : null
-        bar.firstElementChild.style.width = (pct == null ? 100 : pct) + '%'
         if (pct == null) bar.removeAttribute('aria-valuenow')
-        else bar.setAttribute('aria-valuenow', pct)
+        else { bar.style.setProperty('--p', pct / 100); bar.setAttribute('aria-valuenow', pct) }
       }
       let st
       try {

@@ -21,6 +21,24 @@ All notable changes to this project are documented here. This project follows
   button that opens every page and what is running. On a tablet the sidebar starts folded
   to icons. Text and fields are larger on a phone, and a page that is still loading shows
   the shape of what is coming instead of a bare "Loading…".
+- **Conversations, Bring in, Settings and Commands fit a phone.** Each row of their tables
+  is a card with its details named, and long paths wrap instead of widening the page. On
+  Conversations the filters sit two by two, Select all is written above the cards, the
+  page buttons are Previous, this page and Next, and the bar for the conversations you
+  ticked waits at the bottom of the screen. Buttons in Bring in, Settings and dialogs share
+  the width.
+- **Conversations keeps still while you work in it.** Ticking a conversation no longer
+  pushes the list down: the bar for the ticked ones takes the place of the summary line and
+  stays at the top as you scroll. While the list reloads after a filter or a search, its
+  rows stay, dimmed, under a line running along the top. On a wide screen the column names
+  stay in view as you scroll.
+- **Bring in's bar fills as it counts.** With a count the bar fills to it; without one, a
+  short segment runs along it.
+- **A dialog taller than the window scrolls**, so its title and buttons stay in reach.
+
+### Fixed
+- **A long path under "Where the other computers' folders go here" widened the page on a
+  phone.** It wraps.
 
 ## [0.7.5] - 2026-11-27
 

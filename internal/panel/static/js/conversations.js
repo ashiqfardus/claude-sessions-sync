@@ -138,6 +138,7 @@ register('conversations', {
     async function load() {
       const n = ++seq
       if (state.q.trim()) line.textContent = 'Searching…'
+      tableBox.setAttribute('aria-busy', 'true') // the rows stay, dimmed, until the new ones replace them: nothing jumps
       let view
       try {
         view = await api.get('/api/conversations', request(state))
@@ -150,6 +151,7 @@ register('conversations', {
     function paint(view) {
       selected.clear()
       fix.replaceChildren()
+      tableBox.removeAttribute('aria-busy')
       shown = (view.rows) || []
       tableBox.hidden = pages.hidden = !shown.length
       if (view.error) {
@@ -189,7 +191,7 @@ register('conversations', {
       const badge = (cls, paths, text) => h('span', { class: 'badge ' + cls }, icon(12, ...paths), text)
       const bucket = (r.buckets || [])[0]
       return h('tr', null,
-        h('td', null, h('input', { type: 'checkbox', class: 'check', 'aria-label': 'Select: ' + title, onchange: (e) => tick(r, e.target.checked) })),
+        h('td', null, h('label', { class: 'tick' }, h('input', { type: 'checkbox', class: 'check', 'aria-label': 'Select: ' + title, onchange: (e) => tick(r, e.target.checked) }))),
         h('td', null, h('span', { class: 'title-cell' }, h('strong', null, title), h('code', { class: 'muted' }, r.id.slice(0, 8)))),
         h('td', null, r.project),
         h('td', null, lastMessage(r.updated)),
