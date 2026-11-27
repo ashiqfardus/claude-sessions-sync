@@ -172,7 +172,8 @@ body:has(.selection:not([hidden])) .toast{translate:0 calc(-1 * var(--lift,0px))
   body{font-size:15px}
   .input,.input.mono{font-size:16px} /* under 16px, iOS zooms the page on focus */
 }
-@media (pointer:coarse){.btn,.input,.menu-btn{min-height:44px}.nav a{min-height:44px}}
+/* Touch targets: 44 px on a touch screen or a phone-width window; .btn.sm too, which sets its own 28 px. */
+@media (pointer:coarse),(max-width:760px){.btn,.btn.sm,.input,.menu-btn{min-height:44px}.nav a{min-height:44px}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 
 /* Fonts: IBM Plex, IBM's own Latin1 subsets, under the SIL OFL 1.1 (fonts/OFL.txt; sources in fonts/SOURCE.txt) */

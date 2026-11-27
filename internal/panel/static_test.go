@@ -697,3 +697,13 @@ func TestInScreenLinksResolve(t *testing.T) {
 		t.Error(`no link goes to a place in a screen: Overview's "Open the full log" should go to #/settings?at=log-h`)
 	}
 }
+
+// On a touch screen or at phone width every button is at least 44 px tall: .btn.sm sets
+// its own 28 px with a more specific selector, so the touch rule must name it too.
+func TestSmallButtonsAreTouchSizedOnPhones(t *testing.T) {
+	css := staticFiles(t)["static/panel.css"]
+	m := regexp.MustCompile(`@media \(pointer:coarse\),\(max-width:760px\)\{([^{}]*)\{min-height:44px\}`).FindStringSubmatch(css)
+	if m == nil || !strings.Contains(","+m[1]+",", ",.btn.sm,") {
+		t.Error("the touch rule does not give .btn.sm 44 px")
+	}
+}
