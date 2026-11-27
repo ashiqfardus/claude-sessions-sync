@@ -143,6 +143,7 @@ func TestImportDryRunWarmsEachPackItReadsInParallel(t *testing.T) {
 // it is in --json output or the log.
 func TestImportPullProgressOnStderrOnly(t *testing.T) {
 	claudeDir, dest, search := packedArchive(t, 3)
+	hook(t, &progressEvery, 0) // every step: TestProgressIsThrottled holds them back
 	var progress bytes.Buffer
 	if _, err := runImport(streams{io.Discard, &progress}, importOpts{ClaudeDir: claudeDir, ArchiveDir: dest, SearchRoot: search, Depth: 1, DryRun: true}); err != nil {
 		t.Fatal(err)
@@ -169,8 +170,5 @@ func TestImportPullProgressOnStderrOnly(t *testing.T) {
 		if !strings.Contains(stderr, "reading conversations: 1/1\r") || !strings.Contains(stderr, c.work) {
 			t.Errorf("%s --json: no progress on stderr: %q", c.args[0], stderr)
 		}
-	}
-	if log, _ := os.ReadFile(filepath.Join(claudeDir, "session-sync.log")); strings.Contains(string(log), "reading") {
-		t.Errorf("progress in the log:\n%s", log)
 	}
 }

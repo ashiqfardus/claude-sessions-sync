@@ -20,4 +20,4 @@ exit 0
   }
 ]
 --- stderr
-reading conversations: 0/3reading conversations: 1/3reading conversations: 2/3reading conversations: 3/3reading work folders
+reading conversations: 0/3reading conversations: 3/3reading work folders
