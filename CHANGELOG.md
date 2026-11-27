@@ -70,6 +70,12 @@ All notable changes to this project are documented here. This project follows
   carriage return, so with stdout and stderr captured together the next line was glued on
   (`reading conversations: 0/246+ -Users-…`). There each is now a line of its own; the
   panel and a terminal show progress as before.
+- **`config set-machine` could say to forget another computer.** On a profile that had
+  never pushed, the old name was only the host name's default, which another computer in
+  a shared archive may go by; `set-machine` kept it as this computer's and said to run
+  `machines --forget` on it. It now keeps the old name, and says to forget it, only when
+  the archive's record for that name was written by this computer. Settings offers
+  Forget after a rename only then too.
 - **Back up now showed no progress, and a first backup showed nothing.** Overview now
   shows what the backup is doing above the cards, with a bar that fills when it reports
   a count, and the computers card says this computer's first backup is running.

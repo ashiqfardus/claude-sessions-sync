@@ -534,7 +534,7 @@ func TestPurgeRefusesLinkedMachineFolder(t *testing.T) {
 		arch := t.TempDir()
 		m := newMachine(t, "MAC", arch)
 		configAs(t, m.claudeDir, "MAC", "set-destination", arch)
-		configAs(t, m.claudeDir, "OLD", "set-machine", "MAC")
+		renamedFrom(t, m, "OLD")
 		home := t.TempDir()
 		priv := filepath.Join(home, "SQL", "private")
 		mustWrite(t, filepath.Join(priv, "keep-me.md"), "local only\n")

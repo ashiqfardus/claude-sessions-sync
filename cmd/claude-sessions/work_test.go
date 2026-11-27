@@ -1614,7 +1614,7 @@ func TestExcludeFolderPurgesFormerNames(t *testing.T) {
 	arch := t.TempDir()
 	m := newMachine(t, "MAC", arch)
 	configAs(t, m.claudeDir, "MAC", "set-destination", arch)
-	configAs(t, m.claudeDir, "OLD", "set-machine", "MAC")
+	renamedFrom(t, m, "OLD")
 	dir := t.TempDir()
 	enc := filepath.FromSlash(work.Encode(dir))
 	for _, n := range []string{"MAC", "OLD", "OTHER"} {
@@ -2847,7 +2847,7 @@ func TestExcludeFolderPrunesFormerNamePack(t *testing.T) {
 	arch := t.TempDir()
 	m := newMachine(t, "MAC", arch)
 	configAs(t, m.claudeDir, "MAC", "set-destination", arch)
-	configAs(t, m.claudeDir, "OLD", "set-machine", "MAC")
+	renamedFrom(t, m, "OLD")
 	dir := t.TempDir()
 	pack := filepath.Join(workCopy(machine{name: "OLD", archive: arch}, dir), "run1.cspack.zip")
 	packAt(t, pack, time.Now().Add(-8*24*time.Hour), [3]string{"keep.md", "k\n"}, [3]string{"sub/s.md", "private\n"})

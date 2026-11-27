@@ -4,6 +4,7 @@ package main_test
 // renamed machines, backups, conflict copies.
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,31 @@ func configAs(t *testing.T, claudeDir, name string, args ...string) string {
 		t.Fatalf("config %v: %v\n%s", args, err, o)
 	}
 	return string(o)
+}
+
+// renamedFrom renames m from old to m.name as set-machine does once m has pushed under
+// old: the archive's record for old carries the profile's install ID. That record is
+// then forgotten, as the rename's advice says.
+func renamedFrom(t *testing.T, m machine, old string) {
+	t.Helper()
+	cfgPath := filepath.Join(m.claudeDir, "session-sync.json")
+	cfg := map[string]any{}
+	if raw, err := os.ReadFile(cfgPath); err == nil {
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg["installId"] = "install-of-" + m.name
+	raw, _ := json.Marshal(cfg)
+	mustWrite(t, cfgPath, string(raw))
+	shard := filepath.Join(m.archive, "manifest", old+".json")
+	mustWrite(t, shard, `{"machine":"`+old+`","installId":"install-of-`+m.name+`"}`)
+	if out := configAs(t, m.claudeDir, old, "set-machine", m.name); !strings.Contains(out, "--forget "+old) {
+		t.Fatalf("set-machine did not take %s for this computer's:\n%s", old, out)
+	}
+	if err := os.Remove(shard); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // R4-1: B adds X, A takes it and pushes, B deletes X before it next imports. The
@@ -224,7 +250,9 @@ func TestFourthReviewRenameFilesOwnForkBack(t *testing.T) {
 	before := b.sessions(t, repo)
 	t.Logf("B before rename: %v", before)
 
-	// B is renamed the documented way; from now on its name comes from config.
+	// B is renamed the documented way; from now on its name comes from config. It finds
+	// its record under the old name in the archive it has saved.
+	configAs(t, b.claudeDir, "BOX-B", "set-destination", archive)
 	configAs(t, b.claudeDir, "BOX-B", "set-machine", "BOX-B2")
 	b2 := machine{name: "", claudeDir: b.claudeDir, archive: archive}
 	b2.run(t, "push", "--no-html")
