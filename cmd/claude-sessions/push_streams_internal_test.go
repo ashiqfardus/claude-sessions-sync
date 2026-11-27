@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -217,5 +218,39 @@ func TestPushSaysHowFarItHasGot(t *testing.T) {
 	}
 	if strings.Contains(errs.String(), "\r") || !strings.Contains(errs.String(), "PUSH: ") {
 		t.Errorf("progress from a quiet run or on a terminal, or no lines:\n%q", errs.String())
+	}
+}
+
+// E2E M1: Preview backup lists every file it counts in "would copy N file(s)": each
+// conversation, as each work-folder file was already. A real backup lists none.
+func TestPreviewListsEachFileItCounts(t *testing.T) {
+	claudeDir, dest := progressFixture(t)
+	run := func(dry bool) (pushResult, []string) {
+		t.Helper()
+		var out bytes.Buffer
+		res, err := runPush(streams{&out, io.Discard}, claudeDir, dest, pushOpts{DryRun: dry, ScanHistory: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var listed []string
+		for _, l := range strings.Split(out.String(), "\n") {
+			if p, ok := strings.CutPrefix(l, "would copy "); ok && !strings.Contains(l, " file(s), ") {
+				listed = append(listed, p)
+			}
+		}
+		return res, listed
+	}
+	res, listed := run(true)
+	bucket := filepath.Join(claudeDir, "projects", "-x-web-app")
+	want := []string{filepath.Join(bucket, "11111111-1111-1111-1111-111111111111.jsonl"),
+		filepath.Join(bucket, "22222222-2222-2222-2222-222222222222.jsonl"), filepath.Join(bucket, cleanID+".jsonl"),
+		filepath.Join(os.Getenv("HOME"), "notes", "n.md")}
+	sort.Strings(listed) // conversations newest first, then the work file
+	sort.Strings(want)
+	if res.Copied != len(listed) || strings.Join(listed, "\n") != strings.Join(want, "\n") {
+		t.Errorf("would copy %d, listed:\n%s\nwant:\n%s", res.Copied, strings.Join(listed, "\n"), strings.Join(want, "\n"))
+	}
+	if res, listed := run(false); res.Copied != 4 || len(listed) != 0 {
+		t.Errorf("a backup of %d file(s) listed %v", res.Copied, listed)
 	}
 }

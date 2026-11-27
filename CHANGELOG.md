@@ -11,6 +11,10 @@ All notable changes to this project are documented here. This project follows
   panel to show: `copying conversations: 120/2000`, then `looking for work folders`,
   `copying work folders`, `compressing old conversations` and `building readable
   pages`, each with its count. Preview backup says `checking` instead of `copying`.
+- **Preview backup counted conversations it did not list.** "Would copy 2,000 files"
+  came with an empty list: `push --dry-run` named only work-folder files. It now prints
+  a `would copy` line for each file it counts: each conversation, the files in its
+  folder, memory, rules and skills, and work-folder files.
 - **Bring in sat on "Looking for your projects…" for minutes.** On an archive folder
   that downloads each file only when it is opened, the preview read the other
   computers' work folders one file at a time, each a download, and said nothing while

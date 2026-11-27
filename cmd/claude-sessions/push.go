@@ -354,6 +354,7 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 	// Transcripts to look for work folders in: those changed since the last full push
 	// - not only those copied now, as the per-reply hook has usually copied them.
 	var workScan []string
+	var would []string // the files counted as copied, which a dry run lists
 	_, werr := loadWorkFolders(root)
 	scanAllWork := !prevShard.WorkIndexed || werr != nil || opts.ScanHistory
 
@@ -399,8 +400,10 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 			case copiedOver:
 				res.Copied++
 				changed = append(changed, t.Path)
+				would = append(would, t.Path)
 			case keptFork:
 				res.Copied++
+				would = append(would, t.Path)
 			default:
 				res.Unchanged++
 			}
@@ -421,8 +424,9 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 				res.Unchanged += len(t.Extras) // in the zip as they are here
 			} else {
 				c, u := archiveExtras(b.Dir, destBucket, t.ID, t.Extras, dryRun, logf)
-				res.Copied += c
+				res.Copied += len(c)
 				res.Unchanged += u
+				would = append(would, c...)
 			}
 
 			sessions = append(sessions, archive.Session{
@@ -455,6 +459,7 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 					}
 				}
 				res.Copied++
+				would = append(would, srcPath)
 			} else {
 				res.Unchanged++
 			}
@@ -509,8 +514,9 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 
 	// Global rules, skills and the plugin list, so another machine behaves the same.
 	pc, pu := pushProfile(root, dest, dryRun, logf)
-	res.Copied += pc
+	res.Copied += len(pc)
 	res.Unchanged += pu
+	would = append(would, pc...)
 
 	// Read only: in a dry run too, so it zips in the buckets a real run does.
 	sessions = keepArchivedHistory(dest, &shard, sessions)
@@ -610,8 +616,10 @@ func runPush(s streams, claudeDir, archiveDir string, opts pushOpts) (_ pushResu
 		for _, n := range wr.New {
 			fmt.Fprintf(s.Out, "now backing up %s\n", n)
 		}
-		for _, p := range wr.Would {
-			fmt.Fprintf(s.Out, "would copy %s\n", p)
+		for _, p := range append(would, wr.Would...) {
+			if dryRun { // wr.Would is a dry run's alone
+				fmt.Fprintf(s.Out, "would copy %s\n", p)
+			}
 		}
 		for _, p := range wr.WouldPack {
 			fmt.Fprintf(s.Out, "would %s\n", p)
@@ -1723,14 +1731,14 @@ func othersHolding(holders map[string][]string, bucket, id string) []string {
 
 // archiveExtras copies a session's own folder - subagent transcripts and saved tool
 // output - where it changed, reporting how many files it copied and left alone.
-func archiveExtras(bucketDir, destBucket, id string, extras []string, dryRun bool, logf func(string, ...any)) (copied, unchanged int) {
+func archiveExtras(bucketDir, destBucket, id string, extras []string, dryRun bool, logf func(string, ...any)) (copied []string, unchanged int) {
 	// From the bucket folder down, a link planted in the shared archive would take the
 	// copies outside it: none is made, nor any folder created.
 	for _, rel := range extras {
 		if !archive.ThroughRealDirs(filepath.Dir(destBucket), filepath.Join(destBucket, id, rel)) {
 			logf("WARN: %s: a link or a file stands where a folder should be on the way to %s/%s in the archive; its folder is not archived",
 				id, filepath.Base(destBucket), id)
-			return 0, 0
+			return nil, 0
 		}
 	}
 	for _, rel := range extras {
@@ -1753,7 +1761,7 @@ func archiveExtras(bucketDir, destBucket, id string, extras []string, dryRun boo
 				continue
 			}
 		}
-		copied++
+		copied = append(copied, srcPath)
 	}
 	return copied, unchanged
 }

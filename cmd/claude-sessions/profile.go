@@ -128,7 +128,7 @@ func replacedDir(dest, machine string) string {
 // newer file wins as it does for memory, and into this machine's own copy, which no
 // other machine writes. It never fails the push: the sessions are what must get
 // through.
-func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (copied, unchanged int) {
+func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (copied []string, unchanged int) {
 	own := machineProfileDir(dest, machineName())
 	files := profileFiles(root)
 	if !dryRun {
@@ -156,7 +156,7 @@ func pushProfile(root, dest string, dryRun bool, logf func(string, ...any)) (cop
 				continue
 			}
 		}
-		copied++
+		copied = append(copied, src)
 	}
 
 	if dryRun {
