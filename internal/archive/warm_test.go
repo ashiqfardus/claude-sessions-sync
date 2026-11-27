@@ -46,3 +46,22 @@ func TestWarmReadsEachOnceEightAtATime(t *testing.T) {
 	}
 	Warm(nil, func(string) { t.Error("read with no files") })()
 }
+
+// A read that panics - a file from the archive no reader expected - fails that read
+// alone: the others are read, wait returns, and the process lives on.
+func TestWarmSurvivesAReadThatPanics(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	Warm([]string{"a", "bad", "c"}, func(p string) {
+		if p == "bad" {
+			panic("a zip that breaks its reader")
+		}
+		mu.Lock()
+		got = append(got, p)
+		mu.Unlock()
+	})()
+	sort.Strings(got)
+	if strings.Join(got, ",") != "a,c" {
+		t.Errorf("read %v", got)
+	}
+}

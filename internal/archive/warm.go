@@ -22,7 +22,12 @@ func Warm(paths []string, read func(string)) (wait func()) {
 		go func() {
 			defer wg.Done()
 			for p := range next {
-				read(p)
+				func() {
+					// A read that panics - an untrusted file, outside the panel job's
+					// recover - is a read failed: the run's own read of it reports why.
+					defer func() { _ = recover() }()
+					read(p)
+				}()
 			}
 		}()
 	}
