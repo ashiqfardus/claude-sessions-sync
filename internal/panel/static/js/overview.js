@@ -13,8 +13,32 @@ const ICON = {
 // A computer's state as its status class, icon and words. The when column already
 // shows a late computer's date, so its state does not repeat it.
 const STATE = { ok: ['ok', 'ok', 'Backing up normally'], update: ['warn', 'clock', 'Needs update'], late: ['warn', 'clock', 'Not backed up recently'] }
-// A health item's icon, row background, and what a screen reader hears before its text.
-const LEVEL = { fail: ['fail', 'fail-row', 'Problem: '], warn: ['warn', 'warn-row', 'Warning: '], ok: ['ok', null, ''] }
+// What a screen reader hears before a health item's text.
+const LEVEL = { fail: 'Problem: ', warn: 'Warning: ', ok: '' }
+const CHEVRON = 'M6 9l6 6 6-6'
+// Recent activity's icons. The API gives each event only as words, so its kind is read
+// from them (activityText and logActivity in the CLI write them); the first match wins.
+const KINDS = [
+  [/ backed up$/, 'computer'], // another computer's last backup
+  [/^(Backed up|Made a full backup)/, 'backup'],
+  [/^Compressed/, 'compress'],
+  [/^(Brought in|Restored)/, 'bring'],
+  [/^A backup did not finish/, 'problem'],
+  [/^(Changed|Renamed|Added to|Removed from|Stopped|Backing up a folder|Set up|Turned off|Forgot)/, 'setting'],
+  [/^(Deleted|Removed)/, 'clean'],
+]
+const TRAY = 'M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4'
+const KIND = { // [tile tint, icon]
+  backup: ['', ['M12 15V4', 'M7.5 8.5L12 4l4.5 4.5', TRAY]],
+  computer: ['', ['M4 4h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z', 'M8 20h8', 'M12 16v4']],
+  bring: ['plain', ['M12 4v11', 'M7.5 10.5L12 15l4.5-4.5', TRAY]],
+  compress: ['plain', ['M12 3v6', 'M9 6l3 3 3-3', 'M12 21v-6', 'M9 18l3-3 3 3', 'M5 12h14']],
+  clean: ['plain', ['M4 7h16', 'M9 7V4.5h6V7', 'M6.5 7l.9 12.1a1 1 0 0 0 1 .9h7.2a1 1 0 0 0 1-.9L17.5 7', 'M10 11v5', 'M14 11v5']],
+  setting: ['plain', ['M4 6h9', 'M17 6h3', 'M4 12h3', 'M11 12h9', 'M4 18h11', 'M13 6a2 2 0 1 0 4 0a2 2 0 1 0-4 0', 'M7 12a2 2 0 1 0 4 0a2 2 0 1 0-4 0', 'M15 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0']],
+  problem: ['warn', ICON.warn],
+  other: ['plain', ['M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0']],
+}
+const kindOf = (text) => (KINDS.find(([re]) => re.test(text)) || [null, 'other'])[1]
 const WOULD = 'would copy '
 const TOTAL = /^would copy \d+ file\(s\), \d+ unchanged\.$/ // push's own count line, not a file
 const LISTED = 50 // files the preview lists before "and N more"
@@ -44,6 +68,7 @@ function size(b) {
   return [b, 0, 'B']
 }
 const sized = (b) => { const [v, d, u] = size(b); return v.toFixed(d) + ' ' + u }
+const exact = (t) => new Date(t).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })
 
 // ago is "Just now", "12 min ago" or "3 h ago" up to 12 hours, then when()'s words; null
 // for no time.
@@ -52,6 +77,25 @@ function ago(t) {
   if (!s) return null
   const m = Math.floor((Date.now() - new Date(t)) / 60000)
   return m < 1 ? 'Just now' : m < 60 ? m + ' min ago' : m < 720 ? Math.floor(m / 60) + ' h ago' : s
+}
+
+// stamp shows time t in node as ago() does, the exact time in its title, or, rough, as
+// about() does (an hour has no exact minute to give). It marks node for the minute's
+// tick, which calls it again; with no time it shows at()'s "Not known yet".
+function stamp(node, t, rough) {
+  const s = rough ? about(t) : ago(t)
+  if (!s) {
+    node.replaceChildren(at(t))
+    node.removeAttribute('data-at')
+    node.removeAttribute('title')
+    return node
+  }
+  node.textContent = s
+  node.dataset.at = t
+  node.toggleAttribute('data-rough', !!rough)
+  if (rough) node.removeAttribute('title')
+  else node.title = exact(t)
+  return node
 }
 
 register('overview', {
@@ -65,7 +109,9 @@ register('overview', {
     let firstRun = null // while this computer's first backup runs: its row {row, label}
     let watching = false // one watcher at a time
     const frames = new Map() // each counting figure's next frame
-    signal.addEventListener('abort', () => { for (const f of frames.values()) cancelAnimationFrame(f) })
+    // Relative times ("5 min ago") move on once a minute while the screen is open.
+    const ticker = setInterval(() => { for (const n of el.querySelectorAll('[data-at]')) stamp(n, n.dataset.at, n.hasAttribute('data-rough')) }, 60000)
+    signal.addEventListener('abort', () => { for (const f of frames.values()) cancelAnimationFrame(f); clearInterval(ticker) })
 
     // showSummary fills the archive card and the computers; first, the figures count up.
     function showSummary(v, first) {
@@ -80,10 +126,7 @@ register('overview', {
       countUp(slot('n-conversations'), v.conversations, whole, first)
       countUp(slot('n-work'), v.workFolders, whole, first)
       countUp(slot('n-computers'), v.computers.length, whole, first)
-      const last = slot('n-last'), rel = ago(v.lastBackup)
-      last.replaceChildren(rel || at(v.lastBackup))
-      if (rel) last.title = new Date(v.lastBackup).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })
-      else last.removeAttribute('title')
+      stamp(slot('n-last'), v.lastBackup)
       me = firstRun = null
       const rows = v.computers.map(computer)
       slot('computers').replaceChildren(...(rows.length ? rows : [h('li', { class: 'muted none-yet' }, 'No computer has backed up to this archive yet.')]))
@@ -147,9 +190,8 @@ register('overview', {
       slot('run-stage').textContent = words
       slot('run-count').textContent = counted
       const bar = slot('run-bar')
-      bar.firstElementChild.style.width = (pct == null ? 100 : pct) + '%'
       if (pct == null) bar.removeAttribute('aria-valuenow')
-      else bar.setAttribute('aria-valuenow', pct)
+      else { bar.style.setProperty('--p', pct / 100); bar.setAttribute('aria-valuenow', pct) } // panel.css fills it by transform
       if (words !== stage) { stage = words; say(words) } // a stage, not every count
       return counted ? words + ': ' + counted : words
     }
@@ -195,21 +237,40 @@ register('overview', {
       try { return h('a', { href: i.fixHref, class: 'btn sm' }, i.fixLabel) } catch { return null }
     }
 
-    // Health shows the failures, the warnings, then that conversations are archived and
-    // the scheduled backup is set up. It is doctor's light check (Ruling P54).
+    // Health says how things stand in one line: "Everything is fine", or how many things
+    // to look at, with the worst one's icon and colour. Its items open under it: the
+    // failures, the warnings, then that conversations are archived and the scheduled
+    // backup is set up. It is doctor's light check (Ruling P54). It opens by itself when
+    // a Problem appears, and otherwise stays as it was left.
+    let healthOpen = null, hadFail = false
     async function loadHealth() {
-      const list = slot('health')
+      const box = slot('health')
       let items
-      try { items = await api.get('/api/health') } catch (e) { list.removeAttribute('aria-busy'); if (!signal.aborted) list.replaceChildren(h('li', null, plain(e))); return }
-      list.removeAttribute('aria-busy')
-      const shown = [...items.filter((i) => i.level === 'fail' || i.level === 'warn'),
-        ...['archived', 'sweep'].flatMap((name) => items.filter((i) => i.level === 'ok' && i.name === name))]
-      list.replaceChildren(...shown.map((i) => {
-        const [ic, row, sr] = LEVEL[i.level]
-        return h('li', { class: row }, h('span', { class: 'status ' + ic }, icon(16, ...ICON[ic])),
-          h('span', { class: 'grow' }, sr && h('span', { class: 'sr' }, sr), i.text), fix(i))
-      }))
+      try { items = await api.get('/api/health') } catch (e) { box.removeAttribute('aria-busy'); if (!signal.aborted) box.replaceChildren(h('p', { class: 'health-sum' }, plain(e))); return }
+      if (signal.aborted) return
+      box.removeAttribute('aria-busy')
+      const bad = items.filter((i) => i.level === 'fail' || i.level === 'warn')
+      const shown = [...bad, ...['archived', 'sweep'].flatMap((name) => items.filter((i) => i.level === 'ok' && i.name === name))]
+      const fail = bad.some((i) => i.level === 'fail'), worst = fail ? 'fail' : bad.length ? 'warn' : 'ok'
+      if (healthOpen == null || (fail && !hadFail)) healthOpen = fail
+      hadFail = fail
+      const list = h('ul', { class: 'rows health-items' }, shown.map((i) =>
+        h('li', null, h('span', { class: 'status ' + i.level }, icon(16, ...ICON[i.level])),
+          h('span', null, LEVEL[i.level] && h('span', { class: 'sr' }, LEVEL[i.level]), i.text), fix(i))))
       if (!shown.length) list.append(h('li', { class: 'muted' }, 'No problems found.'))
+      const id = 'health-items'
+      const sum = h('button', { type: 'button', class: 'health-sum', 'aria-expanded': String(healthOpen), 'aria-controls': id, onclick: (e) => {
+        healthOpen = !healthOpen
+        box.classList.toggle('instant', e.detail === 0) // opened from the keyboard: at once
+        sum.setAttribute('aria-expanded', String(healthOpen))
+      } },
+      h('span', { class: 'tile ' + worst }, icon(16, ...ICON[worst])),
+      h('span', { class: 'grow' }, bad.length ? count(bad.length, 'thing') + ' to look at' : 'Everything is fine'),
+      icon(16, CHEVRON))
+      sum.lastChild.classList.add('chev')
+      const refocus = box.contains(document.activeElement)
+      box.replaceChildren(sum, h('div', { class: 'health-body', id }, h('div', null, list)))
+      if (refocus) sum.focus()
     }
 
     async function loadActivity(fresh) {
@@ -217,8 +278,12 @@ register('overview', {
       let items
       try { items = await api.get('/api/activity') } catch (e) { list.removeAttribute('aria-busy'); if (!signal.aborted) list.replaceChildren(h('li', null, plain(e))); return }
       list.removeAttribute('aria-busy')
-      // "<computer> backed up" is another computer's last backup, kept only to the hour.
-      list.replaceChildren(...items.map((a) => h('li', null, h('span', { class: 'muted activity-time' }, at(a.at, / backed up$/.test(a.text))), h('span', { class: 'grow' }, a.text))))
+      list.replaceChildren(...items.map((a) => {
+        const kind = kindOf(a.text), [tint, paths] = KIND[kind]
+        // "<computer> backed up" is another computer's last backup, kept only to the hour.
+        return h('li', { class: 'act' }, h('span', { class: 'tile ' + tint }, icon(15, ...paths)), h('span', { class: 'act-text' }, a.text),
+          stamp(h('time', { class: 'act-time num', datetime: a.at }), a.at, kind === 'computer'))
+      }))
       if (!items.length) list.append(h('li', { class: 'muted' }, 'No activity yet.'))
       else if (fresh) list.firstChild.classList.add('slide')
     }

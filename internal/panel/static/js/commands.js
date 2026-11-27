@@ -25,7 +25,7 @@ function place(r) {
   if (!/^[a-z]+$/.test(r.screen || '')) return h('td', { class: 'muted' }, text)
   const i = text.indexOf(', ')
   const [name, rest] = i < 0 ? [text, ''] : [text.slice(0, i), text.slice(i)]
-  return h('td', null, h('span', null, h('a', { href: '#/' + r.screen }, name), ...linked(rest))) // one value for a phone card's label
+  return h('td', null, h('a', { href: '#/' + r.screen }, name), ...linked(rest))
 }
 
 register('commands', {

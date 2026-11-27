@@ -26,6 +26,21 @@ All notable changes to this project are documented here. This project follows
   as figures that count up when the page opens. Each computer has a status dot, and this
   computer's dot pulses while it backs up. On Storage, the biggest projects are one card
   each on a phone.
+- **Overview's Health says first how things stand.** One line, "Everything is fine" or
+  "3 things to look at", with the icon and colour of the worst; the items open under it,
+  and open by themselves when one is a Problem.
+- **Recent activity reads as a timeline.** Each event has an icon for its kind (a backup,
+  compressing, bringing in, deleting, a setting, another computer's backup) and says how
+  long ago it was ("5 min ago"; the exact time is in its tooltip). These times, and the
+  archive card's last backup, move on each minute while the page is open.
+- **Storage says what a way to free space would free**, beside its name, where the panel
+  knows the amount: compressing old conversations and removing duplicate copies. Each
+  way has an icon.
+- **Dialogs and messages leave as they came**, a little quicker; with reduced motion they
+  fade. On a phone a message no longer covers the bar for the conversations you ticked.
+- **Conversations is a list of cards on a tablet too**, and in any window where its table
+  would scroll sideways, with Read beside each title.
+- **"Open the full log" on Overview goes to the log**, not to the top of Settings.
 - `push` writes how far it has got on stderr when it is not a terminal, as `import`
   does; `--json` output, `--quiet` runs, the log and a terminal get none of it.
 - `import` and `pull` write how far they have got on stderr when it is not a terminal,

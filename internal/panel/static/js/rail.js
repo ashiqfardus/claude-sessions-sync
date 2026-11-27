@@ -48,6 +48,7 @@ export function rail(nav, grip) {
   grip.addEventListener('lostpointercapture', end)
 
   grip.addEventListener('keydown', (e) => {
+    nav.classList.add('dragging') // keys repeat: the width follows them at once, unanimated
     const step = { ArrowLeft: -STEP, ArrowRight: STEP }[e.key]
     if (step) {
       e.preventDefault()
@@ -60,6 +61,7 @@ export function rail(nav, grip) {
       toggle()
     }
   })
+  grip.addEventListener('keyup', () => { if (!drag) nav.classList.remove('dragging') })
   grip.addEventListener('dblclick', toggle)
 
   // The phone's menu: a disclosure. A link, Escape, or a click outside closes it.

@@ -19,6 +19,11 @@ function sized(b) {
   for (const [unit, n, d] of [['GB', 2 ** 30, 1], ['MB', 2 ** 20, 0], ['KB', 2 ** 10, 0]]) if (b >= n) return (b / n).toFixed(d) + ' ' + unit
   return b + ' B'
 }
+// frees shows "Frees about 12 MB" beside a way's title, or nothing when b is 0.
+function frees(badge, b) {
+  badge.textContent = b > 0 ? 'Frees about ' + sized(b) : ''
+  badge.hidden = !(b > 0)
+}
 // The age rule's choices, as Delete offers them.
 const AGES = { 90: '3 months', 180: '6 months', 365: '1 year', 730: '2 years' }
 const ageLabel = (days) => AGES[days] || plural(days, 'day')
@@ -95,9 +100,10 @@ register('storage', {
     function paintZip() {
       zip.checked = v.zipOn
       slot('zip-state').textContent = v.zipOn ? 'On' : 'Off'
-      const frees = v.zipFrees > 0 ? sized(v.zipFrees) : ''
-      slot('zip-line').textContent = v.zipOn ? (frees ? `Frees about ${frees}.` : 'Nothing is old enough to compress yet.')
-        : (frees ? `Off. Turning it on frees about ${frees}.` : 'Off.')
+      frees(slot('zip-frees'), v.zipFrees) // the amount is beside the title, so the line need not say it
+      const line = slot('zip-line'), some = v.zipFrees > 0
+      line.textContent = v.zipOn ? (some ? '' : 'Nothing is old enough to compress yet.') : (some ? 'Off. Turn it on to free that space.' : 'Off.')
+      line.hidden = !line.textContent
       const waits = v.zipWaitsFor
       slot('zip-wait-text').textContent = waits.length ? `Starts once ${and(waits)} ${waits.length === 1 ? 'updates' : 'update'}.` : ''
       slot('zip-wait').hidden = !v.zipOn || !waits.length
@@ -107,7 +113,7 @@ register('storage', {
     function paintDup() {
       check.textContent = busy === 'check' ? 'Checking' : 'Check now'
       check.disabled = remove.disabled = !!busy
-      if (busy) return
+      if (busy) return frees(slot('dup-frees'), 0)
       const last = v.duplicates
       const n = plan ? plan.remove.length : last ? last.copies : 0
       const bytes = plan ? plan.remove.reduce((s, c) => s + c.size, 0) : last ? last.bytes : 0
@@ -115,7 +121,8 @@ register('storage', {
       const waiting = plan ? Object.keys(plan.waiting || {}).sort() : []
       if (!plan && !last) dupLine.textContent = 'Not checked yet.'
       else if (!n) dupLine.textContent = `None ${waiting.length ? 'can be removed yet' : 'found'}. Checked ${checked(plan ? plan.at : last.at)}.`
-      else dupLine.textContent = `${dups(n)}, ${sized(bytes)}.`
+      else dupLine.textContent = `Found ${dups(n)}.`
+      frees(slot('dup-frees'), plan && plan.unread ? 0 : n ? bytes : 0) // nothing frees while a list can't be read
       remove.hidden = !n
       remove.textContent = 'Remove ' + copies(n)
       let note = ''

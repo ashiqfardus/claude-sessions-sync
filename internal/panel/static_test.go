@@ -630,3 +630,70 @@ func TestTablesAreCardsOnAPhone(t *testing.T) {
 		t.Error("Conversations' Select all lacks its words")
 	}
 }
+
+// Motion follows the 0.7.6 rules: never `transition: all`, and a :hover look only for a
+// fine pointer, so a tap on a touch screen leaves no hover look behind. A selector list
+// that gives the same look without :hover (`.x,.x:hover`, `.x:hover,.x:focus`) may name it.
+func TestHoverOnlyOnFinePointers(t *testing.T) {
+	css := staticFiles(t)["static/panel.css"]
+	css = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(css, "")
+	if regexp.MustCompile(`transition:\s*all\b`).MatchString(css) {
+		t.Error("panel.css uses transition: all")
+	}
+	var around []string // the preludes of the blocks a rule sits in
+	start := 0
+	for i, c := range css {
+		switch c {
+		case ';':
+			start = i + 1
+		case '}':
+			around = around[:max(0, len(around)-1)]
+			start = i + 1
+		case '{':
+			prelude := strings.TrimSpace(css[start:i])
+			start = i + 1
+			gated := strings.Contains(strings.Join(around, " "), "(hover:hover) and (pointer:fine)")
+			around = append(around, prelude)
+			if gated || strings.HasPrefix(prelude, "@") || !strings.Contains(prelude, ":hover") {
+				continue
+			}
+			list := strings.Split(prelude, ",")
+			for _, s := range list {
+				if !strings.Contains(s, ":hover") {
+					continue
+				}
+				twin := false
+				for _, o := range list {
+					twin = twin || o == strings.Replace(s, ":hover", "", 1) || o == strings.Replace(s, ":hover", ":focus", 1)
+				}
+				if !twin {
+					t.Errorf("panel.css: %q is a hover look outside @media (hover:hover) and (pointer:fine)", s)
+				}
+			}
+		}
+	}
+}
+
+// A link to a place in a screen (#/settings?at=log-h: Overview's "Open the full log")
+// names an id that the screen's template has, which the router focuses.
+func TestInScreenLinksResolve(t *testing.T) {
+	files := staticFiles(t)
+	shell := files["static/index.html"]
+	n := 0
+	for p, s := range files {
+		for _, m := range regexp.MustCompile(`#/([a-z]+)\?at=([a-z-]+)`).FindAllStringSubmatch(s, -1) {
+			n++
+			i := strings.Index(shell, `<template id="t-`+m[1]+`">`)
+			if i < 0 {
+				t.Errorf("%s links to %s, a screen index.html has no template for", p, m[0])
+				continue
+			}
+			if tpl := shell[i : i+strings.Index(shell[i:], "</template>")]; !strings.Contains(tpl, `id="`+m[2]+`"`) {
+				t.Errorf("%s links to %s, but that screen has no id %q", p, m[0], m[2])
+			}
+		}
+	}
+	if n == 0 {
+		t.Error(`no link goes to a place in a screen: Overview's "Open the full log" should go to #/settings?at=log-h`)
+	}
+}

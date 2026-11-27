@@ -266,6 +266,18 @@ export function follow(id, { onLine, onProgress, signal } = {}) {
   })
 }
 
+// leave plays an element's way out (panel.css's .leaving: quicker than its way in,
+// opacity only under reduced motion) and then removes it. It takes no clicks or focus
+// meanwhile. Only its own and its first child's animations are waited for: a spinner
+// inside never ends.
+function leave(el) {
+  if (el.classList.contains('leaving')) return
+  el.inert = true
+  el.classList.add('leaving')
+  const going = [el, el.firstElementChild].flatMap((n) => (n ? n.getAnimations() : []))
+  Promise.allSettled(going.map((a) => a.finished)).then(() => el.remove())
+}
+
 // --- Toasts ------------------------------------------------------------------------
 
 let dropToast = () => {}
@@ -280,7 +292,7 @@ export function toast(text, { action } = {}) {
   const close = dropToast = () => {
     clearTimeout(timer)
     if (el.contains(document.activeElement)) main.focus()
-    el.remove()
+    leave(el)
   }
   const arm = () => { if (el.isConnected) { clearTimeout(timer); timer = setTimeout(close, 4500) } }
   el.addEventListener('mouseenter', () => clearTimeout(timer))
@@ -288,6 +300,12 @@ export function toast(text, { action } = {}) {
   el.addEventListener('focusin', () => clearTimeout(timer))
   el.addEventListener('focusout', arm)
   document.getElementById('toasts').append(el)
+  // On a phone the ticked conversations' bar sits at the bottom too: the toast rises above
+  // it, and comes down again if the bar goes while it shows (panel.css's --lift).
+  const bar = document.querySelector('.selection:not([hidden])')
+  if (bar && getComputedStyle(bar).position === 'fixed') {
+    el.style.setProperty('--lift', parseFloat(getComputedStyle(bar).bottom) + bar.offsetHeight + 12 - parseFloat(getComputedStyle(el).bottom) + 'px')
+  }
   arm()
 }
 
@@ -295,6 +313,8 @@ export function toast(text, { action } = {}) {
 
 let dialogN = 0
 const openDialogs = new Set() // each open dialog's cancel, so navigation can close them
+// top is the open dialog on top (its scrim), or null; one on its way out does not count.
+const top = () => [...dialogs.children].filter((s) => !s.classList.contains('leaving')).pop() || null
 
 // modal(title, cancelValue, build) opens a modal dialog. build(box, done) adds the
 // content and returns the element to focus first; done(value) closes it. Esc gives
@@ -308,7 +328,7 @@ export function modal(title, cancelValue, build) {
     const box = h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': id }, h('h2', { id }, title))
     const scrim = h('div', { class: 'scrim' }, box)
     const onKey = (e) => {
-      if (dialogs.lastElementChild !== scrim) return // a dialog opened from this one
+      if (top() !== scrim) return // a dialog opened from this one
       if (e.key === 'Escape') { e.preventDefault(); done(cancelValue) }
       else if (e.key === 'Tab') trap(e, box)
     }
@@ -320,8 +340,8 @@ export function modal(title, cancelValue, build) {
       openDialogs.delete(cancel)
       document.removeEventListener('keydown', onKey)
       if (pressed && box.contains(pressed.el)) pressed = origin ? { el: origin, at: pressed.at } : null
-      scrim.remove()
-      if (!dead) (dialogs.lastElementChild || app).inert = false
+      leave(scrim)
+      if (!dead) (top() || app).inert = false
       if (opener && opener.isConnected && opener.focus) opener.focus()
       resolve(value)
     }
@@ -464,13 +484,29 @@ async function show(force, first) {
     const view = await s.mount(main, new URLSearchParams(q || ''), mounted.signal)
     if (n !== navN) return
     if (view && view.problem) instead(noArchive(view.problem, retry))
-    else { line.remove(); rise(unhide()) }
+    else { line.remove(); rise(unhide()); goTo(name, q) }
   } catch (e) {
     if (n !== navN) return
     if (!e || !e.plain) console.error(e)
     instead(h('div', { class: 'panel pad stack', role: 'alert' }, h('p', null, e && e.plain ? e.message : GENERIC),
       h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: retry }, 'Try again'))))
   }
+}
+
+// goTo follows a link to a place in a screen (#/settings?at=log-h, Overview's "Open the
+// full log"): that heading comes into view with the focus, and the address loses the
+// at, so a reload opens the screen at its top. Never animated: it is where the link goes.
+function goTo(name, q) {
+  const params = new URLSearchParams(q || ''), id = params.get('at')
+  const to = id && main.querySelector('#' + CSS.escape(id))
+  if (!to) return
+  params.delete('at')
+  const rest = params.toString()
+  shown = '#/' + name + (rest ? '?' + rest : '')
+  history.replaceState(null, '', shown)
+  to.tabIndex = -1
+  to.focus({ preventScroll: true })
+  to.scrollIntoView({ block: 'start' })
 }
 
 // rise brings a screen's blocks into view as it opens: a 6 px rise and a fade, each 40 ms
