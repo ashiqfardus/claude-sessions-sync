@@ -280,9 +280,12 @@ func TestRenderRerendersZippedOnTemplateBump(t *testing.T) {
 
 	// The last pass was an older template, and so is the page, at its transcript's time.
 	htmlDir := filepath.Join(dest, "html")
-	s := loadState(htmlDir)
+	s, err := loadState(htmlDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s.Version = templateVersion - 1
-	if err := saveState(htmlDir, s); err != nil {
+	if err := writeState(htmlDir, s); err != nil {
 		t.Fatal(err)
 	}
 	pst := mustStat(t, pagePath)

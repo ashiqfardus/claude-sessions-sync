@@ -7,8 +7,10 @@ package render
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -129,7 +131,12 @@ func Archive(dest string, opts Options) (Result, error) {
 	// of this size. Comparing timestamps alone missed an append inside the tolerance
 	// window, and a renderer fix - such as redaction - never reached pages that were
 	// already published.
-	prev := loadState(res.OutputDir)
+	prev, err := loadState(res.OutputDir)
+	if err != nil && !opts.Force {
+		// Read as empty, every page would count as stale, and the state saved after would
+		// hold this run's pages alone: every computer would start over.
+		return res, fmt.Errorf("%s cannot be read (%v): no page is rendered until it can be; `claude-sessions render --force` renders them all again", statePath(res.OutputDir), err)
+	}
 	next := renderState{Version: templateVersion, Pages: map[string]pageState{}}
 	lastSave := time.Now()
 
@@ -260,7 +267,7 @@ func Archive(dest string, opts Options) (Result, error) {
 				res.Rendered++
 				res.Skipped += page.skipped
 				if time.Since(lastSave) >= stateSaveEvery {
-					_ = saveState(res.OutputDir, progress(prev, next))
+					_ = saveState(res.OutputDir, next, prev)
 					lastSave = time.Now()
 				}
 			}
@@ -420,7 +427,7 @@ func Archive(dest string, opts Options) (Result, error) {
 	if err := archive.WriteFileAtomic(filepath.Join(res.OutputDir, "index.html"), []byte(b.String()), 0o644); err != nil {
 		return res, err
 	}
-	return res, saveState(res.OutputDir, next)
+	return res, saveState(res.OutputDir, next, prev)
 }
 
 // templateVersion changes whenever a rendered page would come out differently, so
@@ -438,8 +445,8 @@ func pageHref(bucket, id string) string {
 	return "./" + url.PathEscape(bucket) + "/" + url.PathEscape(id) + ".html"
 }
 
-// progress is the state to save mid-run: what this pass has done so far, on top of
-// what the last pass left when it was the same template.
+// progress is what this pass has done so far, next, on top of what prev holds when it
+// was the same template.
 func progress(prev, next renderState) renderState {
 	out := renderState{Version: templateVersion, Pages: map[string]pageState{}}
 	if prev.Version == templateVersion {
@@ -511,15 +518,50 @@ type renderState struct {
 
 func statePath(htmlDir string) string { return filepath.Join(htmlDir, ".render-state.json") }
 
-func loadState(htmlDir string) renderState {
-	var s renderState
-	if raw, err := os.ReadFile(statePath(htmlDir)); err == nil {
-		_ = json.Unmarshal(raw, &s)
+// stateTries and stateWait are how often, and how far apart, a state that cannot be
+// read or parsed is read: a sync client may be replacing it.
+var (
+	stateTries = 3
+	stateWait  = 500 * time.Millisecond
+)
+
+// loadState reads the state: an empty one when there is none, an error when there is
+// one that cannot be read or parsed.
+func loadState(htmlDir string) (renderState, error) {
+	var err error
+	for try := 0; try < stateTries; try++ {
+		if try > 0 {
+			time.Sleep(stateWait)
+		}
+		var raw []byte
+		if raw, err = os.ReadFile(statePath(htmlDir)); errors.Is(err, fs.ErrNotExist) {
+			return renderState{}, nil
+		}
+		var s renderState
+		if err == nil {
+			if err = json.Unmarshal(raw, &s); err == nil {
+				return s, nil
+			}
+		}
 	}
-	return s
+	return renderState{}, err
 }
 
-func saveState(htmlDir string, s renderState) error {
+// saveState writes this run's state s over the one on disk now - every computer
+// renders into html/, and another may have saved pages since this run read it - or,
+// when that cannot be read, over prev, the one this run started from. s wins for the
+// pages it holds; an older template's state is not kept.
+//
+// shortcut: an entry for a conversation deleted since stays until the template's next
+// version; prune by page file if the state grows large.
+func saveState(htmlDir string, s, prev renderState) error {
+	if disk, err := loadState(htmlDir); err == nil {
+		prev = disk
+	}
+	return writeState(htmlDir, progress(prev, s))
+}
+
+func writeState(htmlDir string, s renderState) error {
 	data, err := json.Marshal(s)
 	if err != nil {
 		return err
